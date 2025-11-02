@@ -62,7 +62,18 @@
           <!-- Status Bar -->
           <div class="row q-gutter-sm q-mt-sm q-pt-sm" style="border-top: 1px solid #eee; align-items: center">
             <div class="col-auto">
-              <q-icon name="attach_file" size="sm" class="text-grey-6" />
+              <q-btn flat dense round icon="attach_file" class="text-grey-6" @click="triggerFileInput" />
+              <input
+                ref="fileInput"
+                type="file"
+                style="display: none"
+                @change="handleFileSelect"
+                accept=".txt,.md"
+              />
+              <div v-if="selectedFile" class="q-mt-xs q-gutter-xs">
+                <span class="text-xs">📎 {{ selectedFile.name }}</span>
+                <q-btn flat dense round size="xs" icon="close" @click="selectedFile = null" />
+              </div>
             </div>
             <div class="col text-center text-body2 text-grey-7">
               User: {{ props.user?.userId || 'Guest' }}
@@ -104,6 +115,8 @@ const selectedProvider = ref<string>('Anthropic');
 const messages = ref<Message[]>([]);
 const inputMessage = ref('');
 const isStreaming = ref(false);
+const selectedFile = ref<File | null>(null);
+const fileInput = ref<HTMLInputElement | null>(null);
 
 // Provider labels map
 const providerLabels: Record<string, string> = {
@@ -242,6 +255,48 @@ const sendMessage = async () => {
 
 const handleSignOut = () => {
   emit('sign-out');
+};
+
+const triggerFileInput = () => {
+  fileInput.value?.click();
+};
+
+const handleFileSelect = async (event: Event) => {
+  const input = event.target as HTMLInputElement;
+  const file = input.files?.[0];
+  
+  if (file) {
+    selectedFile.value = file;
+    
+    // Read file content
+    try {
+      const text = await readFileAsText(file);
+      
+      // Add file content to input message as context
+      if (text) {
+        inputMessage.value = `${inputMessage.value}\n\n[File: ${file.name}]\n${text}`.trim();
+      }
+    } catch (error) {
+      console.error('Error reading file:', error);
+      alert('Error reading file. Please try again.');
+      selectedFile.value = null;
+    }
+  }
+};
+
+const readFileAsText = (file: File): Promise<string> => {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = (e) => resolve(e.target?.result as string);
+    reader.onerror = reject;
+    
+    // Read as text for .txt, .md, and other text files
+    if (file.name.endsWith('.txt') || file.name.endsWith('.md') || file.type.startsWith('text/')) {
+      reader.readAsText(file);
+    } else {
+      reject(new Error('Unsupported file type. Please use .txt or .md files.'));
+    }
+  });
 };
 
 onMounted(() => {
