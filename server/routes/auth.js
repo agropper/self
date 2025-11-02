@@ -10,7 +10,7 @@ function getClientInfo(req) {
   };
 }
 
-export default function setupAuthRoutes(app, passkeyService, cloudant, doClient, auditLog) {
+export default function setupAuthRoutes(app, passkeyService, cloudant, doClient, auditLog, emailService) {
   // Check if user exists and has passkey
   app.get('/api/passkey/check-user', async (req, res) => {
     try {
@@ -115,6 +115,12 @@ export default function setupAuthRoutes(app, passkeyService, cloudant, doClient,
       // Update user with credential info
       const updatedUser = result.userDoc;
       updatedUser.challenge = undefined; // Remove challenge
+      
+      // Generate provisioning token for admin deep link
+      const provisionToken = emailService.generateProvisionToken(updatedUser.userId);
+      updatedUser.provisionToken = provisionToken;
+      updatedUser.provisionTokenCreatedAt = new Date().toISOString();
+      
       await cloudant.saveDocument('maia_users', updatedUser);
 
       // Set session
@@ -132,6 +138,18 @@ export default function setupAuthRoutes(app, passkeyService, cloudant, doClient,
         ip: clientInfo.ip,
         userAgent: clientInfo.userAgent
       });
+
+      // Send email notification to admin
+      try {
+        await emailService.sendNewUserNotification({
+          userId: updatedUser.userId,
+          displayName: updatedUser.displayName || updatedUser.userId,
+          provisionToken: provisionToken
+        });
+      } catch (emailError) {
+        // Log error but don't fail registration if email fails
+        console.error('❌ Failed to send admin notification email:', emailError);
+      }
 
       res.json({ 
         success: true, 

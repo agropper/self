@@ -14,6 +14,7 @@ import { fileURLToPath } from 'url';
 import { CloudantClient, CloudantSessionStore, AuditLogService } from '../lib/cloudant/index.js';
 import { DigitalOceanClient } from '../lib/do-client/index.js';
 import { PasskeyService } from '../lib/passkey/index.js';
+import { EmailService } from './utils/email-service.js';
 import setupAuthRoutes from './routes/auth.js';
 
 dotenv.config();
@@ -55,6 +56,13 @@ const cloudant = new CloudantClient({
 
 const auditLog = new AuditLogService(cloudant, 'maia_audit_log');
 
+const emailService = new EmailService({
+  apiKey: process.env.RESEND_API_KEY,
+  fromEmail: process.env.RESEND_FROM_EMAIL,
+  adminEmail: process.env.RESEND_ADMIN_EMAIL,
+  baseUrl: process.env.PUBLIC_APP_URL || `http://localhost:${PORT}`
+});
+
 const doClient = new DigitalOceanClient(process.env.DIGITALOCEAN_TOKEN, {
   region: process.env.DO_REGION || 'tor1'
 });
@@ -93,7 +101,7 @@ app.get('/health', (req, res) => {
 });
 
 // Passkey routes
-setupAuthRoutes(app, passkeyService, cloudant, doClient, auditLog);
+setupAuthRoutes(app, passkeyService, cloudant, doClient, auditLog, emailService);
 
 // Serve static files from dist in production
 if (process.env.NODE_ENV === 'production') {
