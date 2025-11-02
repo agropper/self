@@ -55,12 +55,6 @@ const cloudant = new CloudantClient({
   } catch (error) {
     // Already exists, that's fine
   }
-  try {
-    await cloudant.createDatabase('maia_files');
-    console.log('✅ Created maia_files database');
-  } catch (error) {
-    // Already exists, that's fine
-  }
 })();
 
 const auditLog = new AuditLogService(cloudant, 'maia_audit_log');
@@ -122,7 +116,85 @@ setupAuthRoutes(app, passkeyService, cloudant, doClient, auditLog, emailService)
 setupChatRoutes(app, chatClient);
 
 // File routes
-setupFileRoutes(app, cloudant);
+setupFileRoutes(app);
+
+// User file metadata endpoint - updates user document with file info
+app.post('/api/user-file-metadata', async (req, res) => {
+  try {
+    const { userId, fileMetadata } = req.body;
+    
+    if (!userId || !fileMetadata) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'User ID and file metadata are required',
+        error: 'MISSING_REQUIRED_FIELDS'
+      });
+    }
+
+    // Get the user document
+    const userDoc = await cloudant.getDocument('maia_users', userId);
+    
+    if (!userDoc) {
+      return res.status(404).json({ 
+        success: false, 
+        message: 'User not found',
+        error: 'USER_NOT_FOUND'
+      });
+    }
+
+    // SPECIAL CASE: Public User files are session-only (not saved to database)
+    if (userId === 'Public User') {
+      return res.json({
+        success: true,
+        message: 'File uploaded successfully (session-only for Public User)',
+        sessionOnly: true
+      });
+    }
+
+    // Initialize files array if it doesn't exist
+    if (!userDoc.files) {
+      userDoc.files = [];
+    }
+
+    // Check if file already exists (by bucketKey)
+    const existingFileIndex = userDoc.files.findIndex(f => f.bucketKey === fileMetadata.bucketKey);
+    
+    if (existingFileIndex >= 0) {
+      // Update existing file metadata
+      userDoc.files[existingFileIndex] = {
+        ...userDoc.files[existingFileIndex],
+        ...fileMetadata,
+        updatedAt: new Date().toISOString()
+      };
+    } else {
+      // Add new file metadata with initialized knowledgeBases array
+      userDoc.files.push({
+        ...fileMetadata,
+        knowledgeBases: [],
+        addedAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString()
+      });
+    }
+
+    // Save the updated user document
+    await cloudant.saveDocument('maia_users', userDoc);
+    
+    console.log(`✅ Updated file metadata for user ${userId}: ${fileMetadata.fileName}`);
+    
+    res.json({
+      success: true,
+      message: 'File metadata updated successfully',
+      fileCount: userDoc.files.length
+    });
+  } catch (error) {
+    console.error('❌ Error updating user file metadata:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: `Failed to update file metadata: ${error.message}`,
+      error: 'UPDATE_FAILED'
+    });
+  }
+});
 
 // Serve static files from dist in production
 if (process.env.NODE_ENV === 'production') {

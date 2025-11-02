@@ -384,6 +384,32 @@ const uploadPDFFile = async (file: File) => {
 
   const uploadResult = await uploadResponse.json();
 
+  // Update user document with file metadata
+  if (props.user?.userId) {
+    try {
+      await fetch('http://localhost:3001/api/user-file-metadata', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        credentials: 'include',
+        body: JSON.stringify({
+          userId: props.user.userId,
+          fileMetadata: {
+            fileName: uploadResult.fileInfo.fileName,
+            bucketKey: uploadResult.fileInfo.bucketKey,
+            bucketPath: uploadResult.fileInfo.userFolder,
+            fileSize: uploadResult.fileInfo.size,
+            fileType: 'pdf',
+            uploadedAt: uploadResult.fileInfo.uploadedAt
+          }
+        })
+      });
+    } catch (error) {
+      console.warn('Failed to save file metadata to user document:', error);
+    }
+  }
+
   // Create uploaded file object
   const uploadedFile: UploadedFile = {
     id: `file-${Date.now()}-${Math.random().toString(36).substring(7)}`,

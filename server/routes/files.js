@@ -7,7 +7,6 @@ import multer from 'multer';
 import pdf from 'pdf-parse';
 import { S3Client, PutObjectCommand, GetObjectCommand } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
-import { CloudantClient } from '../../lib/cloudant/index.js';
 
 // Configure multer for file uploads (in memory)
 const upload = multer({
@@ -17,7 +16,7 @@ const upload = multer({
   }
 });
 
-export default function setupFileRoutes(app, cloudant) {
+export default function setupFileRoutes(app) {
   /**
    * PDF parsing endpoint
    * POST /api/files/parse-pdf
@@ -119,29 +118,6 @@ export default function setupFileRoutes(app, cloudant) {
 
       const fileUrl = await getSignedUrl(s3Client, getCommand, { expiresIn: 604800 });
 
-      // Save file metadata to Cloudant if authenticated
-      let fileMetadata = null;
-      if (userId !== 'public' && cloudant) {
-        try {
-          const fileDoc = {
-            _id: `file_${Date.now()}_${Math.random().toString(36).substring(7)}`,
-            userId,
-            fileName,
-            bucketKey,
-            fileUrl,
-            size: req.file.size,
-            mimeType: req.file.mimetype,
-            uploadedAt: new Date().toISOString(),
-            type: 'file_upload'
-          };
-          
-          await cloudant.saveDocument('maia_files', fileDoc);
-          fileMetadata = fileDoc;
-        } catch (error) {
-          console.error('Failed to save file metadata:', error);
-        }
-      }
-
       res.json({
         success: true,
         fileInfo: {
@@ -152,8 +128,7 @@ export default function setupFileRoutes(app, cloudant) {
           mimeType: req.file.mimetype,
           uploadedAt: new Date().toISOString(),
           userFolder
-        },
-        metadata: fileMetadata
+        }
       });
     } catch (error) {
       console.error('❌ File upload error:', error);

@@ -158,7 +158,7 @@ DIGITALOCEAN_AWS_SECRET_ACCESS_KEY=...
 ANTHROPIC_API_KEY=sk-ant-...
 ```
 
-**Note**: The server automatically creates `maia_sessions`, `maia_users`, `maia_audit_log`, and `maia_files` databases on startup if they don't exist.
+**Note**: The server automatically creates `maia_sessions`, `maia_users`, and `maia_audit_log` databases on startup if they don't exist.
 
 ## Architecture
 
@@ -183,10 +183,11 @@ ANTHROPIC_API_KEY=sk-ant-...
 ### File Upload Architecture
 - Files uploaded as binary data to DigitalOcean Spaces
 - PDFs parsed on server using pdf-parse library
-- File metadata stored in Cloudant for tracking
+- File metadata stored in user documents (`maia_users` database) in `files` array
 - Signed URLs generated for secure file access (7-day expiration)
 - PDF viewer uses @tato30/vue-pdf with pdfjs-dist for rendering
 - Selectable text layer enabled for PDF extraction
+- Files support KB tracking via `knowledgeBases` array
 
 ### Libraries Used
 - `lib-maia-do-client`: DigitalOcean GenAI API client
