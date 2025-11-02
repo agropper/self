@@ -68,11 +68,19 @@
                 type="file"
                 style="display: none"
                 @change="handleFileSelect"
-                accept=".txt,.md"
               />
               <div v-if="selectedFile" class="q-mt-xs q-gutter-xs">
                 <span class="text-xs">📎 {{ selectedFile.name }}</span>
+                <q-btn 
+                  v-if="selectedFile.type === 'pdf'"
+                  flat dense round size="xs" 
+                  icon="visibility" 
+                  @click="viewFile(selectedFile)"
+                />
                 <q-btn flat dense round size="xs" icon="close" @click="selectedFile = null" />
+              </div>
+              <div v-if="isUploadingFile" class="q-mt-xs text-xs text-grey-6">
+                Uploading...
               </div>
             </div>
             <div class="col text-center text-body2 text-grey-7">
@@ -84,11 +92,18 @@
         </div>
       </q-card-section>
     </q-card>
+
+    <!-- PDF Viewer Modal -->
+    <PdfViewerModal
+      v-model="showPdfViewer"
+      :file="viewingFile"
+    />
   </div>
 </template>
 
 <script setup lang="ts">
 import { ref, onMounted, computed } from 'vue';
+import PdfViewerModal from './PdfViewerModal.vue';
 
 interface Message {
   role: 'user' | 'assistant';
@@ -98,6 +113,18 @@ interface Message {
 interface User {
   userId: string;
   displayName: string;
+}
+
+interface UploadedFile {
+  id: string;
+  name: string;
+  size: number;
+  type: 'text' | 'pdf' | 'markdown';
+  content: string;
+  transcript?: string;
+  originalFile: File;
+  fileUrl?: string;
+  uploadedAt: Date;
 }
 
 interface Props {
@@ -115,8 +142,11 @@ const selectedProvider = ref<string>('Anthropic');
 const messages = ref<Message[]>([]);
 const inputMessage = ref('');
 const isStreaming = ref(false);
-const selectedFile = ref<File | null>(null);
+const selectedFile = ref<UploadedFile | null>(null);
 const fileInput = ref<HTMLInputElement | null>(null);
+const isUploadingFile = ref(false);
+const showPdfViewer = ref(false);
+const viewingFile = ref<UploadedFile | null>(null);
 
 // Provider labels map
 const providerLabels: Record<string, string> = {
@@ -169,14 +199,25 @@ const loadProviders = async () => {
 const sendMessage = async () => {
   if (!inputMessage.value || isStreaming.value) return;
 
+  // Build message content with file context if PDF is attached
+  let messageContent = inputMessage.value;
+  if (selectedFile.value && selectedFile.value.type === 'pdf') {
+    messageContent += `\n\n[PDF: ${selectedFile.value.name}]\n${selectedFile.value.content}`;
+  }
+
   const userMessage: Message = {
     role: 'user',
-    content: inputMessage.value
+    content: messageContent
   };
 
   messages.value.push(userMessage);
-  const query = inputMessage.value;
   inputMessage.value = '';
+  
+  // Clear selected file after sending
+  if (selectedFile.value) {
+    selectedFile.value = null;
+  }
+  
   isStreaming.value = true;
 
   try {
@@ -265,23 +306,116 @@ const handleFileSelect = async (event: Event) => {
   const input = event.target as HTMLInputElement;
   const file = input.files?.[0];
   
-  if (file) {
-    selectedFile.value = file;
+  if (!file) return;
+
+  isUploadingFile.value = true;
+
+  try {
+    // Detect file type
+    const fileType = detectFileType(file.name, file.type);
     
-    // Read file content
-    try {
-      const text = await readFileAsText(file);
-      
-      // Add file content to input message as context
-      if (text) {
-        inputMessage.value = `${inputMessage.value}\n\n[File: ${file.name}]\n${text}`.trim();
-      }
-    } catch (error) {
-      console.error('Error reading file:', error);
-      alert('Error reading file. Please try again.');
-      selectedFile.value = null;
+    if (fileType === 'pdf') {
+      await uploadPDFFile(file);
+    } else if (fileType === 'text' || fileType === 'markdown') {
+      await uploadTextFile(file);
+    } else {
+      throw new Error('Unsupported file type');
     }
+  } catch (error) {
+    console.error('Error uploading file:', error);
+    alert(`Error uploading file: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    selectedFile.value = null;
+  } finally {
+    isUploadingFile.value = false;
   }
+};
+
+const detectFileType = (fileName: string, mimeType: string): 'text' | 'pdf' | 'markdown' => {
+  const ext = fileName.toLowerCase().split('.').pop();
+  
+  if (ext === 'pdf' || mimeType === 'application/pdf') {
+    return 'pdf';
+  }
+  
+  if (ext === 'md' || ext === 'markdown') {
+    return 'markdown';
+  }
+  
+  return 'text';
+};
+
+const uploadPDFFile = async (file: File) => {
+  // Check file size
+  const maxSize = 50 * 1024 * 1024; // 50MB
+  if (file.size > maxSize) {
+    throw new Error(`File too large (${(file.size / 1024 / 1024).toFixed(1)}MB). Maximum size is 50MB.`);
+  }
+
+  // Parse PDF on server
+  const formData = new FormData();
+  formData.append('pdfFile', file);
+  
+  const parseResponse = await fetch('http://localhost:3001/api/files/parse-pdf', {
+    method: 'POST',
+    body: formData
+  });
+
+  if (!parseResponse.ok) {
+    const errorData = await parseResponse.json();
+    throw new Error(errorData.error || 'Failed to parse PDF');
+  }
+
+  const parseResult = await parseResponse.json();
+
+  // Upload to bucket
+  const uploadFormData = new FormData();
+  uploadFormData.append('file', file);
+
+  const uploadResponse = await fetch('http://localhost:3001/api/files/upload', {
+    method: 'POST',
+    credentials: 'include',
+    body: uploadFormData
+  });
+
+  if (!uploadResponse.ok) {
+    const errorData = await uploadResponse.json();
+    throw new Error(errorData.error || 'Failed to upload file');
+  }
+
+  const uploadResult = await uploadResponse.json();
+
+  // Create uploaded file object
+  const uploadedFile: UploadedFile = {
+    id: `file-${Date.now()}-${Math.random().toString(36).substring(7)}`,
+    name: file.name,
+    size: file.size,
+    type: 'pdf',
+    content: parseResult.text,
+    originalFile: file,
+    fileUrl: uploadResult.fileInfo.fileUrl,
+    uploadedAt: new Date()
+  };
+
+  selectedFile.value = uploadedFile;
+};
+
+const uploadTextFile = async (file: File) => {
+  const text = await readFileAsText(file);
+  
+  const uploadedFile: UploadedFile = {
+    id: `file-${Date.now()}-${Math.random().toString(36).substring(7)}`,
+    name: file.name,
+    size: file.size,
+    type: file.name.endsWith('.md') ? 'markdown' : 'text',
+    content: text,
+    originalFile: file,
+    uploadedAt: new Date()
+  };
+
+  selectedFile.value = uploadedFile;
+  
+  // Add content to input message
+  inputMessage.value = `${inputMessage.value}\n\n[File: ${file.name}]\n${text}`.trim();
 };
 
 const readFileAsText = (file: File): Promise<string> => {
@@ -289,14 +423,13 @@ const readFileAsText = (file: File): Promise<string> => {
     const reader = new FileReader();
     reader.onload = (e) => resolve(e.target?.result as string);
     reader.onerror = reject;
-    
-    // Read as text for .txt, .md, and other text files
-    if (file.name.endsWith('.txt') || file.name.endsWith('.md') || file.type.startsWith('text/')) {
-      reader.readAsText(file);
-    } else {
-      reject(new Error('Unsupported file type. Please use .txt or .md files.'));
-    }
+    reader.readAsText(file);
   });
+};
+
+const viewFile = (file: UploadedFile) => {
+  viewingFile.value = file;
+  showPdfViewer.value = true;
 };
 
 onMounted(() => {

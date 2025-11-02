@@ -18,6 +18,7 @@ import { EmailService } from './utils/email-service.js';
 import { ChatClient } from '../lib/chat-client/index.js';
 import setupAuthRoutes from './routes/auth.js';
 import setupChatRoutes from './routes/chat.js';
+import setupFileRoutes from './routes/files.js';
 
 dotenv.config();
 
@@ -51,6 +52,12 @@ const cloudant = new CloudantClient({
   try {
     await cloudant.createDatabase('maia_audit_log');
     console.log('✅ Created maia_audit_log database');
+  } catch (error) {
+    // Already exists, that's fine
+  }
+  try {
+    await cloudant.createDatabase('maia_files');
+    console.log('✅ Created maia_files database');
   } catch (error) {
     // Already exists, that's fine
   }
@@ -113,6 +120,9 @@ setupAuthRoutes(app, passkeyService, cloudant, doClient, auditLog, emailService)
 
 // Chat routes
 setupChatRoutes(app, chatClient);
+
+// File routes
+setupFileRoutes(app, cloudant);
 
 // Serve static files from dist in production
 if (process.env.NODE_ENV === 'production') {

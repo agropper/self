@@ -98,6 +98,19 @@ http://localhost:5173
 - Email sent via Resend API service
 - Graceful fallback if email service is not configured
 
+✅ **Chat Interface with Streaming**
+- Real-time streaming chat responses with incremental updates
+- Multiple AI providers (Anthropic Claude 4.5 supported)
+- Clean, full-width interface with anchored bottom toolbar
+- File attachments support for PDFs and text files
+
+✅ **File Management**
+- PDF upload with text extraction via pdf-parse
+- Binary storage in DigitalOcean Spaces
+- PDF viewer modal with pagination and zoom controls
+- Text files automatically added to chat context
+- Selectable text layer in PDF viewer
+
 ✅ **Production Ready**
 - Tested with real Cloudant and DigitalOcean APIs
 - Session management with Cloudant (sessions stored by userId for easy viewing)
@@ -135,9 +148,17 @@ PUBLIC_APP_URL=http://localhost:3001
 RESEND_API_KEY=re_...
 RESEND_FROM_EMAIL=noreply@yourdomain.com
 RESEND_ADMIN_EMAIL=admin@yourdomain.com
+
+# File Upload (DigitalOcean Spaces)
+DIGITALOCEAN_BUCKET=https://maia.tor1.digitaloceanspaces.com
+DIGITALOCEAN_AWS_ACCESS_KEY_ID=...
+DIGITALOCEAN_AWS_SECRET_ACCESS_KEY=...
+
+# Anthropic AI (for chat)
+ANTHROPIC_API_KEY=sk-ant-...
 ```
 
-**Note**: The server automatically creates `maia_sessions`, `maia_users`, and `maia_audit_log` databases on startup if they don't exist.
+**Note**: The server automatically creates `maia_sessions`, `maia_users`, `maia_audit_log`, and `maia_files` databases on startup if they don't exist.
 
 ## Architecture
 
@@ -159,18 +180,31 @@ RESEND_ADMIN_EMAIL=admin@yourdomain.com
 - Email service uses Resend API with graceful fallback if not configured
 - Admin can click the deep link to provision the user (create agent, Spaces folder, etc.)
 
+### File Upload Architecture
+- Files uploaded as binary data to DigitalOcean Spaces
+- PDFs parsed on server using pdf-parse library
+- File metadata stored in Cloudant for tracking
+- Signed URLs generated for secure file access (7-day expiration)
+- PDF viewer uses @tato30/vue-pdf with pdfjs-dist for rendering
+- Selectable text layer enabled for PDF extraction
+
 ### Libraries Used
 - `lib-maia-do-client`: DigitalOcean GenAI API client
 - `lib-maia-cloudant`: Cloudant document operations and session store
 - `lib-maia-passkey`: WebAuthn/passkey authentication service
+- `lib-maia-chat`: Unified chat interface with streaming support
+- `pdf-parse`: PDF text extraction on server
+- `@tato30/vue-pdf`: PDF viewer component
+- `pdfjs-dist`: PDF.js for PDF rendering and text layer
 
 ## Next Steps
 
-- [ ] Add chat interface
+- [ ] Add more AI providers (OpenAI, Gemini, DeepSeek)
 - [ ] Add KB management UI
 - [ ] Add agent configuration
+- [ ] Implement knowledge base integration with chat
 - [ ] Deploy to DigitalOcean App Platform
 
 ## Status
 
-✅ **MVP Complete** - Backend and frontend passkey authentication working
+✅ **MVP Complete** - Passkey authentication, chat with streaming, and file uploads working
