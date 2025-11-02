@@ -33,6 +33,7 @@
           (val) => !val.startsWith('-') && !val.endsWith('-') || 'User ID cannot start or end with a hyphen',
         ]"
         hint="3-20 characters: lowercase letters, numbers, hyphens only"
+        @keyup.enter="handleEnterKey"
       />
 
       <div class="row q-gutter-sm q-mt-md">
@@ -108,6 +109,12 @@ const resetFlow = () => {
   error.value = '';
   action.value = '';
   loading.value = false;
+};
+
+const handleEnterKey = () => {
+  if (userId.value && userId.value.length >= 3 && !loading.value) {
+    continueAction();
+  }
 };
 
 const continueAction = async () => {
