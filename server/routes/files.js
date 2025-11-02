@@ -137,6 +137,58 @@ export default function setupFileRoutes(app) {
   });
 
   /**
+   * Proxy PDF files from DigitalOcean Spaces to avoid CORS issues
+   * GET /api/files/proxy-pdf/:bucketKey(*)
+   */
+  app.get('/api/files/proxy-pdf/:bucketKey(*)', async (req, res) => {
+    try {
+      const { bucketKey } = req.params;
+      
+      console.log(`📄 Proxying PDF file with bucket key: ${bucketKey}`);
+      
+      const bucketUrl = process.env.DIGITALOCEAN_BUCKET;
+      const bucketName = bucketUrl?.split('//')[1]?.split('.')[0] || 'maia';
+
+      const s3Client = new S3Client({
+        endpoint: process.env.DIGITALOCEAN_ENDPOINT_URL || 'https://tor1.digitaloceanspaces.com',
+        region: 'us-east-1',
+        forcePathStyle: false,
+        credentials: {
+          accessKeyId: process.env.DIGITALOCEAN_AWS_ACCESS_KEY_ID || '',
+          secretAccessKey: process.env.DIGITALOCEAN_AWS_SECRET_ACCESS_KEY || ''
+        }
+      });
+
+      const getCommand = new GetObjectCommand({
+        Bucket: bucketName,
+        Key: bucketKey
+      });
+      
+      console.log(`📄 Fetching from S3: ${bucketName}/${bucketKey}`);
+      
+      const response = await s3Client.send(getCommand);
+      
+      // Set appropriate headers
+      res.setHeader('Content-Type', 'application/pdf');
+      res.setHeader('Content-Disposition', `inline; filename="${bucketKey.split('/').pop()}"`);
+      res.setHeader('Access-Control-Allow-Origin', '*');
+      res.setHeader('Access-Control-Allow-Methods', 'GET');
+      res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+      
+      // Stream the PDF content
+      response.Body.pipe(res);
+      
+      console.log(`✅ Successfully streaming PDF: ${bucketKey}`);
+    } catch (error) {
+      console.error('❌ Error proxying PDF:', error);
+      res.status(500).json({ 
+        success: false,
+        error: `Failed to proxy PDF: ${error.message}` 
+      });
+    }
+  });
+
+  /**
    * Get signed URL for a file
    * GET /api/files/:bucketKey/url
    */

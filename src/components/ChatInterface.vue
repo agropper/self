@@ -123,6 +123,7 @@ interface UploadedFile {
   content: string;
   transcript?: string;
   originalFile: File;
+  bucketKey?: string;
   fileUrl?: string;
   uploadedAt: Date;
 }
@@ -418,6 +419,7 @@ const uploadPDFFile = async (file: File) => {
     type: 'pdf',
     content: parseResult.text,
     originalFile: file,
+    bucketKey: uploadResult.fileInfo.bucketKey,
     fileUrl: uploadResult.fileInfo.fileUrl,
     uploadedAt: new Date()
   };
@@ -454,6 +456,7 @@ const readFileAsText = (file: File): Promise<string> => {
 };
 
 const viewFile = (file: UploadedFile) => {
+  console.log('[PDF VIEW] viewFile called with:', file);
   viewingFile.value = file;
   showPdfViewer.value = true;
 };

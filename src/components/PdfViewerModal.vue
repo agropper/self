@@ -93,6 +93,7 @@ import * as pdfjsLib from 'pdfjs-dist';
 // Configure PDF.js worker
 if (typeof window !== 'undefined') {
   pdfjsLib.GlobalWorkerOptions.workerSrc = '/pdf.worker.min.js';
+  console.log('[PDF VIEW] Configured worker:', pdfjsLib.GlobalWorkerOptions.workerSrc);
 }
 
 interface Props {
@@ -128,22 +129,37 @@ const isLoading = ref(false);
 
 // Computed
 const pdfUrl = computed(() => {
-  if (!props.file) return '';
+  console.log('[PDF VIEW] Computing pdfUrl, file:', props.file);
+  if (!props.file) {
+    console.log('[PDF VIEW] No file provided');
+    return '';
+  }
+  
+  // Use bucketKey to construct proxy URL for imported files (avoids CORS)
+  if (props.file.bucketKey) {
+    console.log('[PDF VIEW] Using bucketKey proxy:', props.file.bucketKey);
+    return `/api/files/proxy-pdf/${props.file.bucketKey}`;
+  }
   
   if (props.file.fileUrl) {
+    console.log('[PDF VIEW] Using fileUrl:', props.file.fileUrl);
     return props.file.fileUrl;
   }
   
   if (props.file.originalFile instanceof File) {
+    console.log('[PDF VIEW] Using originalFile blob URL');
     return URL.createObjectURL(props.file.originalFile);
   }
   
+  console.log('[PDF VIEW] No valid file URL found');
   return '';
 });
 
 // Methods
 const loadPdfDocument = async () => {
+  console.log('[PDF VIEW] loadPdfDocument called, pdfUrl:', pdfUrl.value);
   if (!pdfUrl.value) {
+    console.log('[PDF VIEW] No pdfUrl, clearing document');
     pdfDocument.value = null;
     totalPages.value = 0;
     isLoading.value = false;
@@ -151,17 +167,20 @@ const loadPdfDocument = async () => {
   }
 
   if (isLoading.value) {
+    console.log('[PDF VIEW] Already loading, skipping');
     return;
   }
 
   try {
+    console.log('[PDF VIEW] Starting PDF load from:', pdfUrl.value);
     isLoading.value = true;
     const loadingTask = pdfjsLib.getDocument(pdfUrl.value);
     pdfDocument.value = loadingTask;
     const pdf = await loadingTask.promise;
+    console.log('[PDF VIEW] PDF loaded successfully, pages:', pdf.numPages);
     totalPages.value = pdf.numPages || 0;
   } catch (error) {
-    console.error('PDF loading error:', error);
+    console.error('[PDF VIEW] PDF loading error:', error);
     pdfDocument.value = null;
     totalPages.value = 0;
   } finally {
@@ -176,7 +195,7 @@ const onPdfLoaded = (pdf: any) => {
 };
 
 const onPdfError = (err: any) => {
-  console.error('PDF loading error:', err);
+  console.error('[PDF VIEW] onPdfError callback:', err);
   totalPages.value = 0;
 };
 
@@ -216,10 +235,14 @@ const goToPage = () => {
 
 // Watch for file changes
 watch(() => props.file, (newFile) => {
+  console.log('[PDF VIEW] File watcher triggered, newFile:', newFile);
   if (newFile && !isLoading.value) {
+    console.log('[PDF VIEW] Loading new PDF');
     currentPage.value = 1;
     totalPages.value = 0;
     loadPdfDocument();
+  } else {
+    console.log('[PDF VIEW] Skipping load - isLoading:', isLoading.value, 'hasFile:', !!newFile);
   }
 }, { immediate: true });
 </script>
