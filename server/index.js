@@ -31,6 +31,22 @@ const cloudant = new CloudantClient({
   password: process.env.CLOUDANT_PASSWORD
 });
 
+// Initialize databases
+(async () => {
+  try {
+    await cloudant.createDatabase('maia_sessions');
+    console.log('✅ Created maia_sessions database');
+  } catch (error) {
+    // Already exists, that's fine
+  }
+  try {
+    await cloudant.createDatabase('maia_users');
+    console.log('✅ Created maia_users database');
+  } catch (error) {
+    // Already exists, that's fine
+  }
+})();
+
 const doClient = new DigitalOceanClient(process.env.DIGITALOCEAN_TOKEN, {
   region: process.env.DO_REGION || 'tor1'
 });
