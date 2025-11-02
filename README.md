@@ -93,35 +93,64 @@ http://localhost:5173
 
 ✅ **Production Ready**
 - Tested with real Cloudant and DigitalOcean APIs
-- Session management with Cloudant
+- Session management with Cloudant (sessions stored by userId for easy viewing)
+- Security audit logging for authentication events
 - Error handling and validation
 
 ### Configuration
 
 `.env`:
 ```
-PASSKEY_RPID=user.agropper.xyz
-PASSKEY_ORIGIN=http://localhost:3001
+# Passkey Configuration (local development)
+PASSKEY_RPID=localhost
+PASSKEY_ORIGIN=http://localhost:5173
 
-CLOUDANT_URL=https://...
-CLOUDANT_USERNAME=...
-CLOUDANT_PASSWORD=...
+# Passkey Configuration (production)
+# PASSKEY_RPID=user.agropper.xyz
+# PASSKEY_ORIGIN=https://user.agropper.xyz
 
-DIGITALOCEAN_TOKEN=...
+# Cloudant Database
+CLOUDANT_URL=https://your-instance.cloudantnosqldb.appdomain.cloud
+CLOUDANT_USERNAME=apikey-v2-...
+CLOUDANT_PASSWORD=your-api-key
+
+# DigitalOcean API
+DIGITALOCEAN_TOKEN=dop_v1_...
 DO_REGION=tor1
 
+# Server Configuration
 PORT=3001
 SESSION_SECRET=change-this-in-production
 NODE_ENV=development
 ```
 
+**Note**: The server automatically creates `maia_sessions`, `maia_users`, and `maia_audit_log` databases on startup if they don't exist.
+
+## Architecture
+
+### Session Management
+- Sessions stored in Cloudant with `userId` as document `_id` for easy viewing in dashboard
+- Session mapping documents maintain express-session compatibility
+- Automatic session expiration and cleanup
+
+### Security Audit Log
+- All authentication events logged to `maia_audit_log` database
+- Event types: `login_success`, `login_failure`, `logout`, `passkey_registered`
+- Each log includes: userId, timestamp, IP address, user agent
+- Queryable in Cloudant dashboard for security audits
+
+### Libraries Used
+- `lib-maia-do-client`: DigitalOcean GenAI API client
+- `lib-maia-cloudant`: Cloudant document operations and session store
+- `lib-maia-passkey`: WebAuthn/passkey authentication service
+
 ## Next Steps
 
 - [ ] Add chat interface
-- [ ] Add KB management
+- [ ] Add KB management UI
 - [ ] Add agent configuration
 - [ ] Deploy to DigitalOcean App Platform
 
 ## Status
 
-🚧 In Progress - MVP backend and frontend complete
+✅ **MVP Complete** - Backend and frontend passkey authentication working
