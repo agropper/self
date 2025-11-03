@@ -83,7 +83,7 @@ export async function findUserAgent(doClient, userId) {
     const userAgent = agents.find(agent => agentPattern.test(agent.name));
     
     if (userAgent) {
-      console.log(`Found agent for ${userId}:`, JSON.stringify(userAgent, null, 2));
+      console.log(`✅ Found agent ${userAgent.name} for user ${userId}`);
     }
     
     return userAgent || null;
