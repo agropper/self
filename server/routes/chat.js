@@ -79,12 +79,6 @@ export default function setupChatRoutes(app, chatClient, cloudant, doClient) {
 
         // Handle streaming updates
         if (userAgentProvider) {
-          // Log request details for debugging large requests
-          const totalChars = messages.reduce((sum, msg) => sum + (typeof msg.content === 'string' ? msg.content.length : JSON.stringify(msg.content || '').length), 0);
-          const estimatedTokens = Math.ceil(totalChars / 4); // Rough estimate
-          const requestSizeKB = (JSON.stringify(messages).length / 1024).toFixed(2);
-          console.log(`[AGENT REQUEST] Model: ${options.model || 'default'}, Messages: ${messages.length}, Chars: ${totalChars}, Est. tokens: ${estimatedTokens}, Size: ${requestSizeKB}KB`);
-          
           await userAgentProvider.chat(messages, { ...options, stream: true }, 
             (update) => {
               res.write(`data: ${JSON.stringify(update)}\n\n`);
