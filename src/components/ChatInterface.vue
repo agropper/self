@@ -247,7 +247,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, computed, watch, nextTick } from 'vue';
+import { ref, onMounted, computed, watch, nextTick, watchEffect } from 'vue';
 import PdfViewerModal from './PdfViewerModal.vue';
 import SavedChatsModal from './SavedChatsModal.vue';
 import html2pdf from 'html2pdf.js';
@@ -902,14 +902,10 @@ const scrollToBottom = async () => {
   }
 };
 
-watch(() => messages.value.length, () => {
+// Watch for specific changes and trigger scroll with flush: 'post'
+watch(() => [messages.value.length, messages.value[messages.value.length - 1]?.content], () => {
   scrollToBottom();
-});
-
-// Also watch for streaming content updates
-watch(() => messages.value[messages.value.length - 1]?.content, () => {
-  scrollToBottom();
-});
+}, { flush: 'post' });
 
 onMounted(() => {
   loadProviders();
