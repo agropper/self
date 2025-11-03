@@ -519,20 +519,56 @@ const removeFile = (file: UploadedFile) => {
 
 const saveLocally = async () => {
   try {
-    // Get the chat area element to capture
-    const chatAreaElement = document.querySelector('.chat-messages');
+    // Get the chat area element to capture (including file chips)
+    const chatAreaElement = document.querySelector('.chat-interface');
     
     if (!chatAreaElement) {
       alert('Chat area not found');
       return;
     }
     
-    // Generate filename with date and time
+    // Generate filename with date and time (HH:MM format)
     const now = new Date();
-    const dateStr = now.toISOString().replace(/T/, ' ').replace(/\..+/, '').replace(/:/g, '-');
+    const year = now.getFullYear();
+    const month = String(now.getMonth() + 1).padStart(2, '0');
+    const day = String(now.getDate()).padStart(2, '0');
+    const hours = String(now.getHours()).padStart(2, '0');
+    const minutes = String(now.getMinutes()).padStart(2, '0');
+    const dateStr = `${year}-${month}-${day} ${hours}:${minutes}`;
     const filename = `MAIA chat ${dateStr}.pdf`;
     
-    // Configure html2pdf options
+    // Try to use File System Access API to save to MAIA folder
+    // @ts-ignore - File System Access API types not in TypeScript
+    if ('showSaveFilePicker' in window) {
+      try {
+        // @ts-ignore
+        const fileHandle = await window.showSaveFilePicker({
+          suggestedName: filename,
+          types: [{
+            description: 'PDF files',
+            accept: { 'application/pdf': ['.pdf'] }
+          }]
+        });
+        
+        // Generate PDF as blob
+        const blob = await html2pdf().from(chatAreaElement).output('blob');
+        
+        // Write to file
+        const writable = await fileHandle.createWritable();
+        await writable.write(blob);
+        await writable.close();
+        
+        alert('Chat saved successfully!');
+        return;
+      } catch (err: any) {
+        // User cancelled or error - fall through to regular download
+        if (err.name !== 'AbortError') {
+          console.error('File System Access API error:', err);
+        }
+      }
+    }
+    
+    // Fallback: Regular download
     const opt = {
       margin: 0.5,
       filename: filename,
@@ -544,7 +580,8 @@ const saveLocally = async () => {
         scale: 2,
         useCORS: true,
         allowTaint: true,
-        backgroundColor: '#ffffff'
+        backgroundColor: '#ffffff',
+        logging: false
       },
       jsPDF: { 
         unit: 'in', 
