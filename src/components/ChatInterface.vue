@@ -3,16 +3,31 @@
     <q-card class="full-height">
       <q-card-section class="q-pa-none full-height flex column">
         <!-- File Info Bar -->
-        <div v-if="selectedFile" class="q-px-md q-pt-md q-pb-sm" style="flex-shrink: 0; border-bottom: 1px solid #eee;">
+        <div v-if="uploadedFiles.length > 0" class="q-px-md q-pt-md q-pb-sm" style="flex-shrink: 0; border-bottom: 1px solid #eee;">
           <div class="row items-center q-gutter-xs">
-            <span class="text-xs text-grey-7">📎 {{ selectedFile.name }}</span>
-            <q-btn 
-              v-if="selectedFile.type === 'pdf'"
-              flat dense round size="xs" 
-              icon="visibility" 
-              @click="viewFile(selectedFile)"
-            />
-            <q-btn flat dense round size="xs" icon="close" @click="selectedFile = null" />
+            <q-chip
+              v-for="file in uploadedFiles"
+              :key="file.id"
+              icon="description"
+              color="primary"
+              text-color="white"
+              size="sm"
+            >
+              {{ file.name }}
+              <q-btn 
+                v-if="file.type === 'pdf'"
+                flat dense round size="xs" 
+                icon="visibility" 
+                color="white"
+                @click="viewFile(file)"
+              />
+              <q-btn 
+                flat dense round size="xs" 
+                icon="close" 
+                color="white"
+                @click="removeFile(file)"
+              />
+            </q-chip>
           </div>
         </div>
         
@@ -148,7 +163,7 @@ const selectedProvider = ref<string>('Anthropic');
 const messages = ref<Message[]>([]);
 const inputMessage = ref('');
 const isStreaming = ref(false);
-const selectedFile = ref<UploadedFile | null>(null);
+const uploadedFiles = ref<UploadedFile[]>([]);
 const fileInput = ref<HTMLInputElement | null>(null);
 const isUploadingFile = ref(false);
 const showPdfViewer = ref(false);
@@ -205,24 +220,13 @@ const loadProviders = async () => {
 const sendMessage = async () => {
   if (!inputMessage.value || isStreaming.value) return;
 
-  // Build message content with file context if PDF is attached
-  let messageContent = inputMessage.value;
-  if (selectedFile.value && selectedFile.value.type === 'pdf') {
-    messageContent += `\n\n[PDF: ${selectedFile.value.name}]\n${selectedFile.value.content}`;
-  }
-
   const userMessage: Message = {
     role: 'user',
-    content: messageContent
+    content: inputMessage.value
   };
 
   messages.value.push(userMessage);
   inputMessage.value = '';
-  
-  // Clear selected file after sending
-  if (selectedFile.value) {
-    selectedFile.value = null;
-  }
   
   isStreaming.value = true;
 
@@ -330,7 +334,6 @@ const handleFileSelect = async (event: Event) => {
   } catch (error) {
     console.error('Error uploading file:', error);
     alert(`Error uploading file: ${error instanceof Error ? error.message : 'Unknown error'}`);
-    selectedFile.value = null;
   } finally {
     isUploadingFile.value = false;
   }
@@ -429,7 +432,7 @@ const uploadPDFFile = async (file: File) => {
     uploadedAt: new Date()
   };
 
-  selectedFile.value = uploadedFile;
+  uploadedFiles.value.push(uploadedFile);
 };
 
 const uploadTextFile = async (file: File) => {
@@ -445,10 +448,7 @@ const uploadTextFile = async (file: File) => {
     uploadedAt: new Date()
   };
 
-  selectedFile.value = uploadedFile;
-  
-  // Add content to input message
-  inputMessage.value = `${inputMessage.value}\n\n[File: ${file.name}]\n${text}`.trim();
+  uploadedFiles.value.push(uploadedFile);
 };
 
 const readFileAsText = (file: File): Promise<string> => {
@@ -463,6 +463,13 @@ const readFileAsText = (file: File): Promise<string> => {
 const viewFile = (file: UploadedFile) => {
   viewingFile.value = file;
   showPdfViewer.value = true;
+};
+
+const removeFile = (file: UploadedFile) => {
+  const index = uploadedFiles.value.findIndex(f => f.id === file.id);
+  if (index !== -1) {
+    uploadedFiles.value.splice(index, 1);
+  }
 };
 
 onMounted(() => {
