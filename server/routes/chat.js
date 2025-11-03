@@ -130,6 +130,71 @@ export default function setupChatRoutes(app, chatClient, cloudant, doClient) {
         console.error('401 Unauthorized on agent endpoint');
       }
       
+      // Enhance error messages for token limit errors (400 status with token limit message)
+      // IMPORTANT: Use req.body.messages directly (never reference try-block variables)
+      // Wrap in try-catch to ensure error enhancement never crashes the error handler
+      if (statusCode === 400 && errorMessage && errorMessage.toLowerCase().includes('token')) {
+        try {
+          // Extract token limit from error message if present
+          const tokenLimitMatch = errorMessage.match(/(\d+)\s*tokens?/i);
+          const tokenLimit = tokenLimitMatch ? tokenLimitMatch[1] : null;
+          
+          // Safely access messages from req.body (always available from request)
+          const messages = req.body?.messages;
+          let estimatedTokens = null;
+          
+          if (messages && Array.isArray(messages)) {
+            try {
+              const totalChars = messages.reduce((sum, msg) => {
+                if (msg?.content) {
+                  return sum + (typeof msg.content === 'string' ? msg.content.length : JSON.stringify(msg.content).length);
+                }
+                return sum;
+              }, 0);
+              estimatedTokens = Math.ceil(totalChars / 4);
+            } catch (calcError) {
+              // If calculation fails, just skip token count enhancement
+              console.warn('Could not calculate token count for error enhancement:', calcError.message);
+            }
+          }
+          
+          // Build helpful error message only if we have the necessary data
+          if (tokenLimit || estimatedTokens !== null) {
+            let enhancedMessage = errorMessage;
+            
+            if (tokenLimit && estimatedTokens !== null) {
+              enhancedMessage = `**Request too large**\n\n` +
+                `Your request contains approximately ${estimatedTokens.toLocaleString()} tokens, which exceeds the model's maximum input limit of ${parseInt(tokenLimit).toLocaleString()} tokens.\n\n` +
+                `**Suggestions:**\n` +
+                `- Try reducing the size of attached files\n` +
+                `- Split large documents into smaller sections\n` +
+                `- Remove unnecessary context from your message\n` +
+                `- Try asking more specific questions about smaller portions of your documents`;
+            } else if (tokenLimit) {
+              enhancedMessage = `**Request too large**\n\n` +
+                `Your request exceeds the model's maximum input limit of ${parseInt(tokenLimit).toLocaleString()} tokens.\n\n` +
+                `**Suggestions:**\n` +
+                `- Try reducing the size of attached files\n` +
+                `- Split large documents into smaller sections\n` +
+                `- Remove unnecessary context from your message`;
+            } else if (estimatedTokens !== null) {
+              enhancedMessage = `**Request too large**\n\n` +
+                `Your request contains approximately ${estimatedTokens.toLocaleString()} tokens, which exceeds the model's context limit.\n\n` +
+                `**Suggestions:**\n` +
+                `- Try reducing the size of attached files\n` +
+                `- Split large documents into smaller sections\n` +
+                `- Remove unnecessary context from your message`;
+            }
+            
+            errorMessage = enhancedMessage;
+          }
+        } catch (enhancementError) {
+          // If error enhancement fails, log it but don't crash - just use original error message
+          console.warn('Error enhancement failed (non-critical):', enhancementError.message);
+          // Continue with original errorMessage
+        }
+      }
+      
       res.status(statusCode).json({ 
         error: errorMessage,
         type: error.type,
