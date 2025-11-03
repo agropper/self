@@ -384,7 +384,6 @@ const uploadPDFFile = async (file: File) => {
   }
 
   const uploadResult = await uploadResponse.json();
-  console.log('[UPLOAD] uploadResult:', uploadResult);
 
   // Update user document with file metadata
   if (props.user?.userId) {
@@ -425,7 +424,6 @@ const uploadPDFFile = async (file: File) => {
     uploadedAt: new Date()
   };
 
-  console.log('[UPLOAD] uploadedFile:', uploadedFile);
   selectedFile.value = uploadedFile;
 };
 
