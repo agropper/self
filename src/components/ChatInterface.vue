@@ -289,7 +289,7 @@ const emit = defineEmits<{
 }>();
 
 const providers = ref<string[]>([]);
-const selectedProvider = ref<string>('Anthropic');
+const selectedProvider = ref<string>('Private AI');
 const messages = ref<Message[]>([]);
 const inputMessage = ref('');
 const isStreaming = ref(false);
@@ -308,11 +308,11 @@ const chatMessagesRef = ref<HTMLElement | null>(null);
 
 // Provider labels map
 const providerLabels: Record<string, string> = {
+  digitalocean: 'Private AI',
   anthropic: 'Anthropic',
   openai: 'OpenAI',
   gemini: 'Gemini',
-  deepseek: 'DeepSeek',
-  digitalocean: 'DigitalOcean'
+  deepseek: 'DeepSeek'
 };
 
 // Computed provider options for dropdown
@@ -348,8 +348,8 @@ const loadProviders = async () => {
   } catch (error) {
     console.error('Failed to load providers:', error);
     // Fallback for development
-    providers.value = ['anthropic'];
-    selectedProvider.value = providerLabels['anthropic'] || 'Anthropic';
+    providers.value = ['digitalocean', 'anthropic'];
+    selectedProvider.value = providerLabels['digitalocean'] || 'Private AI';
   }
 };
 

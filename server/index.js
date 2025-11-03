@@ -82,6 +82,10 @@ const passkeyService = new PasskeyService({
 });
 
 const chatClient = new ChatClient({
+  digitalocean: {
+    apiKey: process.env.DIGITALOCEAN_PERSONAL_API_KEY,
+    baseURL: process.env.DIGITALOCEAN_GENAI_ENDPOINT || 'https://vzfujeetn2dkj4d5awhvvibo.agents.do-ai.run/api/v1'
+  },
   anthropic: {
     apiKey: process.env.ANTHROPIC_API_KEY
   }

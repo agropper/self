@@ -27,6 +27,7 @@
     "html2pdf.js": "^0.12.1",
     "multer": "^2.0.2",
     "nano": "^10.1.2",
+    "openai": "^6.7.0",
     "pdf-parse": "^1.1.4",
     "pdfjs-dist": "^5.4.296",
     "quasar": "^2.15.3",
