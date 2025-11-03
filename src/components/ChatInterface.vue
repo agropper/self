@@ -49,22 +49,23 @@
                 :label="msg.role === 'assistant' ? getProviderLabel() : getUserLabel()"
               />
               <div 
-                class="q-mt-xs q-pa-sm rounded-borders message-container"
+                class="q-mt-xs q-pa-sm rounded-borders"
                 :class="msg.role === 'user' ? 'bg-blue-1' : 'bg-grey-2'"
-                style="display: inline-block; max-width: 80%; position: relative;"
+                style="display: inline-block; max-width: 80%;"
               >
                 {{ msg.content }}
-                <q-btn
-                  flat
-                  dense
-                  round
-                  size="xs"
-                  icon="edit"
-                  color="grey-8"
-                  class="edit-button"
-                  @click="startEditing(idx)"
-                  title="Edit message"
-                />
+                <div class="q-mt-sm">
+                  <q-btn
+                    flat
+                    dense
+                    size="xs"
+                    icon="edit"
+                    color="grey-8"
+                    label="Edit"
+                    @click="startEditing(idx)"
+                    title="Edit message"
+                  />
+                </div>
               </div>
             </div>
             
@@ -861,22 +862,6 @@ onMounted(() => {
 
 .chat-messages {
   background-color: #fafafa;
-}
-
-.message-container {
-  position: relative;
-}
-
-.edit-button {
-  position: absolute;
-  bottom: 4px;
-  left: 4px;
-  opacity: 0;
-  transition: opacity 0.2s;
-}
-
-.message-container:hover .edit-button {
-  opacity: 1;
 }
 
 .edit-buttons {
