@@ -310,7 +310,7 @@ const chatMessagesRef = ref<HTMLElement | null>(null);
 const providerLabels: Record<string, string> = {
   digitalocean: 'Private AI',
   anthropic: 'Anthropic',
-  openai: 'OpenAI',
+  openai: 'ChatGPT',
   gemini: 'Gemini',
   deepseek: 'DeepSeek'
 };
