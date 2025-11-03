@@ -2,6 +2,24 @@
   <div class="chat-interface">
     <q-card class="full-height">
       <q-card-section class="q-pa-none full-height flex column">
+        <!-- File Info Bar -->
+        <div v-if="selectedFile" class="q-px-md q-pt-md q-pb-sm" style="flex-shrink: 0; border-bottom: 1px solid #eee;">
+          <div class="row items-center q-gutter-xs">
+            <span class="text-xs text-grey-7">📎 {{ selectedFile.name }}</span>
+            <q-btn 
+              v-if="selectedFile.type === 'pdf'"
+              flat dense round size="xs" 
+              icon="visibility" 
+              @click="viewFile(selectedFile)"
+            />
+            <q-btn flat dense round size="xs" icon="close" @click="selectedFile = null" />
+          </div>
+        </div>
+        
+        <div v-if="isUploadingFile" class="q-px-md q-pt-sm q-pb-sm" style="flex-shrink: 0; border-bottom: 1px solid #eee;">
+          <div class="text-xs text-grey-6">Uploading...</div>
+        </div>
+
         <!-- Chat Area -->
         <div class="chat-messages q-pa-md" style="flex: 1; overflow-y: auto; min-height: 0;">
           <div 
@@ -69,19 +87,6 @@
                 style="display: none"
                 @change="handleFileSelect"
               />
-              <div v-if="selectedFile" class="q-mt-xs q-gutter-xs">
-                <span class="text-xs">📎 {{ selectedFile.name }}</span>
-                <q-btn 
-                  v-if="selectedFile.type === 'pdf'"
-                  flat dense round size="xs" 
-                  icon="visibility" 
-                  @click="viewFile(selectedFile)"
-                />
-                <q-btn flat dense round size="xs" icon="close" @click="selectedFile = null" />
-              </div>
-              <div v-if="isUploadingFile" class="q-mt-xs text-xs text-grey-6">
-                Uploading...
-              </div>
             </div>
             <div class="col text-center text-body2 text-grey-7">
               User: {{ props.user?.userId || 'Guest' }}
@@ -456,7 +461,6 @@ const readFileAsText = (file: File): Promise<string> => {
 };
 
 const viewFile = (file: UploadedFile) => {
-  console.log('[PDF VIEW] viewFile called with:', file);
   viewingFile.value = file;
   showPdfViewer.value = true;
 };
