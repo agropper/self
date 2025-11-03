@@ -43,13 +43,18 @@ export default function setupChatRoutes(app, chatClient, cloudant, doClient) {
             const apiKey = await getOrCreateAgentApiKey(doClient, cloudant, userId, userDoc.assignedAgentId);
             
             // Create provider with agent-specific endpoint and key
-            // Use agent name as model (DigitalOcean GenAI agents require this)
             userAgentProvider = new DigitalOceanProvider(apiKey, {
               baseURL: userDoc.agentEndpoint
             });
             
-            // Set the agent name as the model in options
-            options.model = userDoc.assignedAgentName;
+            // Use the stored model name if available (from agent sync)
+            // This should be the model's inference_name from the agent details
+            if (userDoc.agentModelName) {
+              options.model = userDoc.agentModelName;
+            } else {
+              // Fallback to agent name (may not work, but keeps old behavior)
+              options.model = userDoc.assignedAgentName;
+            }
           }
         }
       }
@@ -68,9 +73,11 @@ export default function setupChatRoutes(app, chatClient, cloudant, doClient) {
 
         // Handle streaming updates
         if (userAgentProvider) {
-          // Log request details for debugging
-          const totalChars = messages.reduce((sum, msg) => sum + (msg.content?.length || 0), 0);
-          console.log(`[AGENT REQUEST] Model: ${options.model}, Messages: ${messages.length}, Total chars: ${totalChars}`);
+          // Log request details for debugging large requests
+          const totalChars = messages.reduce((sum, msg) => sum + (typeof msg.content === 'string' ? msg.content.length : JSON.stringify(msg.content || '').length), 0);
+          const estimatedTokens = Math.ceil(totalChars / 4); // Rough estimate
+          const requestSizeKB = (JSON.stringify(messages).length / 1024).toFixed(2);
+          console.log(`[AGENT REQUEST] Model: ${options.model || 'default'}, Messages: ${messages.length}, Chars: ${totalChars}, Est. tokens: ${estimatedTokens}, Size: ${requestSizeKB}KB`);
           
           await userAgentProvider.chat(messages, { ...options, stream: true }, 
             (update) => {

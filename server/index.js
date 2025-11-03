@@ -166,15 +166,19 @@ app.post('/api/sync-agent', async (req, res) => {
     const userDoc = await cloudant.getDocument('maia_users', userId);
     
     // Check if agent info needs updating
+    const agentModelName = userAgent.model?.inference_name || userAgent.model?.name || null;
     const needsUpdate = 
       userDoc.assignedAgentId !== userAgent.uuid ||
       userDoc.assignedAgentName !== userAgent.name ||
+      userDoc.agentModelName !== agentModelName ||
       !userAgent.deployment?.url;
     
     if (needsUpdate) {
       userDoc.assignedAgentId = userAgent.uuid;
       userDoc.assignedAgentName = userAgent.name;
       userDoc.agentEndpoint = userAgent.deployment?.url ? `${userAgent.deployment.url}/api/v1` : null;
+      // Store model inference_name for API requests
+      userDoc.agentModelName = userAgent.model?.inference_name || userAgent.model?.name || null;
       
       await cloudant.saveDocument('maia_users', userDoc);
       console.log(`✅ Synced agent ${userAgent.name} for user ${userId}`);

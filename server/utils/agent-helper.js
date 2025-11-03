@@ -16,21 +16,32 @@ export async function getOrCreateAgentApiKey(doClient, cloudant, userId, agentId
     
     // Check if user has a stored API key
     if (userDoc.agentApiKey) {
-      // Validate that the key exists in DO API
+      // Validate that the key exists in DO API by checking if a key with our expected name exists
+      // Note: listApiKeys doesn't return secret_key for security reasons, so we can't compare secret values
+      // We check by name - if a key with our expected name exists, we assume our stored key is valid
       const agentClient = new AgentClient(doClient);
-      const apiKeys = await agentClient.listApiKeys(agentId);
-      const keyExists = apiKeys.some(key => key.secret_key === userDoc.agentApiKey || key.name === `agent-${agentId}-api-key`);
-      
-      if (!keyExists) {
-        console.log(`Stored API key not found in DO API for agent ${agentId}, recreating...`);
-        // Key doesn't exist in DO - recreate it
-        const apiKey = await agentClient.createApiKey(agentId, `agent-${agentId}-api-key`);
-        userDoc.agentApiKey = apiKey;
-        await cloudant.saveDocument('maia_users', userDoc);
-        return apiKey;
+      try {
+        const apiKeys = await agentClient.listApiKeys(agentId);
+        const expectedKeyName = `agent-${agentId}-api-key`;
+        const keyExists = apiKeys.some(key => key.name === expectedKeyName);
+        
+        if (!keyExists) {
+          console.log(`Stored API key not found in DO API for agent ${agentId} (no key with name "${expectedKeyName}"), recreating...`);
+          // Key doesn't exist in DO - recreate it
+          const apiKey = await agentClient.createApiKey(agentId, expectedKeyName);
+          userDoc.agentApiKey = apiKey;
+          await cloudant.saveDocument('maia_users', userDoc);
+          return apiKey;
+        }
+        
+        // Key with expected name exists - use stored key
+        return userDoc.agentApiKey;
+      } catch (error) {
+        // If listApiKeys fails, try to use the stored key anyway
+        // If it's invalid, we'll get a 401 when making the actual request and can handle it then
+        console.warn(`Warning: Could not validate API key for agent ${agentId}: ${error.message}. Using stored key.`);
+        return userDoc.agentApiKey;
       }
-      
-      return userDoc.agentApiKey;
     }
     
     // No API key stored - create one
