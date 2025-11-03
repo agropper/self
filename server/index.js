@@ -200,6 +200,94 @@ app.post('/api/save-group-chat', async (req, res) => {
   }
 });
 
+// Get user's saved chats
+app.get('/api/user-chats', async (req, res) => {
+  try {
+    const { userId } = req.query;
+    
+    if (!userId) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'User ID is required',
+        error: 'MISSING_USER_ID'
+      });
+    }
+
+    // Get all chats for this user from maia_chats
+    const allChats = await cloudant.getAllDocuments('maia_chats');
+    
+    // Filter to only chats owned by this user (by _id prefix)
+    const userChats = allChats.filter(chat => chat._id.startsWith(`${userId}-`));
+    
+    console.log(`✅ Found ${userChats.length} chats for user ${userId}`);
+    
+    res.json({
+      success: true,
+      chats: userChats,
+      count: userChats.length
+    });
+  } catch (error) {
+    console.error('❌ Error fetching user chats:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: `Failed to fetch chats: ${error.message}`,
+      error: 'FETCH_CHATS_ERROR'
+    });
+  }
+});
+
+// Load a specific chat by ID
+app.get('/api/load-chat/:chatId', async (req, res) => {
+  try {
+    const { chatId } = req.params;
+    
+    const chat = await cloudant.getDocument('maia_chats', chatId);
+    
+    if (!chat) {
+      return res.status(404).json({ 
+        success: false, 
+        message: 'Chat not found',
+        error: 'CHAT_NOT_FOUND'
+      });
+    }
+    
+    res.json({
+      success: true,
+      chat: chat
+    });
+  } catch (error) {
+    console.error('❌ Error loading chat:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: `Failed to load chat: ${error.message}`,
+      error: 'LOAD_CHAT_ERROR'
+    });
+  }
+});
+
+// Delete a specific chat
+app.delete('/api/delete-chat/:chatId', async (req, res) => {
+  try {
+    const { chatId } = req.params;
+    
+    await cloudant.deleteDocument('maia_chats', chatId);
+    
+    console.log(`✅ Deleted chat ${chatId}`);
+    
+    res.json({
+      success: true,
+      message: 'Chat deleted successfully'
+    });
+  } catch (error) {
+    console.error('❌ Error deleting chat:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: `Failed to delete chat: ${error.message}`,
+      error: 'DELETE_CHAT_ERROR'
+    });
+  }
+});
+
 // User file metadata endpoint - updates user document with file info
 app.post('/api/user-file-metadata', async (req, res) => {
   try {

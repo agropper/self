@@ -87,6 +87,16 @@
                 @click="saveToGroup"
                 :disable="isStreaming"
               />
+              <q-btn 
+                flat 
+                dense 
+                size="sm"
+                color="primary" 
+                :label="`${savedChatCount} SAVED CHATS`"
+                icon="history"
+                @click="showSavedChats"
+                :disable="!props.user?.userId"
+              />
             </div>
           </div>
           
@@ -145,12 +155,20 @@
       v-model="showPdfViewer"
       :file="viewingFile"
     />
+
+    <!-- Saved Chats Modal -->
+    <SavedChatsModal
+      v-model="showSavedChatsModal"
+      :currentUser="props.user?.userId || ''"
+      @chat-selected="handleChatSelected"
+    />
   </div>
 </template>
 
 <script setup lang="ts">
 import { ref, onMounted, computed } from 'vue';
 import PdfViewerModal from './PdfViewerModal.vue';
+import SavedChatsModal from './SavedChatsModal.vue';
 import html2pdf from 'html2pdf.js';
 
 interface Message {
@@ -198,6 +216,8 @@ const fileInput = ref<HTMLInputElement | null>(null);
 const isUploadingFile = ref(false);
 const showPdfViewer = ref(false);
 const viewingFile = ref<UploadedFile | null>(null);
+const showSavedChatsModal = ref(false);
+const savedChatCount = ref(0);
 
 // Provider labels map
 const providerLabels: Record<string, string> = {
@@ -641,8 +661,50 @@ const saveToGroup = async () => {
   }
 };
 
+const showSavedChats = () => {
+  showSavedChatsModal.value = true;
+  loadSavedChatCount();
+};
+
+const loadSavedChatCount = async () => {
+  if (!props.user?.userId) return;
+  
+  try {
+    const response = await fetch(`http://localhost:3001/api/user-chats?userId=${encodeURIComponent(props.user.userId)}`);
+    if (response.ok) {
+      const result = await response.json();
+      savedChatCount.value = result.count || 0;
+    }
+  } catch (error) {
+    console.error('Failed to load chat count:', error);
+  }
+};
+
+const handleChatSelected = (chat: any) => {
+  // Load the chat history
+  if (chat.chatHistory) {
+    messages.value = chat.chatHistory;
+  }
+  
+  // Load the uploaded files
+  if (chat.uploadedFiles) {
+    uploadedFiles.value = chat.uploadedFiles.map((file: any) => ({
+      id: file.id || `file-${Date.now()}-${Math.random().toString(36).substring(7)}`,
+      name: file.name,
+      size: file.size,
+      type: file.type,
+      content: '', // Content not saved to reduce size
+      originalFile: null as any,
+      bucketKey: file.bucketKey,
+      bucketPath: file.bucketPath,
+      uploadedAt: file.uploadedAt ? new Date(file.uploadedAt) : new Date()
+    }));
+  }
+};
+
 onMounted(() => {
   loadProviders();
+  loadSavedChatCount();
 });
 </script>
 
