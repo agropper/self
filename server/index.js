@@ -16,6 +16,7 @@ import { DigitalOceanClient } from '../lib/do-client/index.js';
 import { PasskeyService } from '../lib/passkey/index.js';
 import { EmailService } from './utils/email-service.js';
 import { ChatClient } from '../lib/chat-client/index.js';
+import { findUserAgent } from './utils/agent-helper.js';
 import setupAuthRoutes from './routes/auth.js';
 import setupChatRoutes from './routes/chat.js';
 import setupFileRoutes from './routes/files.js';
@@ -132,10 +133,70 @@ app.get('/health', (req, res) => {
 setupAuthRoutes(app, passkeyService, cloudant, doClient, auditLog, emailService);
 
 // Chat routes
-setupChatRoutes(app, chatClient);
+setupChatRoutes(app, chatClient, cloudant, doClient);
 
 // File routes
 setupFileRoutes(app);
+
+// Agent sync endpoint - find and configure user's agent
+app.post('/api/sync-agent', async (req, res) => {
+  try {
+    const userId = req.session?.userId || req.body?.userId;
+    
+    if (!userId) {
+      return res.status(401).json({ 
+        success: false, 
+        message: 'User not authenticated',
+        error: 'NOT_AUTHENTICATED'
+      });
+    }
+    
+    // Find user's agent
+    const userAgent = await findUserAgent(doClient, userId);
+    
+    if (!userAgent) {
+      return res.status(404).json({ 
+        success: false, 
+        message: 'No agent found for user',
+        error: 'AGENT_NOT_FOUND'
+      });
+    }
+    
+    // Get user document
+    const userDoc = await cloudant.getDocument('maia_users', userId);
+    
+    // Check if agent info needs updating
+    const needsUpdate = 
+      userDoc.assignedAgentId !== userAgent.uuid ||
+      userDoc.assignedAgentName !== userAgent.name ||
+      !userAgent.deployment?.url;
+    
+    if (needsUpdate) {
+      userDoc.assignedAgentId = userAgent.uuid;
+      userDoc.assignedAgentName = userAgent.name;
+      userDoc.agentEndpoint = userAgent.deployment?.url ? `${userAgent.deployment.url}/api/v1` : null;
+      
+      await cloudant.saveDocument('maia_users', userDoc);
+      console.log(`✅ Synced agent ${userAgent.name} for user ${userId}`);
+    }
+    
+    res.json({
+      success: true,
+      agent: {
+        id: userAgent.uuid,
+        name: userAgent.name,
+        endpoint: userAgent.deployment?.url ? `${userAgent.deployment.url}/api/v1` : null
+      }
+    });
+  } catch (error) {
+    console.error('Error syncing agent:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: error.message || 'Failed to sync agent',
+      error: 'SYNC_ERROR'
+    });
+  }
+});
 
 // Save group chat endpoint
 app.post('/api/save-group-chat', async (req, res) => {

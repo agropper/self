@@ -3,13 +3,18 @@
  */
 
 import { ChatClient } from '../../lib/chat-client/index.js';
+import { DigitalOceanProvider } from '../../lib/chat-client/providers/digitalocean.js';
+import { getOrCreateAgentApiKey } from '../utils/agent-helper.js';
 
-export default function setupChatRoutes(app, chatClient) {
+export default function setupChatRoutes(app, chatClient, cloudant, doClient) {
   /**
    * Main chat endpoint - routes to appropriate provider
    * POST /api/chat/:provider
    */
   app.post('/api/chat/:provider', async (req, res) => {
+    // Declare userAgentProvider outside try block for error handling
+    let userAgentProvider = null;
+    
     try {
       const { provider } = req.params;
       const { messages, options = {} } = req.body;
@@ -26,11 +31,31 @@ export default function setupChatRoutes(app, chatClient) {
         });
       }
 
+      // For DigitalOcean provider, check if user has a specific agent
+      if (provider === 'digitalocean' && cloudant && doClient) {
+        const userId = req.session?.userId;
+        if (userId) {
+          const userDoc = await cloudant.getDocument('maia_users', userId);
+          
+          if (userDoc.assignedAgentId && userDoc.agentEndpoint) {
+            // Get or create agent API key
+            const apiKey = await getOrCreateAgentApiKey(doClient, cloudant, userId, userDoc.assignedAgentId);
+            
+            // Create provider with agent-specific endpoint and key
+            userAgentProvider = new DigitalOceanProvider(apiKey, {
+              baseURL: userDoc.agentEndpoint
+            });
+            console.log(`Using user-specific agent for ${userId}: ${userDoc.assignedAgentId}`);
+          }
+        }
+      }
+
       const startTime = Date.now();
 
       // Check if streaming is requested
       const stream = options.stream || req.headers.accept === 'text/event-stream';
 
+      // Use user-specific agent provider if available, otherwise use default
       if (stream) {
         // Setup SSE streaming
         res.setHeader('Content-Type', 'text/event-stream');
@@ -38,18 +63,35 @@ export default function setupChatRoutes(app, chatClient) {
         res.setHeader('Connection', 'keep-alive');
 
         // Handle streaming updates
-        await chatClient.chat(provider, messages, { ...options, stream: true }, 
-          (update) => {
-            res.write(`data: ${JSON.stringify(update)}\n\n`);
-            
-            if (update.isComplete) {
-              res.end();
+        if (userAgentProvider) {
+          await userAgentProvider.chat(messages, { ...options, stream: true }, 
+            (update) => {
+              res.write(`data: ${JSON.stringify(update)}\n\n`);
+              
+              if (update.isComplete) {
+                res.end();
+              }
             }
-          }
-        );
+          );
+        } else {
+          await chatClient.chat(provider, messages, { ...options, stream: true }, 
+            (update) => {
+              res.write(`data: ${JSON.stringify(update)}\n\n`);
+              
+              if (update.isComplete) {
+                res.end();
+              }
+            }
+          );
+        }
       } else {
         // Non-streaming response
-        const response = await chatClient.chat(provider, messages, options);
+        let response;
+        if (userAgentProvider) {
+          response = await userAgentProvider.chat(messages, options);
+        } else {
+          response = await chatClient.chat(provider, messages, options);
+        }
         const responseTime = Date.now() - startTime;
 
         res.json({
@@ -64,8 +106,17 @@ export default function setupChatRoutes(app, chatClient) {
     } catch (error) {
       console.error('Chat error:', error);
       const statusCode = error.status || error.statusCode || 500;
+      
+      let errorMessage = error.message || 'Chat request failed';
+      
+      // Provide helpful error message for 401 on agent endpoints
+      if (statusCode === 401 && userAgentProvider) {
+        errorMessage = 'Authentication failed for your Private AI agent. The API key may need to be recreated.';
+        console.error('401 Unauthorized on agent endpoint');
+      }
+      
       res.status(statusCode).json({ 
-        error: error.message || 'Chat request failed',
+        error: errorMessage,
         type: error.type,
         status: statusCode
       });
@@ -82,4 +133,3 @@ export default function setupChatRoutes(app, chatClient) {
     });
   });
 }
-

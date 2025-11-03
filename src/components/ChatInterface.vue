@@ -915,9 +915,34 @@ watch(() => [messages.value.length, messages.value[messages.value.length - 1]?.c
   scrollToBottom();
 }, { flush: 'post' });
 
+const syncAgent = async () => {
+  if (!props.user?.userId) return;
+  
+  try {
+    const response = await fetch('http://localhost:3001/api/sync-agent', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      credentials: 'include'
+    });
+    
+    if (response.ok) {
+      const result = await response.json();
+      console.log('Agent synced:', result.agent?.name);
+    } else if (response.status === 404) {
+      // No agent found - this is OK, user might not have one yet
+      console.log('No agent found for user');
+    }
+  } catch (error) {
+    console.error('Failed to sync agent:', error);
+  }
+};
+
 onMounted(() => {
   loadProviders();
   loadSavedChatCount();
+  syncAgent();
 });
 </script>
 
