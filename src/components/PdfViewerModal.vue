@@ -1,6 +1,6 @@
 <template>
-  <q-dialog v-model="isOpen" maximized>
-    <q-card>
+  <q-dialog v-model="isOpen">
+    <q-card class="pdf-modal-card">
       <q-card-section class="row items-center q-pb-none">
         <div class="text-h6">{{ fileName }}</div>
         <q-space />
@@ -248,10 +248,17 @@ watch(() => props.file, (newFile) => {
 </script>
 
 <style scoped>
+.pdf-modal-card {
+  width: 90vw;
+  height: 90vh;
+  max-width: 90vw;
+  max-height: 90vh;
+}
+
 .pdf-container {
   display: flex;
   flex-direction: column;
-  height: 70vh;
+  height: 80vh;
   overflow: hidden;
 }
 
