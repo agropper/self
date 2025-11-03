@@ -37,79 +37,77 @@
 
         <!-- Chat Area -->
         <div class="chat-messages q-pa-md" style="flex: 1; overflow-y: auto; min-height: 0;">
-          <!-- Normal Chat Message -->
-          <div 
-            v-for="(msg, idx) in messages" 
-            :key="idx"
-            v-if="!editingMessageIdx.includes(idx)"
-            class="q-mb-md"
-            :class="msg.role === 'user' ? 'text-right' : 'text-left'"
-          >
-            <q-badge 
-              :color="msg.role === 'user' ? 'primary' : 'secondary'"
-              :label="msg.role === 'assistant' ? getProviderLabel() : getUserLabel()"
-            />
+          <template v-for="(msg, idx) in messages" :key="idx">
+            <!-- Normal Chat Message -->
             <div 
-              class="q-mt-xs q-pa-sm rounded-borders message-container"
-              :class="msg.role === 'user' ? 'bg-blue-1' : 'bg-grey-2'"
-              style="display: inline-block; max-width: 80%; position: relative;"
+              v-if="!editingMessageIdx.includes(idx)"
+              class="q-mb-md"
+              :class="msg.role === 'user' ? 'text-right' : 'text-left'"
             >
-              {{ msg.content }}
-              <q-btn
-                flat
-                dense
-                round
-                size="xs"
-                icon="edit"
-                color="grey-8"
-                class="edit-button"
-                @click="startEditing(idx)"
-                title="Edit message"
+              <q-badge 
+                :color="msg.role === 'user' ? 'primary' : 'secondary'"
+                :label="msg.role === 'assistant' ? getProviderLabel() : getUserLabel()"
               />
-            </div>
-          </div>
-          
-          <!-- Editable Chat Message -->
-          <div 
-            v-for="(msg, idx) in messages" 
-            :key="idx"
-            v-if="editingMessageIdx.includes(idx)"
-            class="q-mb-md"
-            :class="msg.role === 'user' ? 'text-right' : 'text-left'"
-          >
-            <q-badge 
-              :color="msg.role === 'user' ? 'primary' : 'secondary'"
-              :label="msg.role === 'assistant' ? getProviderLabel() : getUserLabel()"
-            />
-            <div 
-              class="q-mt-xs q-pa-sm rounded-borders"
-              :class="msg.role === 'user' ? 'bg-blue-1' : 'bg-grey-2'"
-              style="display: inline-block; max-width: 80%"
-            >
-              <textarea 
-                v-model="msg.content" 
-                rows="8"
-                class="full-width q-pa-sm"
-                style="border: 1px solid #ccc; border-radius: 4px; resize: vertical;"
-              />
-              <div class="edit-buttons q-mt-sm">
+              <div 
+                class="q-mt-xs q-pa-sm rounded-borders message-container"
+                :class="msg.role === 'user' ? 'bg-blue-1' : 'bg-grey-2'"
+                style="display: inline-block; max-width: 80%; position: relative;"
+              >
+                {{ msg.content }}
                 <q-btn
-                  size="sm"
-                  icon="save"
-                  color="primary"
-                  label="Save"
-                  @click="saveEditedMessage(idx)"
-                />
-                <q-btn
-                  size="sm"
-                  icon="delete"
-                  color="negative"
-                  label="Delete Question and Response"
-                  @click="confirmDeleteMessage(idx)"
+                  flat
+                  dense
+                  round
+                  size="xs"
+                  icon="edit"
+                  color="grey-8"
+                  class="edit-button"
+                  @click="startEditing(idx)"
+                  title="Edit message"
                 />
               </div>
             </div>
-          </div>
+            
+            <!-- Editable Chat Message -->
+            <div 
+              v-if="editingMessageIdx.includes(idx)"
+              class="q-mb-md"
+              :class="msg.role === 'user' ? 'text-right' : 'text-left'"
+            >
+              <q-badge 
+                :color="msg.role === 'user' ? 'primary' : 'secondary'"
+                :label="msg.role === 'assistant' ? getProviderLabel() : getUserLabel()"
+              />
+              <div 
+                class="q-mt-xs q-pa-sm rounded-borders"
+                :class="msg.role === 'user' ? 'bg-blue-1' : 'bg-grey-2'"
+                style="display: inline-block; max-width: 80%"
+              >
+                <textarea 
+                  v-model="msg.content" 
+                  rows="8"
+                  class="full-width q-pa-sm"
+                  style="border: 1px solid #ccc; border-radius: 4px; resize: vertical;"
+                />
+                <div class="edit-buttons q-mt-sm">
+                  <q-btn
+                    size="sm"
+                    icon="save"
+                    color="primary"
+                    label="Save"
+                    @click="saveEditedMessage(idx)"
+                  />
+                  <q-btn
+                    size="sm"
+                    icon="delete"
+                    color="negative"
+                    label="Delete Question and Response"
+                    @click="confirmDeleteMessage(idx)"
+                  />
+                </div>
+              </div>
+            </div>
+          </template>
           
           <div v-if="isStreaming" class="text-grey-6">
             Thinking... <q-spinner-dots size="sm" />
