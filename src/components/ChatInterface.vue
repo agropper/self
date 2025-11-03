@@ -399,7 +399,14 @@ const sendMessage = async () => {
     const contextSizeKB = Math.round(allMessagesText.length / 1024 * 100) / 100;
     const uploadedFilesCount = uploadedFiles.value.length;
     
-    console.log(`[*] AI Query: ${totalTokens} tokens, ${contextSizeKB}KB context, ${uploadedFilesCount} files`);
+    // Calculate just the file context for additional logging
+    const filesContextText = uploadedFiles.value.map(file => 
+      `File: ${file.name} (${file.type})\nContent:\n${file.type === 'pdf' ? file.content : file.content}`
+    ).join('\n\n');
+    const filesTokens = estimateTokenCount(filesContextText);
+    const filesSizeKB = Math.round(filesContextText.length / 1024 * 100) / 100;
+    
+    console.log(`[*] AI Query: ${totalTokens} tokens (${filesTokens} from files), ${contextSizeKB}KB context (${filesSizeKB}KB files), ${uploadedFilesCount} files`);
     
     // Convert displayed label to API key
     const providerKey = getProviderKey(selectedProvider.value);
@@ -890,9 +897,14 @@ const scrollToBottom = async () => {
   }
 };
 
-watch(messages, () => {
+watch(() => messages.value.length, () => {
   scrollToBottom();
-}, { deep: true });
+});
+
+// Also watch for streaming content updates
+watch(() => messages.value[messages.value.length - 1]?.content, () => {
+  scrollToBottom();
+});
 
 onMounted(() => {
   loadProviders();
