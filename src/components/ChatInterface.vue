@@ -319,7 +319,8 @@ const sendMessage = async () => {
     );
 
     if (!response.ok) {
-      throw new Error(`HTTP ${response.status}`);
+      const errorData = await response.json().catch(() => ({ error: `HTTP ${response.status}` }));
+      throw new Error(errorData.error || `HTTP ${response.status}`);
     }
 
     const reader = response.body?.getReader();

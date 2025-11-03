@@ -63,9 +63,11 @@ export default function setupChatRoutes(app, chatClient) {
 
     } catch (error) {
       console.error('Chat error:', error);
-      res.status(error.status || 500).json({ 
+      const statusCode = error.status || error.statusCode || 500;
+      res.status(statusCode).json({ 
         error: error.message || 'Chat request failed',
-        type: error.type
+        type: error.type,
+        status: statusCode
       });
     }
   });
