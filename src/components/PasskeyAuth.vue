@@ -34,6 +34,16 @@
         ]"
         hint="3-20 characters: lowercase letters, numbers, hyphens only"
         @keyup.enter="handleEnterKey"
+        class="q-mb-md"
+      />
+      <q-input
+        v-if="action === 'register'"
+        v-model="email"
+        label="Email (optional)"
+        type="email"
+        outlined
+        hint="Optional: Used for account notifications"
+        @keyup.enter="handleEnterKey"
       />
 
       <div class="row q-gutter-sm q-mt-md">
@@ -84,6 +94,7 @@ const emit = defineEmits(['authenticated', 'cancelled']);
 
 const currentStep = ref('choose');
 const userId = ref('');
+const email = ref('');
 const loading = ref(false);
 const error = ref('');
 const action = ref(''); // 'signin' or 'register'
@@ -106,6 +117,7 @@ const startRegistrationFlow = async () => {
 const resetFlow = () => {
   currentStep.value = 'choose';
   userId.value = '';
+  email.value = '';
   error.value = '';
   action.value = '';
   loading.value = false;
@@ -160,7 +172,8 @@ const handleRegistration = async () => {
     credentials: 'include',
     body: JSON.stringify({
       userId: userId.value,
-      displayName: userId.value
+      displayName: userId.value,
+      email: email.value || null
     })
   });
 

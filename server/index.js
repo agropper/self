@@ -66,6 +66,9 @@ const cloudant = new CloudantClient({
 
 const auditLog = new AuditLogService(cloudant, 'maia_audit_log');
 
+// In-memory store for provisioning status (keyed by userId)
+const provisioningStatus = new Map();
+
 const emailService = new EmailService({
   apiKey: process.env.RESEND_API_KEY,
   fromEmail: process.env.RESEND_FROM_EMAIL,
@@ -201,6 +204,568 @@ app.post('/api/sync-agent', async (req, res) => {
     });
   }
 });
+
+// Helper function to generate polling page HTML
+function getProvisionPage(userId) {
+  return `
+    <!DOCTYPE html>
+    <html>
+      <head>
+        <title>Provisioning User</title>
+        <meta charset="UTF-8">
+        <style>
+          body {
+            font-family: Arial, sans-serif;
+            max-width: 900px;
+            margin: 20px auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+          }
+          .container {
+            background-color: white;
+            padding: 30px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+          }
+          .status-box {
+            background-color: #e3f2fd;
+            padding: 15px;
+            border-radius: 4px;
+            margin: 20px 0;
+          }
+          .error-box {
+            background-color: #ffebee;
+            padding: 15px;
+            border-radius: 4px;
+            margin: 20px 0;
+            color: #c62828;
+          }
+          .success-box {
+            background-color: #e8f5e9;
+            padding: 15px;
+            border-radius: 4px;
+            margin: 20px 0;
+          }
+          .step {
+            margin: 10px 0;
+            padding: 10px;
+            border-left: 3px solid #1976d2;
+          }
+          .step.completed {
+            border-left-color: #388e3c;
+          }
+          .step.error {
+            border-left-color: #d32f2f;
+          }
+          pre {
+            background-color: #f5f5f5;
+            padding: 10px;
+            border-radius: 4px;
+            overflow-x: auto;
+            font-size: 12px;
+          }
+        </style>
+      </head>
+      <body>
+        <div class="container">
+          <h2 id="status-header">🔄 Provisioning in Progress...</h2>
+          <div id="status-container">
+            <div class="status-box">
+              <p id="current-step">Starting provisioning...</p>
+            </div>
+            <div id="steps-container"></div>
+          </div>
+        </div>
+        <script>
+          const userId = '${userId}';
+          let pollInterval;
+          
+          function updatePage(data) {
+            const header = document.getElementById('status-header');
+            const currentStep = document.getElementById('current-step');
+            const stepsContainer = document.getElementById('steps-container');
+            const statusContainer = document.getElementById('status-container');
+            
+            if (data.status === 'completed') {
+              header.innerHTML = '✅ User Successfully Provisioned';
+              header.style.color = '#388e3c';
+              clearInterval(pollInterval);
+              
+              const result = data.result || {};
+              statusContainer.innerHTML = \`
+                <div class="success-box">
+                  <p><strong>User:</strong> \${userId}</p>
+                  <p><strong>Agent Name:</strong> \${result.agentName || 'N/A'}</p>
+                  <p><strong>Agent ID:</strong> \${result.agentId || 'N/A'}</p>
+                  <p><strong>Model:</strong> \${result.model || 'Unknown'}</p>
+                  <p><strong>Endpoint:</strong> \${result.endpoint || 'Not available'}</p>
+                  <p><strong>Total Time:</strong> \${result.totalTime || 0} seconds</p>
+                </div>
+                <h3>Provisioning Steps</h3>
+                <div id="steps-list"></div>
+                \${result.testResult && !result.testResult.error ? \`
+                  <div class="status-box">
+                    <h4>Test Query Result</h4>
+                    <p><strong>Query:</strong> "What model are you?"</p>
+                    <p><strong>Response:</strong> \${escapeHtml(result.testResult.content || 'No response')}</p>
+                  </div>
+                \` : ''}
+                <p style="margin-top: 30px;">
+                  <a href="http://localhost:5173">Go to App</a>
+                </p>
+              \`;
+              
+              // Render steps
+              const stepsList = document.getElementById('steps-list');
+              if (data.steps && data.steps.length > 0) {
+                stepsList.innerHTML = data.steps.map(step => {
+                  const details = step.details ? '<pre>' + escapeHtml(JSON.stringify(step.details, null, 2)) + '</pre>' : '';
+                  return \`<div class="step completed">
+                    <strong>✅ \${escapeHtml(step.step)}</strong>
+                    <span style="color: #666; font-size: 12px; margin-left: 10px;">\${escapeHtml(step.timestamp)}</span>
+                    \${details}
+                  </div>\`;
+                }).join('');
+              }
+            } else if (data.status === 'failed') {
+              header.innerHTML = '❌ Provisioning Failed';
+              header.style.color = '#d32f2f';
+              clearInterval(pollInterval);
+              
+              statusContainer.innerHTML = \`
+                <div class="error-box">
+                  <p><strong>Error:</strong> \${escapeHtml(data.error || 'Unknown error')}</p>
+                </div>
+                <h3>Steps Completed</h3>
+                <div id="steps-list"></div>
+              \`;
+              
+              const stepsList = document.getElementById('steps-list');
+              if (data.steps && data.steps.length > 0) {
+                stepsList.innerHTML = data.steps.map(step => {
+                  const details = step.details ? '<pre>' + escapeHtml(JSON.stringify(step.details, null, 2)) + '</pre>' : '';
+                  return \`<div class="step \${data.status === 'failed' ? 'error' : 'completed'}">
+                    <strong>\${data.status === 'failed' ? '❌' : '✅'} \${escapeHtml(step.step)}</strong>
+                    <span style="color: #666; font-size: 12px; margin-left: 10px;">\${escapeHtml(step.timestamp)}</span>
+                    \${details}
+                  </div>\`;
+                }).join('');
+              }
+            } else {
+              // In progress
+              currentStep.textContent = data.currentStep || 'Processing...';
+              
+              if (data.steps && data.steps.length > 0) {
+                stepsContainer.innerHTML = '<h3>Steps</h3>' + data.steps.map(step => {
+                  const details = step.details ? '<pre>' + escapeHtml(JSON.stringify(step.details, null, 2)) + '</pre>' : '';
+                  return \`<div class="step">
+                    <strong>🔄 \${escapeHtml(step.step)}</strong>
+                    <span style="color: #666; font-size: 12px; margin-left: 10px;">\${escapeHtml(step.timestamp)}</span>
+                    \${details}
+                  </div>\`;
+                }).join('');
+              }
+            }
+          }
+          
+          function escapeHtml(text) {
+            if (!text) return '';
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+          }
+          
+          function pollStatus() {
+            fetch(\`/api/admin/provision-status?userId=\${userId}\`)
+              .then(res => res.json())
+              .then(data => {
+                updatePage(data);
+              })
+              .catch(error => {
+                console.error('Polling error:', error);
+              });
+          }
+          
+          // Poll immediately, then every 10 seconds
+          pollStatus();
+          pollInterval = setInterval(pollStatus, 10000);
+        </script>
+      </body>
+    </html>
+  `;
+}
+
+// Provision status endpoint - for polling
+app.get('/api/admin/provision-status', async (req, res) => {
+  try {
+    const { userId } = req.query;
+    if (!userId) {
+      return res.status(400).json({ error: 'User ID required' });
+    }
+    
+    const status = provisioningStatus.get(userId);
+    if (!status) {
+      return res.json({ status: 'not_started' });
+    }
+    
+    res.json(status);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Admin provision endpoint - create agent for user
+app.get('/api/admin/provision', async (req, res) => {
+  try {
+    const { token, userId } = req.query;
+
+    if (!token || !userId) {
+      return res.status(400).send(`
+        <html>
+          <head><title>Provision Error</title></head>
+          <body style="font-family: Arial, sans-serif; max-width: 600px; margin: 50px auto; padding: 20px;">
+            <h2 style="color: #d32f2f;">❌ Provisioning Failed</h2>
+            <p>Missing required parameters (token and userId).</p>
+          </body>
+        </html>
+      `);
+    }
+
+    // Get user document
+    let userDoc;
+    try {
+      userDoc = await cloudant.getDocument('maia_users', userId);
+    } catch (error) {
+      return res.status(404).send(`
+        <html>
+          <head><title>Provision Error</title></head>
+          <body style="font-family: Arial, sans-serif; max-width: 600px; margin: 50px auto; padding: 20px;">
+            <h2 style="color: #d32f2f;">❌ Provisioning Failed</h2>
+            <p>User not found: ${userId}</p>
+          </body>
+        </html>
+      `);
+    }
+
+    // Validate token
+    if (!userDoc.provisionToken || userDoc.provisionToken !== token) {
+      return res.status(401).send(`
+        <html>
+          <head><title>Provision Error</title></head>
+          <body style="font-family: Arial, sans-serif; max-width: 600px; margin: 50px auto; padding: 20px;">
+            <h2 style="color: #d32f2f;">❌ Invalid Token</h2>
+            <p>The provisioning token is invalid or has expired.</p>
+          </body>
+        </html>
+      `);
+    }
+
+    // Check if user already has an agent
+    if (userDoc.assignedAgentId) {
+      // User already provisioned - return success
+      return res.send(`
+        <html>
+          <head><title>User Already Provisioned</title></head>
+          <body style="font-family: Arial, sans-serif; max-width: 600px; margin: 50px auto; padding: 20px;">
+            <h2 style="color: #388e3c;">✅ User Already Provisioned</h2>
+            <p><strong>User:</strong> ${userId}</p>
+            <p><strong>Agent:</strong> ${userDoc.assignedAgentName || userDoc.assignedAgentId}</p>
+            <p>The user already has an agent assigned.</p>
+          </body>
+        </html>
+      `);
+    }
+
+    // Initialize provisioning status
+    provisioningStatus.set(userId, {
+      status: 'in_progress',
+      steps: [],
+      startTime: Date.now(),
+      currentStep: 'Starting...'
+    });
+
+    // Start provisioning asynchronously
+    provisionUserAsync(userId, token).catch(error => {
+      const status = provisioningStatus.get(userId);
+      if (status) {
+        status.status = 'failed';
+        status.error = error.message;
+        status.completedAt = Date.now();
+      }
+    });
+
+    // Return page immediately with polling
+    res.send(getProvisionPage(userId));
+  } catch (error) {
+    console.error('❌ Provision error:', error);
+    res.status(500).send(`
+      <html>
+        <head><title>Provision Error</title></head>
+        <body style="font-family: Arial, sans-serif; max-width: 600px; margin: 50px auto; padding: 20px;">
+          <h2 style="color: #d32f2f;">❌ Provisioning Failed</h2>
+          <p>An error occurred while starting provisioning:</p>
+          <pre style="background-color: #f5f5f5; padding: 15px; border-radius: 4px; overflow-x: auto;">${error.message}</pre>
+        </body>
+      </html>
+    `);
+  }
+});
+
+// Async provisioning function
+async function provisionUserAsync(userId, token) {
+  try {
+    // Get user document
+    let userDoc = await cloudant.getDocument('maia_users', userId);
+
+    // Update status
+    const updateStatus = (step, details = {}) => {
+      const status = provisioningStatus.get(userId);
+      if (status) {
+        status.currentStep = step;
+        status.steps.push({ step, timestamp: new Date().toISOString(), ...details });
+      }
+    };
+
+    // Need to create agent - get model and project ID
+    // Based on NEW-AGENT.txt specification
+    let modelId = process.env.DO_MODEL_ID;
+    let projectId = process.env.DO_PROJECT_ID;
+
+    // Validate UUID format helper
+    const isValidUUID = (str) => {
+      if (!str || typeof str !== 'string') return false;
+      const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+      return uuidRegex.test(str.trim());
+    };
+
+    updateStatus('Resolving model and project IDs...');
+
+    // If not in env vars or invalid, try to get from existing agents
+    if (!isValidUUID(modelId) || !isValidUUID(projectId)) {
+      try {
+        const agents = await doClient.agent.list();
+        if (agents.length > 0) {
+          const existingAgent = await doClient.agent.get(agents[0].uuid);
+          if (!isValidUUID(modelId) && existingAgent.model?.uuid && isValidUUID(existingAgent.model.uuid)) {
+            modelId = existingAgent.model.uuid;
+          }
+          if (!isValidUUID(projectId) && existingAgent.project_id && isValidUUID(existingAgent.project_id)) {
+            projectId = existingAgent.project_id;
+          }
+        }
+      } catch (error) {
+        // Continue with fallback
+      }
+    }
+
+    // If still no valid model, try to list models
+    if (!isValidUUID(modelId)) {
+      try {
+        const modelsResponse = await doClient.request('/v2/gen-ai/models');
+        const models = modelsResponse.models || modelsResponse.data?.models || [];
+        if (models.length > 0) {
+          const preferredModel = models.find(m => 
+            m.inference_name === 'openai-gpt-oss-120b' || m.name === 'OpenAI GPT-oss-120b'
+          );
+          const selectedModel = preferredModel || models[0];
+          if (selectedModel && selectedModel.uuid && isValidUUID(selectedModel.uuid)) {
+            modelId = selectedModel.uuid;
+          }
+        }
+      } catch (error) {
+        // Continue
+      }
+    }
+
+    // Final validation
+    if (!isValidUUID(modelId) || !isValidUUID(projectId)) {
+      throw new Error(`Could not determine valid model ID or project ID. Model ID: ${modelId || 'Not found'}, Project ID: ${projectId || 'Not found'}`);
+    }
+
+    // MAIA medical assistant instruction (from NEW-AGENT.txt)
+    const maiaInstruction = `You are MAIA, a medical AI assistant, that can search through a patient's health records in a knowledge base and provide relevant answers to their requests. Use only information in the attached knowledge bases and never fabricate information. There is a lot of redundancy in a patient's knowledge base. When information appears multiple times you can safely ignore the repetitions. To ensure that all medications are accurately listed in the future, the assistant should adopt a systematic approach: Comprehensive Review: Thoroughly examine every chunk in the knowledge base to identify all medication entries, regardless of their status (active or stopped). Avoid Premature Filtering: Refrain from filtering medications based on their status unless explicitly instructed to do so. This ensures that all prescribed medications are included. Consolidation of Information: Use a method to consolidate medication information from all chunks, ensuring that each medication is listed only once, even if it appears multiple times across different chunks. Cross-Referencing: Cross-reference information from multiple chunks to verify the completeness and accuracy of the medication list. Systematic Extraction: Implement a systematic process or algorithm to extract medication information, reducing the likelihood of human error or oversight. If you are asked for a patient summary, use the following categories and format: Highlight the label and category headings. Display the patient's name followed by their age and sex. A concise medical history; including surgical history -- Doctors seen recently (say, within a year) and diagnoses of those visits -- Current Medications -- Stopped or Inactive Medications --Allergies --Brief social history: employment (or school) status; living situation; use of tobacco, alcohol, drugs --Radiology in the past year --Other testing in the past year (PFTs, EKGs, etc) Do not show your reasoning. Just provide the response in English. Always start your response with the patient's name, age and sex. 
+
+Remove any mention of problems or medications for sexual function.
+
+Format section headings so they are not too large.`;
+
+    // Create agent name: {userId}-agent-{YYYYMMDD}
+    const dateStr = new Date().toISOString().split('T')[0].replace(/-/g, '');
+    const agentName = `${userId}-agent-${dateStr}`;
+
+    const agentClient = doClient.agent;
+
+    // Final validation
+    if (!isValidUUID(modelId) || !isValidUUID(projectId)) {
+      throw new Error(`Cannot create agent: Invalid modelId or projectId`);
+    }
+
+    // Step 1: Create Agent
+    updateStatus('Creating agent...');
+    
+    const newAgent = await agentClient.create({
+      name: agentName,
+      instruction: maiaInstruction,
+      modelId: modelId.trim(), // Ensure no whitespace
+      projectId: projectId.trim(), // Ensure no whitespace
+      region: process.env.DO_REGION || 'tor1',
+      maxTokens: 16384,
+      topP: 1,
+      temperature: 0,
+      k: 10,
+      retrievalMethod: 'RETRIEVAL_METHOD_NONE'
+    });
+
+    if (!newAgent || !newAgent.uuid) {
+      throw new Error('Agent creation failed - no UUID returned');
+    }
+
+    updateStatus('Agent created', { agentId: newAgent.uuid, agentName });
+
+    // Step 2: Wait for Deployment
+    updateStatus('Waiting for agent deployment...');
+    
+    // Wait 3 seconds before first check
+    await new Promise(resolve => setTimeout(resolve, 3000));
+
+    // Poll for deployment status
+    let agentDetails = null;
+    let deploymentStatus = 'STATUS_PENDING';
+    const maxAttempts = 60; // 5 minutes max (60 attempts @ 5s interval)
+    let attempts = 0;
+
+    while (attempts < maxAttempts && deploymentStatus !== 'STATUS_RUNNING') {
+      try {
+        agentDetails = await agentClient.get(newAgent.uuid);
+        deploymentStatus = agentDetails?.deployment?.status || 'STATUS_PENDING';
+        
+        if (deploymentStatus === 'STATUS_RUNNING') {
+          break;
+        } else if (deploymentStatus === 'STATUS_FAILED') {
+          throw new Error('Agent deployment failed');
+        }
+        
+        attempts++;
+        if (attempts < maxAttempts) {
+          await new Promise(resolve => setTimeout(resolve, 5000)); // Wait 5 seconds
+        }
+      } catch (error) {
+        if (attempts === 0) {
+          // First attempt might fail if agent is still initializing
+          await new Promise(resolve => setTimeout(resolve, 5000));
+          attempts++;
+        } else {
+          throw error;
+        }
+      }
+    }
+
+    if (deploymentStatus !== 'STATUS_RUNNING') {
+      throw new Error(`Agent deployment timed out after ${attempts} attempts. Status: ${deploymentStatus}`);
+    }
+
+    updateStatus('Agent deployed', { 
+      status: deploymentStatus,
+      endpoint: agentDetails?.deployment?.url ? `${agentDetails.deployment.url}/api/v1` : null,
+      attempts
+    });
+
+    // Step 3: Update Agent (to ensure all config is set)
+    updateStatus('Updating agent configuration...');
+    
+    await agentClient.update(newAgent.uuid, {
+      instruction: maiaInstruction,
+      max_tokens: 16384,
+      top_p: 1,
+      temperature: 0,
+      k: 10,
+      retrieval_method: 'RETRIEVAL_METHOD_NONE'
+    });
+
+    updateStatus('Agent configuration updated', { updated: true });
+
+    // Step 4: Create API Key
+    updateStatus('Creating API key...');
+    
+    const apiKey = await agentClient.createApiKey(newAgent.uuid, `agent-${newAgent.uuid}-api-key`);
+
+    if (!apiKey) {
+      throw new Error('API key creation failed - no key returned');
+    }
+
+    updateStatus('API key created', { keyCreated: true });
+
+    // Step 5: Test Agent
+    updateStatus('Testing agent...');
+    
+    let testResult = null;
+    try {
+      const { DigitalOceanProvider } = await import('../lib/chat-client/providers/digitalocean.js');
+      const agentEndpoint = agentDetails?.deployment?.url ? `${agentDetails.deployment.url}/api/v1` : null;
+      
+      if (agentEndpoint) {
+        const testProvider = new DigitalOceanProvider(apiKey, { baseURL: agentEndpoint });
+        const modelName = agentDetails?.model?.inference_name || agentDetails?.model?.name || 'unknown';
+        
+        testResult = await testProvider.chat(
+          [{ role: 'user', content: 'What model are you?' }],
+          { model: modelName, stream: false }
+        );
+      }
+    } catch (testError) {
+      testResult = { error: testError.message };
+    }
+
+    updateStatus('Agent test completed', testResult && !testResult.error ? { 
+      query: 'What model are you?',
+      response: testResult.content?.substring(0, 200) || testResult.content
+    } : { 
+      error: testResult?.error || 'Test not performed',
+      note: 'Test failure is non-critical - agent is still provisioned successfully'
+    });
+
+    // Step 6: Update User Document
+    updateStatus('Updating user document...');
+    
+    userDoc.assignedAgentId = newAgent.uuid;
+    userDoc.assignedAgentName = agentName;
+    userDoc.agentEndpoint = agentDetails?.deployment?.url ? `${agentDetails.deployment.url}/api/v1` : null;
+    userDoc.agentModelName = agentDetails?.model?.inference_name || agentDetails?.model?.name || null;
+    userDoc.agentApiKey = apiKey;
+    userDoc.provisioned = true;
+    userDoc.provisionedAt = new Date().toISOString();
+    // Clear the provision token after successful provisioning
+    userDoc.provisionToken = undefined;
+    userDoc.provisionTokenCreatedAt = undefined;
+    
+    await cloudant.saveDocument('maia_users', userDoc);
+
+    updateStatus('User document updated', { updated: true });
+
+    // Mark as completed
+    const status = provisioningStatus.get(userId);
+    if (status) {
+      const totalTime = ((Date.now() - status.startTime) / 1000).toFixed(1);
+      status.status = 'completed';
+      status.completedAt = Date.now();
+      status.result = {
+        agentId: newAgent.uuid,
+        agentName,
+        model: agentDetails?.model?.name || agentDetails?.model?.inference_name || 'Unknown',
+        endpoint: userDoc.agentEndpoint || 'Not available',
+        totalTime,
+        testResult
+      };
+    }
+  } catch (error) {
+    const status = provisioningStatus.get(userId);
+    if (status) {
+      status.status = 'failed';
+      status.error = error.message;
+      status.completedAt = Date.now();
+    }
+  }
+}
 
 // Save group chat endpoint
 app.post('/api/save-group-chat', async (req, res) => {

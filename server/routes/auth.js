@@ -42,7 +42,7 @@ export default function setupAuthRoutes(app, passkeyService, cloudant, doClient,
   // Passkey registration - generate options
   app.post('/api/passkey/register', async (req, res) => {
     try {
-      const { userId, displayName } = req.body;
+      const { userId, displayName, email } = req.body;
 
       if (!userId || !displayName) {
         return res.status(400).json({ error: 'User ID and display name required' });
@@ -64,10 +64,14 @@ export default function setupAuthRoutes(app, passkeyService, cloudant, doClient,
       });
 
       // Store challenge in user document
+      if (existingUser && email) {
+        existingUser.email = email; // Update email if provided
+      }
       const userDoc = existingUser || {
         _id: userId,
         userId,
         displayName,
+        email: email || null,
         domain: passkeyService.rpID,
         type: 'user',
         workflowStage: 'no_request_yet',
@@ -144,6 +148,7 @@ export default function setupAuthRoutes(app, passkeyService, cloudant, doClient,
         await emailService.sendNewUserNotification({
           userId: updatedUser.userId,
           displayName: updatedUser.displayName || updatedUser.userId,
+          email: updatedUser.email || null,
           provisionToken: provisionToken
         });
       } catch (emailError) {

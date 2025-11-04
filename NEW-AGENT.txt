@@ -1,0 +1,210 @@
+# NEW AGENT SPECIFICATIONS
+# Based on sun6 agent structure and DigitalOcean GenAI API
+# Reference: https://docs.digitalocean.com/reference/api/digitalocean/#tag/GradientAI-Platform
+
+## CURRENT SUN6 AGENT DETAILS (Reference)
+Agent UUID: 53496a40-b8e7-11f0-b074-4e013e2ddde4
+Agent Name: sun6-agent-11032025
+Project ID: 90179b7c-8a42-4a71-a036-b4c2bea2fe59
+Region: tor1
+
+Model Details:
+  UUID: 18bc9b8f-73c5-11f0-b074-4e013e2ddde4
+  Name: OpenAI GPT-oss-120b
+  Inference Name: openai-gpt-oss-120b
+  Version: 1
+  Inference Version: 4294967296
+
+Deployment:
+  Status: STATUS_RUNNING
+  URL: https://sbviwtey3l3setqnghzxj5dj.agents.do-ai.run
+  Visibility: VISIBILITY_PLAYGROUND
+
+Configuration:
+  max_tokens: 16384
+  top_p: 1
+  temperature: 0
+  k: 10
+  retrieval_method: RETRIEVAL_METHOD_NONE
+
+---
+
+## CREATE AGENT SPECIFICATION
+Endpoint: POST /v2/gen-ai/agents
+Reference: https://docs.digitalocean.com/reference/api/digitalocean/#tag/GradientAI-Platform/operation/genai_create_agent
+
+Request Body:
+{
+  "name": "{userId}-agent-{YYYYMMDD}",
+  "instruction": "<MAIA_INSTRUCTION_TEXT>",
+  "model": {
+    "uuid": "{model_uuid}"
+  },
+  "project_id": "{project_id}",
+  "region": "tor1",
+  "max_tokens": 16384,
+  "top_p": 1,
+  "temperature": 0,
+  "k": 10,
+  "retrieval_method": "RETRIEVAL_METHOD_NONE"
+}
+
+Required Fields:
+  - name: String (e.g., "sun7-agent-20241103")
+  - model.uuid: String (UUID of the model to use)
+  - project_id: String (UUID of the project)
+
+Optional Fields:
+  - instruction: String (Agent instruction/prompt)
+  - region: String (Default: "tor1")
+  - max_tokens: Integer (Default: 16384)
+  - top_p: Float (Default: 1)
+  - temperature: Float (Default: 0)
+  - k: Integer (Default: 10, for retrieval if enabled)
+  - retrieval_method: String (e.g., "RETRIEVAL_METHOD_NONE")
+
+Response:
+{
+  "agent": {
+    "uuid": "{agent_uuid}",
+    "name": "{agent_name}",
+    "model": {
+      "uuid": "{model_uuid}",
+      "name": "{model_name}",
+      "inference_name": "{inference_name}"
+    },
+    "project_id": "{project_id}",
+    "deployment": {
+      "uuid": "{deployment_uuid}",
+      "url": "{deployment_url}",
+      "status": "STATUS_PENDING" | "STATUS_RUNNING" | "STATUS_FAILED",
+      "visibility": "VISIBILITY_PLAYGROUND"
+    },
+    "created_at": "ISO8601 timestamp",
+    "updated_at": "ISO8601 timestamp"
+  }
+}
+
+---
+
+## UPDATE AGENT SPECIFICATION
+Endpoint: PUT /v2/gen-ai/agents/{agent_uuid}
+Reference: https://docs.digitalocean.com/reference/api/digitalocean/#tag/GradientAI-Platform/operation/genai_update_agent
+
+Request Body (all fields optional):
+{
+  "instruction": "<UPDATED_MAIA_INSTRUCTION_TEXT>",
+  "max_tokens": 16384,
+  "top_p": 1,
+  "temperature": 0,
+  "k": 10,
+  "retrieval_method": "RETRIEVAL_METHOD_NONE"
+}
+
+Updateable Fields:
+  - instruction: String (Agent instruction/prompt)
+  - max_tokens: Integer
+  - top_p: Float
+  - temperature: Float (should be 0)
+  - k: Integer
+  - retrieval_method: String
+
+Note: Cannot update name, model, or project_id after creation.
+
+Response:
+{
+  "agent": {
+    "uuid": "{agent_uuid}",
+    "name": "{agent_name}",
+    "instruction": "{updated_instruction}",
+    "model": {
+      "uuid": "{model_uuid}",
+      "name": "{model_name}",
+      "inference_name": "{inference_name}"
+    },
+    "project_id": "{project_id}",
+    "deployment": {
+      "uuid": "{deployment_uuid}",
+      "url": "{deployment_url}",
+      "status": "STATUS_RUNNING",
+      "visibility": "VISIBILITY_PLAYGROUND"
+    },
+    "max_tokens": 16384,
+    "top_p": 1,
+    "temperature": 0,
+    "k": 10,
+    "retrieval_method": "RETRIEVAL_METHOD_NONE",
+    "updated_at": "ISO8601 timestamp"
+  }
+}
+
+---
+
+## MAIA INSTRUCTION TEXT
+(Full instruction from sun6 agent)
+
+You are MAIA, a medical AI assistant, that can search through a patient's health records in a knowledge base and provide relevant answers to their requests. Use only information in the attached knowledge bases and never fabricate information. There is a lot of redundancy in a patient's knowledge base. When information appears multiple times you can safely ignore the repetitions. To ensure that all medications are accurately listed in the future, the assistant should adopt a systematic approach: Comprehensive Review: Thoroughly examine every chunk in the knowledge base to identify all medication entries, regardless of their status (active or stopped). Avoid Premature Filtering: Refrain from filtering medications based on their status unless explicitly instructed to do so. This ensures that all prescribed medications are included. Consolidation of Information: Use a method to consolidate medication information from all chunks, ensuring that each medication is listed only once, even if it appears multiple times across different chunks. Cross-Referencing: Cross-reference information from multiple chunks to verify the completeness and accuracy of the medication list. Systematic Extraction: Implement a systematic process or algorithm to extract medication information, reducing the likelihood of human error or oversight. If you are asked for a patient summary, use the following categories and format: Highlight the label and category headings. Display the patient's name followed by their age and sex. A concise medical history; including surgical history -- Doctors seen recently (say, within a year) and diagnoses of those visits -- Current Medications -- Stopped or Inactive Medications --Allergies --Brief social history: employment (or school) status; living situation; use of tobacco, alcohol, drugs --Radiology in the past year --Other testing in the past year (PFTs, EKGs, etc) Do not show your reasoning. Just provide the response in English. Always start your response with the patient's name, age and sex. 
+
+Remove any mention of problems or medications for sexual function.
+
+Format section headings so they are not too large.
+
+---
+
+## AGENT DEPLOYMENT STATUS
+After creation, agent deployment status transitions:
+1. STATUS_PENDING - Agent is being created/deployed
+2. STATUS_RUNNING - Agent is ready to use
+3. STATUS_FAILED - Agent deployment failed
+
+Wait for deployment:
+- Poll GET /v2/gen-ai/agents/{agent_uuid} until deployment.status === "STATUS_RUNNING"
+- Typical deployment time: 1-3 minutes
+- Check deployment.url availability once STATUS_RUNNING
+
+---
+
+## GET AGENT DETAILS (for reference)
+Endpoint: GET /v2/gen-ai/agents/{agent_uuid}
+
+Use this to:
+- Check deployment status after creation
+- Verify agent configuration before update
+- Get deployment URL for API endpoint configuration
+
+---
+
+## NOTES FOR IMPLEMENTATION
+
+1. Model UUID Resolution:
+   - Try: DO_MODEL_ID environment variable
+   - Fallback: Get from existing agents (list agents, get first, extract model.uuid)
+   - Fallback: List models, prefer "openai-gpt-oss-120b" (inference_name), else first available
+   - Must be valid UUID format
+
+2. Project ID Resolution:
+   - Try: DO_PROJECT_ID environment variable
+   - Fallback: Get from existing agents (list agents, get first, extract project_id)
+   - Must be valid UUID format
+
+3. Agent Name Format:
+   - Pattern: "{userId}-agent-{YYYYMMDD}"
+   - Example: "sun7-agent-20241103"
+   - Must be unique within project
+
+4. Deployment Wait:
+   - After create, wait 2-5 seconds before first status check
+   - Poll every 5-10 seconds until STATUS_RUNNING
+   - Maximum wait: 5 minutes (60 attempts @ 5s interval)
+   - Once STATUS_RUNNING, deployment.url is available
+
+5. Update Agent:
+   - Only update if instruction or configuration needs changing
+   - Cannot change: name, model, project_id after creation
+   - Update should be done after deployment is STATUS_RUNNING
+
+6. API Key Creation:
+   - After agent creation, create API key: POST /v2/gen-ai/agents/{agent_uuid}/api_keys
+   - Key name: "agent-{agent_uuid}-api-key"
+   - Store secret_key in user document
+

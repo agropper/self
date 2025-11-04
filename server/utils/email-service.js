@@ -16,9 +16,10 @@ export class EmailService {
    * @param {Object} options
    * @param {string} options.userId - User ID
    * @param {string} options.displayName - User display name
+   * @param {string} options.email - User email address
    * @param {string} options.provisionToken - Provisioning token for deep link
    */
-  async sendNewUserNotification({ userId, displayName, provisionToken }) {
+  async sendNewUserNotification({ userId, displayName, email, provisionToken }) {
     if (!this.apiKey || !this.fromEmail || !this.adminEmail) {
       console.warn('⚠️  Email service not configured (RESEND_API_KEY, RESEND_FROM_EMAIL, RESEND_ADMIN_EMAIL)');
       return { success: false, error: 'Email service not configured' };
@@ -37,6 +38,7 @@ export class EmailService {
           <ul style="list-style: none; padding: 0;">
             <li><strong>User ID:</strong> ${userId}</li>
             <li><strong>Display Name:</strong> ${displayName || userId}</li>
+            ${email ? `<li><strong>Email:</strong> ${email}</li>` : ''}
             <li><strong>Registered:</strong> ${new Date().toISOString()}</li>
           </ul>
           <p>Click the link below to provision this user (create agent and Spaces folder):</p>
