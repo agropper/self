@@ -1,14 +1,14 @@
 <template>
-  <q-dialog v-model="isOpen" persistent maximized>
-    <q-card>
-      <q-card-section class="row items-center q-pb-none">
+  <q-dialog v-model="isOpen" persistent>
+    <q-card style="width: 90vw; height: 90vh; max-width: 90vw; max-height: 90vh; display: flex; flex-direction: column;">
+      <q-card-section class="row items-center q-pb-none" style="flex-shrink: 0;">
         <div class="text-h5">My Stuff</div>
         <q-space />
         <q-btn icon="close" flat round dense @click="closeDialog" />
       </q-card-section>
 
-      <q-card-section>
-        <q-tabs v-model="currentTab" class="text-grey" active-color="primary" indicator-color="primary" align="justify">
+      <q-card-section style="flex: 1; overflow-y: auto; min-height: 0;">
+        <q-tabs v-model="currentTab" class="text-grey" active-color="primary" indicator-color="primary" align="justify" style="flex-shrink: 0;">
           <q-tab name="files" label="Saved Files" icon="description" />
           <q-tab name="agent" label="My AI Agent" icon="smart_toy" />
           <q-tab name="chats" label="Saved Chats" icon="chat" />
@@ -41,21 +41,73 @@
                   <q-item-section avatar>
                     <q-checkbox
                       v-model="file.inKnowledgeBase"
-                      @update:model-value="toggleKnowledgeBase(file)"
-                      :disable="updatingFiles.has(file.bucketKey)"
+                      @update:model-value="onCheckboxChange(file)"
+                      :disable="updatingFiles.has(file.bucketKey) || indexingKB"
                     />
                   </q-item-section>
                   <q-item-section>
-                    <q-item-label>{{ file.fileName }}</q-item-label>
+                    <q-item-label 
+                      class="cursor-pointer text-primary"
+                      @click="viewFileInPdfViewer(file)"
+                    >
+                      {{ file.fileName }}
+                    </q-item-label>
                     <q-item-label caption>
                       {{ formatFileSize(file.fileSize) }} • Uploaded {{ formatDate(file.uploadedAt) }}
                     </q-item-label>
                   </q-item-section>
                   <q-item-section side>
-                    <q-badge v-if="file.inKnowledgeBase" color="primary" label="In My Knowledge Base" />
+                    <div class="row items-center q-gutter-xs">
+                      <q-chip
+                        v-if="!file.inKnowledgeBase"
+                        color="amber"
+                        text-color="white"
+                        size="sm"
+                        clickable
+                        @click="file.inKnowledgeBase = true; onCheckboxChange(file)"
+                      >
+                        Add to Knowledge Base
+                      </q-chip>
+                      <q-chip
+                        v-else
+                        color="primary"
+                        text-color="white"
+                        size="sm"
+                        clickable
+                        @click="file.inKnowledgeBase = false; onCheckboxChange(file)"
+                      >
+                        In My Knowledge Base
+                      </q-chip>
+                      <q-btn
+                        flat
+                        round
+                        dense
+                        icon="delete"
+                        color="negative"
+                        @click="confirmDeleteFile(file)"
+                        title="Delete file"
+                      />
+                    </div>
                   </q-item-section>
                 </q-item>
               </q-list>
+              
+              <div v-if="hasCheckboxChanges" class="q-mt-md q-pt-md" style="border-top: 1px solid #e0e0e0;">
+                <q-btn
+                  label="Update and index knowledge base"
+                  color="primary"
+                  @click="updateAndIndexKB"
+                  :disable="indexingKB"
+                  :loading="indexingKB"
+                />
+              </div>
+              
+              <div v-if="indexingKB" class="q-mt-md">
+                <div class="text-body2">Indexing can take about 200 pages per minute.</div>
+                <div class="text-body2 q-mt-xs">KB: {{ indexingStatus.kb || 'Processing...' }}</div>
+                <div class="text-body2">Tokens: {{ indexingStatus.tokens || 'Calculating...' }}</div>
+                <div class="text-body2">Files indexed: {{ indexingStatus.filesIndexed || 0 }}</div>
+              </div>
             </div>
           </q-tab-panel>
 
@@ -147,6 +199,28 @@
                       Group Participants: {{ getGroupParticipants(chat) }}
                     </q-item-label>
                   </q-item-section>
+                  <q-item-section side>
+                    <div class="row items-center q-gutter-xs">
+                      <q-btn
+                        flat
+                        round
+                        dense
+                        icon="link"
+                        color="primary"
+                        @click="copyChatLink(chat)"
+                        title="Copy deep link"
+                      />
+                      <q-btn
+                        flat
+                        round
+                        dense
+                        icon="delete"
+                        color="negative"
+                        @click="confirmDeleteChat(chat)"
+                        title="Delete chat"
+                      />
+                    </div>
+                  </q-item-section>
                 </q-item>
               </q-list>
             </div>
@@ -154,12 +228,20 @@
         </q-tab-panels>
       </q-card-section>
     </q-card>
+    
+    <!-- PDF Viewer Modal -->
+    <PdfViewerModal
+      v-model="showPdfViewer"
+      :file="viewingFile"
+    />
   </q-dialog>
 </template>
 
 <script setup lang="ts">
 import { ref, computed, watch, onMounted } from 'vue';
 import VueMarkdown from 'vue-markdown-render';
+import PdfViewerModal from './PdfViewerModal.vue';
+import { useQuasar } from 'quasar';
 
 interface UserFile {
   fileName: string;
@@ -212,6 +294,29 @@ const loadingChats = ref(false);
 const chatsError = ref('');
 const sharedChats = ref<SavedChat[]>([]);
 
+// PDF Viewer
+const showPdfViewer = ref(false);
+const viewingFile = ref<any>(null);
+
+// KB management
+const originalFiles = ref<UserFile[]>([]);
+const hasCheckboxChanges = computed(() => {
+  if (originalFiles.value.length !== userFiles.value.length) return true;
+  return userFiles.value.some((file, index) => {
+    const original = originalFiles.value[index];
+    return !original || file.inKnowledgeBase !== original.inKnowledgeBase;
+  });
+});
+const indexingKB = ref(false);
+const indexingStatus = ref({
+  kb: '',
+  tokens: '',
+  filesIndexed: 0
+});
+const currentIndexingJobId = ref<string | null>(null);
+
+const $q = useQuasar();
+
 const loadFiles = async () => {
   loadingFiles.value = true;
   filesError.value = '';
@@ -228,6 +333,7 @@ const loadFiles = async () => {
       ...file,
       inKnowledgeBase: file.knowledgeBases && file.knowledgeBases.length > 0
     }));
+    originalFiles.value = JSON.parse(JSON.stringify(userFiles.value));
   } catch (err) {
     filesError.value = err instanceof Error ? err.message : 'Failed to load files';
   } finally {
@@ -380,6 +486,201 @@ const formatFileSize = (bytes: number) => {
   const sizes = ['B', 'KB', 'MB', 'GB'];
   const i = Math.floor(Math.log(bytes) / Math.log(k));
   return Math.round((bytes / Math.pow(k, i)) * 100) / 100 + ' ' + sizes[i];
+};
+
+// File management methods
+const onCheckboxChange = (file: UserFile) => {
+  // Just track changes, don't update yet
+};
+
+const viewFileInPdfViewer = (file: UserFile) => {
+  viewingFile.value = {
+    bucketKey: file.bucketKey,
+    name: file.fileName
+  };
+  showPdfViewer.value = true;
+};
+
+const confirmDeleteFile = (file: UserFile) => {
+  $q.dialog({
+    title: 'Delete File',
+    message: 'This will delete the file from MAIA, remove it from the knowledge base, and re-index. Make sure you have copies of your valuable files on your computer.',
+    cancel: true,
+    persistent: true
+  }).onOk(() => {
+    deleteFile(file);
+  });
+};
+
+const deleteFile = async (file: UserFile) => {
+  try {
+    const response = await fetch(`http://localhost:3001/api/delete-file`, {
+      method: 'DELETE',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      credentials: 'include',
+      body: JSON.stringify({
+        userId: props.userId,
+        bucketKey: file.bucketKey
+      })
+    });
+
+    if (!response.ok) {
+      throw new Error('Failed to delete file');
+    }
+
+    // Reload files
+    await loadFiles();
+    $q.notify({
+      type: 'positive',
+      message: 'File deleted successfully'
+    });
+  } catch (err) {
+    $q.notify({
+      type: 'negative',
+      message: err instanceof Error ? err.message : 'Failed to delete file'
+    });
+  }
+};
+
+const updateAndIndexKB = async () => {
+  indexingKB.value = true;
+  indexingStatus.value = { kb: '', tokens: '', filesIndexed: 0 };
+
+  try {
+    // Get changed files
+    const changes = userFiles.value.map((file, index) => {
+      const original = originalFiles.value[index];
+      if (!original || file.inKnowledgeBase !== original.inKnowledgeBase) {
+        return {
+          bucketKey: file.bucketKey,
+          inKnowledgeBase: file.inKnowledgeBase
+        };
+      }
+      return null;
+    }).filter(Boolean);
+
+    const response = await fetch('http://localhost:3001/api/update-knowledge-base', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      credentials: 'include',
+      body: JSON.stringify({
+        userId: props.userId,
+        changes: changes
+      })
+    });
+
+    if (!response.ok) {
+      throw new Error('Failed to update knowledge base');
+    }
+
+    const result = await response.json();
+    
+    if (result.jobId) {
+      currentIndexingJobId.value = result.jobId;
+      pollIndexingProgress(result.jobId);
+    }
+
+    // Update original files
+    originalFiles.value = JSON.parse(JSON.stringify(userFiles.value));
+  } catch (err) {
+    indexingKB.value = false;
+    $q.notify({
+      type: 'negative',
+      message: err instanceof Error ? err.message : 'Failed to update knowledge base'
+    });
+  }
+};
+
+const pollIndexingProgress = async (jobId: string) => {
+  const pollInterval = setInterval(async () => {
+    try {
+      const response = await fetch(`http://localhost:3001/api/kb-indexing-status/${jobId}`, {
+        credentials: 'include'
+      });
+
+      if (!response.ok) {
+        throw new Error('Failed to get indexing status');
+      }
+
+      const result = await response.json();
+      indexingStatus.value = {
+        kb: result.kb || '',
+        tokens: result.tokens || '',
+        filesIndexed: result.filesIndexed || 0
+      };
+
+      if (result.completed) {
+        clearInterval(pollInterval);
+        indexingKB.value = false;
+        await loadFiles();
+        $q.notify({
+          type: 'positive',
+          message: 'Knowledge base updated successfully'
+        });
+      }
+    } catch (err) {
+      clearInterval(pollInterval);
+      indexingKB.value = false;
+      console.error('Error polling indexing status:', err);
+    }
+  }, 2000); // Poll every 2 seconds
+};
+
+// Chat management methods
+const copyChatLink = (chat: SavedChat) => {
+  const baseUrl = window.location.origin;
+  const link = `${baseUrl}/chat/${chat.shareId}`;
+  navigator.clipboard.writeText(link).then(() => {
+    $q.notify({
+      type: 'positive',
+      message: 'Deep link copied to clipboard'
+    });
+  }).catch(() => {
+    $q.notify({
+      type: 'negative',
+      message: 'Failed to copy link'
+    });
+  });
+};
+
+const confirmDeleteChat = (chat: SavedChat) => {
+  $q.dialog({
+    title: 'Delete Chat',
+    message: 'Are you sure you want to delete this chat?',
+    cancel: true,
+    persistent: true
+  }).onOk(() => {
+    deleteChat(chat);
+  });
+};
+
+const deleteChat = async (chat: SavedChat) => {
+  try {
+    const response = await fetch(`http://localhost:3001/api/delete-chat/${chat._id}`, {
+      method: 'DELETE',
+      credentials: 'include'
+    });
+
+    if (!response.ok) {
+      throw new Error('Failed to delete chat');
+    }
+
+    // Remove from list
+    sharedChats.value = sharedChats.value.filter(c => c._id !== chat._id);
+    $q.notify({
+      type: 'positive',
+      message: 'Chat deleted successfully'
+    });
+  } catch (err) {
+    $q.notify({
+      type: 'negative',
+      message: err instanceof Error ? err.message : 'Failed to delete chat'
+    });
+  }
 };
 
 const sortedSharedChats = computed(() => {

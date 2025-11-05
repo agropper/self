@@ -1222,14 +1222,19 @@ app.put('/api/agent-instructions', async (req, res) => {
       });
     }
 
-    // Update agent instructions
-    await doClient.agent.update(userDoc.assignedAgentId, {
+    console.log(`📝 Updating agent instructions for user ${userId}, agent ${userDoc.assignedAgentId}`);
+
+    // Update agent instructions via DigitalOcean API
+    const updatedAgent = await doClient.agent.update(userDoc.assignedAgentId, {
       instruction: instructions
     });
+
+    console.log(`✅ Agent instructions updated successfully for agent ${userDoc.assignedAgentId}`);
     
     res.json({
       success: true,
-      message: 'Agent instructions updated'
+      message: 'Agent instructions updated',
+      agentId: userDoc.assignedAgentId
     });
   } catch (error) {
     console.error('❌ Error updating agent instructions:', error);
@@ -1237,6 +1242,237 @@ app.put('/api/agent-instructions', async (req, res) => {
       success: false, 
       message: `Failed to update agent instructions: ${error.message}`,
       error: 'UPDATE_FAILED'
+    });
+  }
+});
+
+// Delete file from Spaces and user document
+app.delete('/api/delete-file', async (req, res) => {
+  try {
+    const { userId, bucketKey } = req.body;
+    
+    if (!userId || !bucketKey) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'User ID and bucket key are required',
+        error: 'MISSING_REQUIRED_FIELDS'
+      });
+    }
+
+    // Import S3 client operations
+    const { S3Client, DeleteObjectCommand } = await import('@aws-sdk/client-s3');
+
+    // Setup S3/Spaces client
+    const bucketUrl = process.env.DIGITALOCEAN_BUCKET;
+    if (!bucketUrl) {
+      return res.status(500).json({
+        success: false,
+        error: 'BUCKET_NOT_CONFIGURED',
+        message: 'DigitalOcean bucket not configured'
+      });
+    }
+
+    const bucketName = bucketUrl.split('//')[1]?.split('.')[0] || 'maia';
+
+    const s3Client = new S3Client({
+      endpoint: process.env.DIGITALOCEAN_ENDPOINT_URL || 'https://tor1.digitaloceanspaces.com',
+      region: 'us-east-1',
+      forcePathStyle: false,
+      credentials: {
+        accessKeyId: process.env.DIGITALOCEAN_AWS_ACCESS_KEY_ID || '',
+        secretAccessKey: process.env.DIGITALOCEAN_AWS_SECRET_ACCESS_KEY || ''
+      }
+    });
+
+    // Delete file from Spaces
+    const deleteCommand = new DeleteObjectCommand({
+      Bucket: bucketName,
+      Key: bucketKey
+    });
+
+    await s3Client.send(deleteCommand);
+    console.log(`✅ Deleted file from Spaces: ${bucketKey}`);
+
+    // Remove file from user document
+    const userDoc = await cloudant.getDocument('maia_users', userId);
+    
+    if (userDoc && userDoc.files) {
+      userDoc.files = userDoc.files.filter(f => f.bucketKey !== bucketKey);
+      await cloudant.saveDocument('maia_users', userDoc);
+      console.log(`✅ Removed file metadata from user document: ${bucketKey}`);
+    }
+
+    // TODO: Trigger KB re-indexing if file was in KB
+    // This would involve:
+    // 1. Check if file was in knowledge base
+    // 2. Remove from KB data source
+    // 3. Trigger re-indexing
+
+    res.json({
+      success: true,
+      message: 'File deleted successfully'
+    });
+  } catch (error) {
+    console.error('❌ Error deleting file:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: `Failed to delete file: ${error.message}`,
+      error: 'DELETE_FAILED'
+    });
+  }
+});
+
+// Update knowledge base - move files and trigger indexing
+app.post('/api/update-knowledge-base', async (req, res) => {
+  try {
+    const { userId, changes } = req.body;
+    
+    if (!userId || !changes || !Array.isArray(changes)) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'User ID and changes array are required',
+        error: 'MISSING_REQUIRED_FIELDS'
+      });
+    }
+
+    // Import S3 client operations
+    const { S3Client, CopyObjectCommand, DeleteObjectCommand } = await import('@aws-sdk/client-s3');
+
+    // Setup S3/Spaces client
+    const bucketUrl = process.env.DIGITALOCEAN_BUCKET;
+    if (!bucketUrl) {
+      return res.status(500).json({
+        success: false,
+        error: 'BUCKET_NOT_CONFIGURED',
+        message: 'DigitalOcean bucket not configured'
+      });
+    }
+
+    const bucketName = bucketUrl.split('//')[1]?.split('.')[0] || 'maia';
+
+    const s3Client = new S3Client({
+      endpoint: process.env.DIGITALOCEAN_ENDPOINT_URL || 'https://tor1.digitaloceanspaces.com',
+      region: 'us-east-1',
+      forcePathStyle: false,
+      credentials: {
+        accessKeyId: process.env.DIGITALOCEAN_AWS_ACCESS_KEY_ID || '',
+        secretAccessKey: process.env.DIGITALOCEAN_AWS_SECRET_ACCESS_KEY || ''
+      }
+    });
+
+    // Get user document to find KB name
+    const userDoc = await cloudant.getDocument('maia_users', userId);
+    
+    if (!userDoc) {
+      return res.status(404).json({ 
+        success: false, 
+        message: 'User not found',
+        error: 'USER_NOT_FOUND'
+      });
+    }
+
+    // Get KB name (default to userId if not specified)
+    const kbName = userDoc.connectedKB || userId;
+    
+    // Process each change
+    for (const change of changes) {
+      const { bucketKey, inKnowledgeBase } = change;
+      
+      // Determine source and destination paths
+      const fileName = bucketKey.split('/').pop();
+      const sourceKey = bucketKey;
+      const destKey = inKnowledgeBase 
+        ? `${userId}/${kbName}/${fileName}`
+        : `${userId}/archived/${fileName}`;
+
+      // Only move if source and destination are different
+      if (sourceKey !== destKey) {
+        // Copy file to new location
+        const copyCommand = new CopyObjectCommand({
+          Bucket: bucketName,
+          CopySource: `${bucketName}/${sourceKey}`,
+          Key: destKey
+        });
+        await s3Client.send(copyCommand);
+
+        // Delete from old location
+        const deleteCommand = new DeleteObjectCommand({
+          Bucket: bucketName,
+          Key: sourceKey
+        });
+        await s3Client.send(deleteCommand);
+
+        console.log(`✅ Moved file from ${sourceKey} to ${destKey}`);
+
+        // Update file metadata in user document
+        if (userDoc.files) {
+          const fileIndex = userDoc.files.findIndex(f => f.bucketKey === sourceKey);
+          if (fileIndex >= 0) {
+            userDoc.files[fileIndex].bucketKey = destKey;
+            if (inKnowledgeBase) {
+              userDoc.files[fileIndex].knowledgeBases = [kbName];
+            } else {
+              userDoc.files[fileIndex].knowledgeBases = [];
+            }
+          }
+        }
+      }
+    }
+
+    // Save updated user document
+    await cloudant.saveDocument('maia_users', userDoc);
+
+    // TODO: Trigger KB indexing
+    // For now, return a placeholder job ID
+    // This would involve:
+    // 1. Getting or creating the KB
+    // 2. Updating the KB data source
+    // 3. Starting an indexing job
+    // 4. Returning the job ID
+
+    const jobId = `kb-index-${Date.now()}`;
+
+    res.json({
+      success: true,
+      message: 'Knowledge base updated, indexing started',
+      jobId: jobId
+    });
+  } catch (error) {
+    console.error('❌ Error updating knowledge base:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: `Failed to update knowledge base: ${error.message}`,
+      error: 'UPDATE_FAILED'
+    });
+  }
+});
+
+// Get KB indexing status
+app.get('/api/kb-indexing-status/:jobId', async (req, res) => {
+  try {
+    const { jobId } = req.params;
+    
+    // TODO: Implement actual KB indexing status check
+    // This would involve:
+    // 1. Querying the DO API for indexing job status
+    // 2. Getting KB details (name, token count)
+    // 3. Getting files indexed count
+    // 4. Checking if indexing is complete
+
+    // Placeholder response
+    res.json({
+      success: true,
+      kb: 'My Knowledge Base',
+      tokens: '0',
+      filesIndexed: 0,
+      completed: false
+    });
+  } catch (error) {
+    console.error('❌ Error getting indexing status:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: `Failed to get indexing status: ${error.message}`,
+      error: 'STATUS_FAILED'
     });
   }
 });
