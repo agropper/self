@@ -128,6 +128,18 @@ export default function setupAuthRoutes(app, passkeyService, cloudant, doClient,
       // Set workflowStage to request_sent (admin has been notified and can provision)
       updatedUser.workflowStage = 'request_sent';
       
+      // Generate knowledge base name: userId-kb-<MMDDYYYYHHMM>
+      const now = new Date();
+      const month = String(now.getMonth() + 1).padStart(2, '0');
+      const day = String(now.getDate()).padStart(2, '0');
+      const year = now.getFullYear();
+      const hour = String(now.getHours()).padStart(2, '0');
+      const minute = String(now.getMinutes()).padStart(2, '0');
+      const kbName = `${updatedUser.userId}-kb-${month}${day}${year}${hour}${minute}`;
+      
+      updatedUser.connectedKB = kbName;
+      updatedUser.kbStatus = 'pending';
+      
       await cloudant.saveDocument('maia_users', updatedUser);
 
       // Set session

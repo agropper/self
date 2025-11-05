@@ -1101,10 +1101,14 @@ const syncAgent = async () => {
     
     if (response.ok) {
       const result = await response.json();
-      console.log('Agent synced:', result.agent?.name);
-    } else if (response.status === 404) {
-      // No agent found - this is OK, user might not have one yet
-      console.log('No agent found for user');
+      if (result.success) {
+        console.log('Agent synced:', result.agent?.name);
+      } else {
+        // No agent found - this is OK, user might not have one yet
+        console.log('No agent found for user');
+      }
+    } else {
+      console.error('Failed to sync agent:', response.status, response.statusText);
     }
   } catch (error) {
     console.error('Failed to sync agent:', error);

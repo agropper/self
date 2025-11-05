@@ -545,8 +545,62 @@ const formatFileSize = (bytes: number) => {
 };
 
 // File management methods
-const onCheckboxChange = (file: UserFile) => {
-  // Just track changes, don't update yet
+const onCheckboxChange = async (file: UserFile) => {
+  // Immediately move file when checkbox is toggled
+  const oldBucketKey = file.bucketKey;
+  const newStatus = file.inKnowledgeBase;
+  
+  console.log(`[KB Management] Toggling file ${file.fileName}: KB status = ${newStatus}, bucketKey = ${oldBucketKey}`);
+  
+  updatingFiles.value.add(file.bucketKey);
+
+  try {
+    const response = await fetch('http://localhost:3001/api/toggle-file-knowledge-base', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      credentials: 'include',
+      body: JSON.stringify({
+        userId: props.userId,
+        bucketKey: oldBucketKey,
+        inKnowledgeBase: newStatus
+      })
+    });
+
+    if (!response.ok) {
+      throw new Error('Failed to update knowledge base status');
+    }
+
+    const result = await response.json();
+    
+    // Update file's bucketKey if it changed
+    if (result.newBucketKey && result.newBucketKey !== oldBucketKey) {
+      file.bucketKey = result.newBucketKey;
+      console.log(`[KB Management] ✅ File bucketKey updated: ${oldBucketKey} -> ${result.newBucketKey}`);
+    }
+    
+    // Update original files to reflect the change
+    const originalIndex = originalFiles.value.findIndex(f => f.bucketKey === oldBucketKey);
+    if (originalIndex >= 0) {
+      originalFiles.value[originalIndex].inKnowledgeBase = newStatus;
+      if (result.newBucketKey) {
+        originalFiles.value[originalIndex].bucketKey = result.newBucketKey;
+      }
+    }
+    
+    console.log(`[KB Management] ✅ File ${file.fileName} successfully ${newStatus ? 'added to' : 'removed from'} knowledge base`);
+  } catch (err) {
+    console.error(`[KB Management] ❌ Error toggling file ${file.fileName}:`, err);
+    // Revert checkbox on error
+    file.inKnowledgeBase = !newStatus;
+    $q.notify({
+      type: 'negative',
+      message: err instanceof Error ? err.message : 'Failed to update knowledge base status'
+    });
+  } finally {
+    updatingFiles.value.delete(oldBucketKey);
+  }
 };
 
 const viewFileInPdfViewer = (file: UserFile) => {
