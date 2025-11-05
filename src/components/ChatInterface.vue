@@ -261,6 +261,9 @@
       v-model="showMyStuffDialog"
       :userId="props.user?.userId || ''"
       @chat-selected="handleChatSelected"
+      @indexing-started="handleIndexingStarted"
+      @indexing-status-update="handleIndexingStatusUpdate"
+      @indexing-finished="handleIndexingFinished"
     />
   </div>
 </template>
@@ -1115,9 +1118,70 @@ const syncAgent = async () => {
   }
 };
 
+// Indexing status tracking
+const indexingStatus = ref<{
+  active: boolean;
+  phase: string;
+  tokens: string;
+  filesIndexed: number;
+  progress: number;
+} | null>(null);
+
+const handleIndexingStarted = (data: { jobId: string; phase: string }) => {
+  indexingStatus.value = {
+    active: true,
+    phase: data.phase,
+    tokens: '0',
+    filesIndexed: 0,
+    progress: 0
+  };
+  updateContextualTip();
+};
+
+const handleIndexingStatusUpdate = (data: { jobId: string; phase: string; tokens: string; filesIndexed: number; progress: number }) => {
+  if (indexingStatus.value) {
+    indexingStatus.value.phase = data.phase;
+    indexingStatus.value.tokens = data.tokens;
+    indexingStatus.value.filesIndexed = data.filesIndexed;
+    indexingStatus.value.progress = data.progress;
+    updateContextualTip();
+  }
+};
+
+const handleIndexingFinished = (data: { jobId: string; phase: string; error?: string }) => {
+  indexingStatus.value = null;
+  // Update status tip to show normal status
+  updateContextualTip();
+};
+
 const updateContextualTip = async () => {
   if (!props.user?.userId) {
     contextualTip.value = 'User not logged in';
+    return;
+  }
+
+  // If indexing is active, show indexing status
+  if (indexingStatus.value && indexingStatus.value.active) {
+    const status = indexingStatus.value;
+    if (status.phase === 'indexing' || status.phase === 'indexing_started') {
+      contextualTip.value = `Indexing KB: ${status.filesIndexed} files, ${status.tokens} tokens (${Math.round(status.progress * 100)}%)`;
+    } else if (status.phase === 'complete') {
+      contextualTip.value = `KB Indexing Complete: ${status.filesIndexed} files indexed`;
+      // Clear after a short delay
+      setTimeout(() => {
+        indexingStatus.value = null;
+        updateContextualTip();
+      }, 3000);
+    } else if (status.phase === 'error') {
+      contextualTip.value = 'KB Indexing Error';
+      // Clear after a short delay
+      setTimeout(() => {
+        indexingStatus.value = null;
+        updateContextualTip();
+      }, 5000);
+    } else {
+      contextualTip.value = `KB Setup: ${status.phase}`;
+    }
     return;
   }
 
@@ -1136,10 +1200,18 @@ const updateContextualTip = async () => {
     const workflowStage = userData.workflowStage || 'unknown';
     const hasAgent = userData.hasAgent ? 'yes' : 'no';
     const fileCount = userData.fileCount || 0;
-    const hasKB = userData.hasKB ? 'yes' : 'no';
+    
+    // Display KB status based on kbStatus field
+    let kbDisplay = 'no';
+    if (userData.kbStatus === 'attached') {
+      kbDisplay = 'yes';
+    } else if (userData.kbStatus === 'not_attached') {
+      kbDisplay = 'Not attached';
+    }
+    
     const chatCount = savedChatCount.value;
 
-    contextualTip.value = `Workflow: ${workflowStage}, Agent: ${hasAgent}, Files: ${fileCount}, KB: ${hasKB}, Chats: ${chatCount}`;
+    contextualTip.value = `Workflow: ${workflowStage}, Agent: ${hasAgent}, Files: ${fileCount}, KB: ${kbDisplay}, Chats: ${chatCount}`;
   } catch (error) {
     console.error('Failed to update contextual tip:', error);
     contextualTip.value = 'Error loading status';

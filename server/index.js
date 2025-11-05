@@ -29,20 +29,44 @@ const __dirname = path.dirname(__filename);
 
 /**
  * Get KB name from user document
- * Checks connectedKBs array first (for actual connected KBs), then falls back to old connectedKB field for migration
- * Returns the first connected KB name, or generates a new one if none exist
+ * 
+ * Naming Convention:
+ * - kbName: PERMANENT KB name set during provisioning (NEVER deleted or changed)
+ *   This is the source of truth for the KB name and prevents generating new names.
+ *   It's set once during provisioning and remains forever, even after KB exists in DO.
+ * - connectedKBs: Array of KB names that actually exist in DigitalOcean and are connected
+ *   Used for runtime tracking, but kbName takes precedence.
+ * - connectedKB: Legacy field for backward compatibility (should indicate actual connected KB)
+ * 
+ * Priority order:
+ * 1. kbName (permanent, set during provisioning - ALWAYS use this if it exists)
+ * 2. connectedKBs array (runtime tracking of actual connected KBs)
+ * 3. connectedKB field (legacy, for migration)
+ * 4. Generate new name ONLY if kbName was never set (shouldn't happen after provisioning)
  */
 function getKBNameFromUserDoc(userDoc, userId) {
-  // Check connectedKBs array first (source of truth for actual connected KBs)
+  // Priority order:
+  // 1. kbName - PERMANENT KB name set during provisioning (NEVER deleted)
+  //    This is the source of truth and prevents generating new names
+  // 2. connectedKBs array - runtime tracking of actual connected KBs (may be cleared)
+  // 3. connectedKB field - legacy field for backward compatibility
+  // 4. Generate new name - only if kbName was never set (shouldn't happen after provisioning)
+  
+  // First, check if there's a permanent KB name (set during provisioning, never deleted)
+  if (userDoc.kbName) {
+    return userDoc.kbName;
+  }
+  // Next, check connectedKBs array (actual connected KBs - KB exists and is connected)
   if (userDoc.connectedKBs && Array.isArray(userDoc.connectedKBs) && userDoc.connectedKBs.length > 0) {
     return userDoc.connectedKBs[0];
   }
-  // Fallback to old connectedKB field for migration
+  // Fallback to old connectedKB field for migration (should indicate actual connected KB)
   if (userDoc.connectedKB) {
     return userDoc.connectedKB;
   }
   // Generate new KB name if none exists
-  return `${userId}-kb-${new Date().toISOString().replace(/[^0-9]/g, '').substring(0, 12)}`;
+  const timestamp = new Date().toISOString().replace(/[-:]/g, '').split('T')[0]; // YYYYMMDD
+  return `${userId}-kb-${timestamp}${Date.now().toString().slice(-6)}`;
 }
 
 /**
@@ -183,6 +207,254 @@ const doClient = new DigitalOceanClient(process.env.DIGITALOCEAN_TOKEN, {
   region: process.env.DO_REGION || 'tor1'
 });
 
+/**
+ * Centralized validation function to verify user resources exist in DigitalOcean
+ * This is the single source of truth for resource validation - DO API is authoritative
+ * @param {string} userId - User ID to validate resources for
+ * @returns {Promise<{hasAgent: boolean, kbStatus: string, userDoc: object, cleaned: boolean}>}
+ * kbStatus: 'none' | 'not_attached' | 'attached'
+ */
+async function validateUserResources(userId) {
+  const userDoc = await cloudant.getDocument('maia_users', userId);
+  if (!userDoc) {
+    return { hasAgent: false, kbStatus: 'none', userDoc: null, cleaned: false };
+  }
+
+  let cleaned = false;
+  let hasAgent = false;
+  let kbStatus = 'none'; // 'none' | 'not_attached' | 'attached'
+
+  // Helper function to check if error is a 404/not found
+  const isNotFoundError = (error) => {
+    return error.status === 404 || 
+           error.message?.includes('404') || 
+           error.message?.includes('not found') ||
+           error.message?.toLowerCase().includes('not_found');
+  };
+
+  // 1. Validate Agent - verify it exists in DigitalOcean
+  if (userDoc.assignedAgentId && typeof userDoc.assignedAgentId === 'string' && userDoc.assignedAgentId.trim().length > 0) {
+    try {
+      const agent = await doClient.agent.get(userDoc.assignedAgentId);
+      if (agent && agent.uuid === userDoc.assignedAgentId) {
+        // Verify agent name matches expected pattern
+        const expectedPattern = new RegExp(`^${userId}-agent-`);
+        if (expectedPattern.test(agent.name)) {
+          hasAgent = true;
+        } else {
+          // Agent exists but name doesn't match pattern - clear it
+          console.log(`⚠️ Agent ${userDoc.assignedAgentId} exists but name "${agent.name}" doesn't match pattern for user ${userId}. Clearing.`);
+          userDoc.assignedAgentId = null;
+          userDoc.assignedAgentName = null;
+          userDoc.agentEndpoint = null;
+          userDoc.agentModelName = null;
+          userDoc.agentApiKey = null;
+          cleaned = true;
+        }
+      } else {
+        // Agent ID mismatch - clear it
+        console.log(`⚠️ Agent ${userDoc.assignedAgentId} found in database but UUID mismatch in DigitalOcean. Clearing.`);
+        userDoc.assignedAgentId = null;
+        userDoc.assignedAgentName = null;
+        userDoc.agentEndpoint = null;
+        userDoc.agentModelName = null;
+        userDoc.agentApiKey = null;
+        cleaned = true;
+      }
+    } catch (error) {
+      if (isNotFoundError(error)) {
+        // Agent doesn't exist in DO - clear it from database
+        console.log(`⚠️ Agent ${userDoc.assignedAgentId} not found in DigitalOcean. Clearing from user document.`);
+        userDoc.assignedAgentId = null;
+        userDoc.assignedAgentName = null;
+        userDoc.agentEndpoint = null;
+        userDoc.agentModelName = null;
+        userDoc.agentApiKey = null;
+        cleaned = true;
+      } else {
+        // Other error - log but don't fail validation
+        console.error(`❌ Error checking agent existence in DO for user ${userId}:`, error.message);
+        hasAgent = false;
+      }
+    }
+  }
+
+  // 2. Validate KB - verify it exists in DigitalOcean and check attachment status
+  let kbExists = false;
+  let kbIdFound = null;
+  
+  // First, check if KB exists in DO (either from database or by searching)
+  if (userDoc.kbId && typeof userDoc.kbId === 'string' && userDoc.kbId.trim().length > 0) {
+    try {
+      const kb = await doClient.kb.get(userDoc.kbId);
+      if (kb && kb.uuid === userDoc.kbId) {
+        kbExists = true;
+        kbIdFound = userDoc.kbId;
+      } else {
+        // KB ID mismatch - clear it
+        console.log(`⚠️ KB ${userDoc.kbId} found in database but UUID mismatch in DigitalOcean. Clearing KB from user document.`);
+        userDoc.kbId = null;
+        userDoc.connectedKBs = [];
+        userDoc.connectedKB = null; // Clear legacy field
+        userDoc.kbIndexingNeeded = false;
+        userDoc.kbPendingFiles = [];
+        userDoc.kbLastIndexingJobId = null;
+        userDoc.kbIndexedFiles = [];
+        cleaned = true;
+      }
+    } catch (error) {
+      if (isNotFoundError(error)) {
+        // KB doesn't exist in DO - clear it from database
+        console.log(`⚠️ KB ${userDoc.kbId} not found in DigitalOcean. Clearing KB from user document.`);
+        userDoc.kbId = null;
+        userDoc.connectedKBs = [];
+        userDoc.connectedKB = null; // Clear legacy field
+        userDoc.kbIndexingNeeded = false;
+        userDoc.kbPendingFiles = [];
+        userDoc.kbLastIndexingJobId = null;
+        userDoc.kbIndexedFiles = [];
+        cleaned = true;
+      } else {
+        // Other error - log but don't fail validation
+        console.error(`❌ Error checking KB existence in DO for user ${userId}:`, error.message);
+      }
+    }
+  }
+  
+  // If no KB in database or KB not found, try to find KB by name pattern
+  if (!kbExists) {
+    try {
+      const kbName = getKBNameFromUserDoc(userDoc, userId);
+      const allKBs = await doClient.kb.list();
+      const foundKB = allKBs.find(kb => kb.name === kbName);
+      
+      if (foundKB) {
+        // KB exists in DO but not in database - sync it
+        kbExists = true;
+        kbIdFound = foundKB.uuid || foundKB.id;
+        console.log(`ℹ️ Found KB ${kbName} in DO but not in database. Syncing kbId: ${kbIdFound}`);
+        userDoc.kbId = kbIdFound;
+        // Set connectedKBs since KB actually exists and is found
+        if (!userDoc.connectedKBs || !Array.isArray(userDoc.connectedKBs)) {
+          userDoc.connectedKBs = [];
+        }
+        if (!userDoc.connectedKBs.includes(kbName)) {
+          userDoc.connectedKBs.push(kbName);
+        }
+        // Also set legacy connectedKB field for backward compatibility
+        if (!userDoc.connectedKB) {
+          userDoc.connectedKB = kbName;
+        }
+        cleaned = true;
+      }
+    } catch (error) {
+      console.error(`❌ Error searching for KB in DO for user ${userId}:`, error.message);
+    }
+  }
+  
+  // If KB exists, check if it's attached to agent
+  if (kbExists && kbIdFound && hasAgent && userDoc.assignedAgentId) {
+    try {
+      const agentDetails = await doClient.agent.get(userDoc.assignedAgentId);
+      
+      // Check multiple possible field names for attached KBs in agent details
+      // Agent might have: knowledge_bases, knowledge_base_ids, connected_knowledge_bases, etc.
+      const attachedKBs = agentDetails.knowledge_bases || 
+                          agentDetails.connected_knowledge_bases ||
+                          agentDetails.knowledge_base_ids ||
+                          agentDetails.knowledge_base_uuids ||
+                          agentDetails.kbs ||
+                          [];
+      
+      // Check if our KB is in the attached list
+      // Handle both array of strings (UUIDs) and array of objects with uuid/id fields
+      const isAttached = attachedKBs.some((kb) => {
+        if (!kb) return false;
+        const kbId = typeof kb === 'string' ? kb : (kb.uuid || kb.id || kb.knowledge_base_uuid);
+        return kbId === kbIdFound;
+      });
+      
+      if (isAttached) {
+        kbStatus = 'attached';
+        // Only log attachment on first detection or when state changes (not on every validation)
+        // This is informational, not an error, so no need to spam logs
+      } else {
+        kbStatus = 'not_attached';
+        // Don't log this - it's a normal state and validateUserResources is called frequently
+        // The status is already reflected in the API response
+      }
+    } catch (error) {
+      console.error(`❌ Error checking KB attachment status for user ${userId}:`, error.message);
+      // Default to not_attached if we can't verify
+      kbStatus = 'not_attached';
+    }
+  } else if (kbExists && kbIdFound) {
+    // KB exists but no agent - can't be attached
+    kbStatus = 'not_attached';
+    // Don't log this - it's a normal state during provisioning
+  }
+
+  // Save cleaned user document if any resources were removed or synced
+  // Use retry logic to handle 409 conflicts (document update conflicts)
+  if (cleaned) {
+    let retries = 3;
+    let saved = false;
+    
+    while (retries > 0 && !saved) {
+      try {
+        await cloudant.saveDocument('maia_users', userDoc);
+        saved = true;
+      } catch (error) {
+        // Handle 409 conflict - document was updated by another process
+        if (error.statusCode === 409 || error.error === 'conflict') {
+          retries--;
+          if (retries > 0) {
+            // Get fresh document with latest _rev
+            const freshDoc = await cloudant.getDocument('maia_users', userId);
+            if (freshDoc) {
+              // Re-apply our changes to the fresh document
+              if (userDoc.assignedAgentId === null) {
+                freshDoc.assignedAgentId = null;
+                freshDoc.assignedAgentName = null;
+                freshDoc.agentEndpoint = null;
+                freshDoc.agentModelName = null;
+                freshDoc.agentApiKey = null;
+              }
+              if (userDoc.kbId === null) {
+                freshDoc.kbId = null;
+                freshDoc.connectedKBs = [];
+                freshDoc.kbIndexingNeeded = false;
+                freshDoc.kbPendingFiles = [];
+                freshDoc.kbLastIndexingJobId = null;
+                freshDoc.kbIndexedFiles = [];
+              }
+              if (userDoc.kbId && userDoc.connectedKBs) {
+                freshDoc.kbId = userDoc.kbId;
+                freshDoc.connectedKBs = userDoc.connectedKBs;
+              }
+              userDoc = freshDoc;
+              // Wait a bit before retrying
+              await new Promise(resolve => setTimeout(resolve, 100));
+            } else {
+              // User document was deleted? Shouldn't happen, but break
+              break;
+            }
+          } else {
+            console.error(`⚠️ Failed to save user document after 3 retries for user ${userId} due to conflicts. Continuing with current state.`);
+            // Don't throw - continue with current document state
+            // The validation results are still valid even if save failed
+          }
+        } else {
+          // Other error - throw it
+          throw error;
+        }
+      }
+    }
+  }
+
+  return { hasAgent, kbStatus, userDoc, cleaned };
+}
+
 const passkeyService = new PasskeyService({
   rpID: process.env.PASSKEY_RPID || 'user.agropper.xyz',
   origin: process.env.PASSKEY_ORIGIN || `http://localhost:${PORT}`
@@ -257,10 +529,25 @@ app.post('/api/sync-agent', async (req, res) => {
       });
     }
     
-    // Find user's agent
+    // First, validate existing resources to clean up any stale references
+    const { userDoc: validatedUserDoc } = await validateUserResources(userId);
+    
+    if (!validatedUserDoc) {
+      return res.status(404).json({ 
+        success: false, 
+        message: 'User not found',
+        error: 'USER_NOT_FOUND'
+      });
+    }
+    
+    // Find user's agent in DigitalOcean (source of truth)
     const userAgent = await findUserAgent(doClient, userId);
     
     if (!userAgent) {
+      // No agent found in DO - ensure database is clean
+      if (validatedUserDoc.assignedAgentId) {
+        console.log(`⚠️ No agent found in DO for user ${userId}, but database has ${validatedUserDoc.assignedAgentId}. Already cleaned by validateUserResources.`);
+      }
       return res.status(200).json({ 
         success: false, 
         message: 'No agent found for user',
@@ -268,8 +555,9 @@ app.post('/api/sync-agent', async (req, res) => {
       });
     }
     
-    // Get user document
-    const userDoc = await cloudant.getDocument('maia_users', userId);
+    // Agent exists in DO - sync with database
+    // Use the validated document as base (may have been cleaned/updated by validateUserResources)
+    let userDoc = validatedUserDoc;
     
     // Check if agent info needs updating
     const agentModelName = userAgent.model?.inference_name || userAgent.model?.name || null;
@@ -280,14 +568,41 @@ app.post('/api/sync-agent', async (req, res) => {
       !userAgent.deployment?.url;
     
     if (needsUpdate) {
-      userDoc.assignedAgentId = userAgent.uuid;
-      userDoc.assignedAgentName = userAgent.name;
-      userDoc.agentEndpoint = userAgent.deployment?.url ? `${userAgent.deployment.url}/api/v1` : null;
-      // Store model inference_name for API requests
-      userDoc.agentModelName = userAgent.model?.inference_name || userAgent.model?.name || null;
+      // Retry logic for 409 conflicts
+      let retries = 3;
+      let saved = false;
       
-      await cloudant.saveDocument('maia_users', userDoc);
-      console.log(`✅ Synced agent ${userAgent.name} for user ${userId}`);
+      while (retries > 0 && !saved) {
+        try {
+          userDoc.assignedAgentId = userAgent.uuid;
+          userDoc.assignedAgentName = userAgent.name;
+          userDoc.agentEndpoint = userAgent.deployment?.url ? `${userAgent.deployment.url}/api/v1` : null;
+          // Store model inference_name for API requests
+          userDoc.agentModelName = userAgent.model?.inference_name || userAgent.model?.name || null;
+          
+          await cloudant.saveDocument('maia_users', userDoc);
+          console.log(`✅ Synced agent ${userAgent.name} for user ${userId}`);
+          saved = true;
+        } catch (error) {
+          // Handle 409 conflict - document was updated by another process
+          if (error.statusCode === 409 || error.error === 'conflict') {
+            retries--;
+            if (retries > 0) {
+              // Get fresh document with latest _rev
+              userDoc = await cloudant.getDocument('maia_users', userId);
+              // Wait a bit before retrying
+              await new Promise(resolve => setTimeout(resolve, 100));
+            } else {
+              console.error(`⚠️ Failed to save agent sync after 3 retries for user ${userId} due to conflicts. Agent info may be slightly out of sync.`);
+              // Don't throw - return success anyway since agent exists in DO
+              // The next sync will pick up the correct values
+            }
+          } else {
+            // Other error - throw it
+            throw error;
+          }
+        }
+      }
     }
     
     res.json({
@@ -851,7 +1166,6 @@ async function verifyProvisioningComplete(userId, agentId, agentName, kbName, ex
   logProvisioning(userId, `🔍 Starting comprehensive verification...`, 'info');
   
   const verificationResults = {
-    kbName: { passed: false, message: '' },
     bucketFolders: { passed: false, message: '' },
     agentExists: { passed: false, message: '' },
     agentDeployed: { passed: false, message: '' },
@@ -862,25 +1176,7 @@ async function verifyProvisioningComplete(userId, agentId, agentName, kbName, ex
   };
   
   try {
-    // 1. Verify KB name in user document
-    const userDoc = await cloudant.getDocument('maia_users', userId);
-    // Check if KB name matches (check both connectedKBs array and old connectedKB field)
-    const hasKBName = (userDoc.connectedKBs && Array.isArray(userDoc.connectedKBs) && userDoc.connectedKBs.includes(kbName)) ||
-                      userDoc.connectedKB === kbName;
-    
-    if (hasKBName) {
-      verificationResults.kbName.passed = true;
-      verificationResults.kbName.message = `KB name matches: ${kbName}`;
-      logProvisioning(userId, `✅ KB name verified: ${kbName}`, 'success');
-    } else {
-      const currentKB = (userDoc.connectedKBs && userDoc.connectedKBs.length > 0) 
-        ? userDoc.connectedKBs[0] 
-        : (userDoc.connectedKB || 'none');
-      verificationResults.kbName.message = `KB name mismatch. Expected: ${kbName}, Found: ${currentKB}`;
-      logProvisioning(userId, `❌ KB name verification failed: ${verificationResults.kbName.message}`, 'error');
-    }
-    
-    // 2. Verify bucket folders (check accessibility)
+    // 1. Verify bucket folders (check accessibility)
     try {
       const { S3Client, ListObjectsV2Command } = await import('@aws-sdk/client-s3');
       const bucketUrl = process.env.DIGITALOCEAN_BUCKET;
@@ -907,6 +1203,13 @@ async function verifyProvisioningComplete(userId, agentId, agentName, kbName, ex
             Key: rootKeep
           }));
           
+          // Check archived folder
+          const archivedKeep = `${userId}/archived/.keep`;
+          const archivedCheck = await s3Client.send(new GetObjectCommand({
+            Bucket: bucketName,
+            Key: archivedKeep
+          }));
+          
           // Check KB folder
           const kbKeep = `${userId}/${kbName}/.keep`;
           const kbCheck = await s3Client.send(new GetObjectCommand({
@@ -914,10 +1217,10 @@ async function verifyProvisioningComplete(userId, agentId, agentName, kbName, ex
             Key: kbKeep
           }));
           
-          if (rootCheck && kbCheck) {
-          verificationResults.bucketFolders.passed = true;
-            verificationResults.bucketFolders.message = `Bucket folders created and verified: ${userId}/ (root) and ${userId}/${kbName}/ (KB)`;
-          logProvisioning(userId, `✅ Bucket folders verified`, 'success');
+          if (rootCheck && archivedCheck && kbCheck) {
+            verificationResults.bucketFolders.passed = true;
+            verificationResults.bucketFolders.message = `Bucket folders created and verified: ${userId}/ (root), ${userId}/archived/ (archived), and ${userId}/${kbName}/ (KB)`;
+            logProvisioning(userId, `✅ Bucket folders verified`, 'success');
           } else {
             verificationResults.bucketFolders.message = `Bucket folders missing .keep files`;
             logProvisioning(userId, `⚠️  Bucket folders missing .keep files`, 'warning');
@@ -1024,7 +1327,16 @@ async function verifyProvisioningComplete(userId, agentId, agentName, kbName, ex
     }
     
     // 5. Verify API key
-    if (userDoc.agentApiKey) {
+    // Fetch user document to check API key and agent details
+    let userDoc = null;
+    try {
+      userDoc = await cloudant.getDocument('maia_users', userId);
+    } catch (err) {
+      verificationResults.apiKey.message = `Error fetching user document: ${err.message}`;
+      logProvisioning(userId, `❌ Error fetching user document for API key verification: ${err.message}`, 'error');
+    }
+    
+    if (userDoc && userDoc.agentApiKey) {
       verificationResults.apiKey.passed = true;
       verificationResults.apiKey.message = `API key exists`;
       logProvisioning(userId, `✅ API key exists`, 'success');
@@ -1095,8 +1407,8 @@ async function verifyProvisioningComplete(userId, agentId, agentName, kbName, ex
   }
   
   // Calculate overall result
+  // Note: KB name is not a critical check - KB doesn't exist during provisioning, only intended name is stored
   const criticalChecks = [
-    verificationResults.kbName,
     verificationResults.agentExists,
     verificationResults.agentDeployed,
     verificationResults.apiKey,
@@ -1405,14 +1717,26 @@ async function provisionUserAsync(userId, token) {
         
         // Create placeholder files to make folders visible in dashboard
         // In S3/Spaces, folders are just prefixes, so we need at least one object
-        // Note: /archived/ folder will be created automatically when files are archived
         const rootPlaceholder = `${userId}/.keep`;
+        const archivedPlaceholder = `${userId}/archived/.keep`;
         const kbPlaceholder = `${userId}/${kbName}/.keep`;
         
         // Create root userId folder placeholder (for new imports)
         await s3Client.send(new PutObjectCommand({
           Bucket: bucketName,
           Key: rootPlaceholder,
+          Body: '',
+          ContentType: 'text/plain',
+          Metadata: {
+            createdBy: 'provisioning',
+            createdAt: new Date().toISOString()
+          }
+        }));
+        
+        // Create archived folder placeholder (for files moved from root)
+        await s3Client.send(new PutObjectCommand({
+          Bucket: bucketName,
+          Key: archivedPlaceholder,
           Body: '',
           ContentType: 'text/plain',
           Metadata: {
@@ -1433,7 +1757,14 @@ async function provisionUserAsync(userId, token) {
           }
         }));
         
-        logProvisioning(userId, `✅ Bucket folders created: ${userId}/ (root) and ${userId}/${kbName}/ (KB)`, 'success');
+        logProvisioning(userId, `✅ Bucket folders created: ${userId}/ (root), ${userId}/archived/ (archived), and ${userId}/${kbName}/ (KB)`, 'success');
+        
+        // Store the intended KB name for workflow/staging purposes (KB doesn't exist yet)
+        // This is different from connectedKB/connectedKBs which indicate an actual connected KB
+        await updateUserDoc({
+          kbName: kbName  // Intended KB name, not an actual connected KB
+        });
+        
         updateStatus('Bucket folders created', { 
           root: `${userId}/`,
           kb: `${userId}/${kbName}/`
@@ -2497,13 +2828,14 @@ app.post('/api/update-knowledge-base', async (req, res) => {
     let kbId = null;
     let kbDetails = null;
     let existingKbFound = false;
+    let allKBsCache = null; // Cache KB list for reuse
     
     try {
       // List all KBs from DO API
-      const allKBs = await doClient.kb.list();
+      allKBsCache = await doClient.kb.list();
       
       // Find KB by name (case-sensitive match)
-      const foundKB = allKBs.find(kb => kb.name === kbName);
+      const foundKB = allKBsCache.find(kb => kb.name === kbName);
       
       if (foundKB) {
         // KB exists in DO - use it
@@ -2797,12 +3129,63 @@ app.post('/api/update-knowledge-base', async (req, res) => {
         throw new Error('Indexing job started but no job ID found in response');
       }
     } catch (error) {
-      console.error('❌ Error starting indexing job:', error);
-      return res.status(500).json({
-        success: false,
-        error: 'INDEXING_START_FAILED',
-        message: `Failed to start indexing job: ${error.message}`
-      });
+      // Check if error is "already has an indexing job running"
+      if (error.message && error.message.includes('already has an indexing job running')) {
+        console.log(`ℹ️ KB already has an indexing job running. Checking for existing job...`);
+        
+        // Try to get existing job from KB details or user document
+        try {
+          // Check if user document has a pending job ID
+          if (userDoc.kbLastIndexingJobId) {
+            // Verify the job still exists
+            try {
+              const existingJob = await doClient.indexing.getStatus(userDoc.kbLastIndexingJobId);
+              if (existingJob && (existingJob.status === 'INDEX_JOB_STATUS_PENDING' || 
+                                  existingJob.status === 'INDEX_JOB_STATUS_RUNNING')) {
+                jobId = userDoc.kbLastIndexingJobId;
+                console.log(`✅ Using existing indexing job: ${jobId}`);
+              } else {
+                console.log(`⚠️ Existing job ${userDoc.kbLastIndexingJobId} is not running. Will need to wait for completion.`);
+              }
+            } catch (jobError) {
+              console.log(`⚠️ Could not verify existing job ${userDoc.kbLastIndexingJobId}: ${jobError.message}`);
+            }
+          }
+          
+          // If we still don't have a job ID, try to get it from KB details
+          if (!jobId) {
+            try {
+              const kbDetails = await doClient.kb.get(kbId);
+              // KB might have indexing_job_id or similar field
+              // For now, we'll need to check indexing jobs list
+              // This is a limitation - we may need to list all indexing jobs
+              console.log(`⚠️ Could not find existing job ID. User will need to wait for current job to complete.`);
+            } catch (kbError) {
+              console.error('Error getting KB details:', kbError);
+            }
+          }
+        } catch (fallbackError) {
+          console.error('Error handling existing indexing job:', fallbackError);
+        }
+        
+        // If we still don't have a job ID, return error asking user to wait
+        if (!jobId) {
+          return res.status(400).json({
+            success: false,
+            error: 'INDEXING_ALREADY_RUNNING',
+            message: 'Knowledge base already has an indexing job running. Please wait for it to complete before starting a new one.',
+            kbId: kbId
+          });
+        }
+      } else {
+        // Other error - return it
+        console.error('❌ Error starting indexing job:', error);
+        return res.status(500).json({
+          success: false,
+          error: 'INDEXING_START_FAILED',
+          message: `Failed to start indexing job: ${error.message}`
+        });
+      }
     }
     
     // Step 5: Update user document with KB info and indexing status
@@ -2812,7 +3195,7 @@ app.post('/api/update-knowledge-base', async (req, res) => {
     userDoc.kbLastIndexingJobId = jobId;
     userDoc.kbIndexingStartedAt = new Date().toISOString();
     
-    // Update connectedKBs array - only contains KBs that actually exist in DO
+    // KB now exists in DO - update connectedKBs array (only contains KBs that actually exist and are connected)
     // For now, we support one KB per user, but using array for future multi-KB support
     if (!userDoc.connectedKBs || !Array.isArray(userDoc.connectedKBs)) {
       userDoc.connectedKBs = [];
@@ -2821,10 +3204,12 @@ app.post('/api/update-knowledge-base', async (req, res) => {
     if (!userDoc.connectedKBs.includes(kbName)) {
       userDoc.connectedKBs.push(kbName);
     }
-    // Remove old connectedKB field if it exists (migration from old format)
-    if (userDoc.connectedKB && userDoc.connectedKB !== kbName) {
-      delete userDoc.connectedKB;
-    }
+    // Also set legacy connectedKB field for backward compatibility (KB now actually exists)
+    userDoc.connectedKB = kbName;
+    
+    // NOTE: kbName is NEVER deleted - it's the permanent intended KB name set during provisioning
+    // It serves as the source of truth for the KB name and prevents generating new names
+    // connectedKBs is for tracking which KBs actually exist in DO, but kbName is permanent
     
     // Save updated user document
     await cloudant.saveDocument('maia_users', userDoc);
@@ -3045,8 +3430,8 @@ app.get('/api/user-status', async (req, res) => {
       });
     }
 
-    // Get the user document
-    const userDoc = await cloudant.getDocument('maia_users', userId);
+    // Validate user resources against DigitalOcean (single source of truth)
+    const { hasAgent, kbStatus, userDoc } = await validateUserResources(userId);
     
     if (!userDoc) {
       return res.status(404).json({ 
@@ -3057,60 +3442,18 @@ app.get('/api/user-status', async (req, res) => {
     }
 
     const workflowStage = userDoc.workflowStage || 'unknown';
-    const hasAgent = !!(userDoc.assignedAgentId && userDoc.assignedAgentName);
     const fileCount = userDoc.files ? userDoc.files.length : 0;
     
-    // Check if user has a knowledge base - source of truth is DigitalOcean API
-    // Verify the KB actually exists in DO, not just in the database
-    let hasKB = false;
-    if (userDoc.kbId && typeof userDoc.kbId === 'string' && userDoc.kbId.trim().length > 0) {
-      try {
-        // Verify KB exists in DigitalOcean
-        const kb = await doClient.kb.get(userDoc.kbId);
-        hasKB = !!(kb && kb.uuid === userDoc.kbId);
-        
-        // If KB doesn't exist in DO but is in database, clear it from user document
-        if (!hasKB) {
-          console.log(`⚠️ KB ${userDoc.kbId} found in database but not in DigitalOcean. Clearing kbId from user document.`);
-          userDoc.kbId = null;
-          userDoc.connectedKBs = [];
-          userDoc.kbIndexingNeeded = false;
-          userDoc.kbPendingFiles = [];
-          userDoc.kbLastIndexingJobId = null;
-          await cloudant.saveDocument('maia_users', userDoc);
-        }
-      } catch (error) {
-        // KB doesn't exist in DO (404 or similar)
-        // DO client throws: "DigitalOcean API error: 404 - ..."
-        const isNotFound = error.status === 404 || 
-                          error.message?.includes('404') || 
-                          error.message?.includes('not found') ||
-                          error.message?.toLowerCase().includes('not_found');
-        
-        if (isNotFound) {
-          console.log(`⚠️ KB ${userDoc.kbId} not found in DigitalOcean. Clearing kbId from user document.`);
-          userDoc.kbId = null;
-          userDoc.connectedKBs = [];
-          userDoc.kbIndexingNeeded = false;
-          userDoc.kbPendingFiles = [];
-          userDoc.kbLastIndexingJobId = null;
-          await cloudant.saveDocument('maia_users', userDoc);
-          hasKB = false;
-        } else {
-          // Other error - log but don't fail the request
-          console.error('❌ Error checking KB existence in DO:', error);
-          // Default to false if we can't verify
-          hasKB = false;
-        }
-      }
-    }
+    // Convert kbStatus to hasKB for backward compatibility, but also return kbStatus
+    const hasKB = kbStatus === 'attached' || kbStatus === 'not_attached';
 
     res.json({
       success: true,
       workflowStage,
       hasAgent,
       fileCount,
-      hasKB
+      hasKB,
+      kbStatus // 'none' | 'not_attached' | 'attached'
     });
   } catch (error) {
     console.error('❌ Error fetching user status:', error);
@@ -3118,6 +3461,170 @@ app.get('/api/user-status', async (req, res) => {
       success: false, 
       message: `Failed to fetch user status: ${error.message}`,
       error: 'FETCH_FAILED'
+    });
+  }
+});
+
+// Attach KB to Agent endpoint
+app.post('/api/attach-kb-to-agent', async (req, res) => {
+  try {
+    const { userId } = req.body;
+    
+    if (!userId) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'User ID is required',
+        error: 'MISSING_USER_ID'
+      });
+    }
+
+    // Get user document
+    const userDoc = await cloudant.getDocument('maia_users', userId);
+    
+    if (!userDoc) {
+      return res.status(404).json({ 
+        success: false, 
+        message: 'User not found',
+        error: 'USER_NOT_FOUND'
+      });
+    }
+
+    if (!userDoc.assignedAgentId) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'User has no assigned agent',
+        error: 'NO_AGENT'
+      });
+    }
+
+    if (!userDoc.kbId) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'User has no knowledge base',
+        error: 'NO_KB'
+      });
+    }
+
+    try {
+      // Attach KB to agent
+      await doClient.agent.attachKB(userDoc.assignedAgentId, userDoc.kbId);
+      console.log(`✅ Attached KB ${userDoc.kbId} to agent ${userDoc.assignedAgentId}`);
+      
+      res.json({ 
+        success: true, 
+        message: 'Knowledge base attached to agent successfully',
+        agentId: userDoc.assignedAgentId,
+        kbId: userDoc.kbId
+      });
+    } catch (error) {
+      console.error('❌ Error attaching KB to agent:', error);
+      // Check if KB is already attached (might return 409 or similar)
+      if (error.message && (error.message.includes('already') || error.message.includes('409'))) {
+        console.log('ℹ️ KB already attached to agent');
+        res.json({ 
+          success: true, 
+          message: 'Knowledge base is already attached to agent',
+          agentId: userDoc.assignedAgentId,
+          kbId: userDoc.kbId,
+          alreadyAttached: true
+        });
+      } else {
+        throw error;
+      }
+    }
+  } catch (error) {
+    console.error('Error attaching KB to agent:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: `Failed to attach KB to agent: ${error.message}`,
+      error: error.message 
+    });
+  }
+});
+
+// Generate Patient Summary endpoint
+app.post('/api/generate-patient-summary', async (req, res) => {
+  try {
+    const { userId } = req.body;
+    
+    if (!userId) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'User ID is required',
+        error: 'MISSING_USER_ID'
+      });
+    }
+
+    // Get user document
+    const userDoc = await cloudant.getDocument('maia_users', userId);
+    
+    if (!userDoc) {
+      return res.status(404).json({ 
+        success: false, 
+        message: 'User not found',
+        error: 'USER_NOT_FOUND'
+      });
+    }
+
+    if (!userDoc.assignedAgentId || !userDoc.agentEndpoint || !userDoc.agentApiKey) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'User agent is not properly configured',
+        error: 'AGENT_NOT_CONFIGURED'
+      });
+    }
+
+    // Use the agent to generate a patient summary
+    // We'll use the DigitalOcean provider directly to call the agent
+    const { DigitalOceanProvider } = await import('../lib/chat-client/providers/digitalocean.js');
+    const agentProvider = new DigitalOceanProvider(userDoc.agentApiKey, {
+      baseURL: userDoc.agentEndpoint
+    });
+
+    const summaryPrompt = 'Please generate a comprehensive patient summary based on all available medical records and documents in the knowledge base. Include key medical history, diagnoses, medications, allergies, and important notes.';
+    
+    console.log(`📝 Generating patient summary for user ${userId} using agent ${userDoc.assignedAgentId}`);
+    
+    try {
+      const summaryResponse = await agentProvider.chat({
+        messages: [
+          {
+            role: 'user',
+            content: summaryPrompt
+          }
+        ],
+        model: userDoc.agentModelName || 'openai-gpt-oss-120b',
+        stream: false
+      });
+
+      const summary = summaryResponse.content || summaryResponse.text || '';
+      
+      if (!summary || summary.trim().length === 0) {
+        throw new Error('Empty summary received from agent');
+      }
+
+      // Save the summary to user document
+      userDoc.patientSummary = summary;
+      userDoc.patientSummaryGeneratedAt = new Date().toISOString();
+      await cloudant.saveDocument('maia_users', userDoc);
+
+      console.log(`✅ Patient summary generated successfully for user ${userId}`);
+      
+      res.json({ 
+        success: true, 
+        summary,
+        message: 'Patient summary generated successfully'
+      });
+    } catch (error) {
+      console.error('❌ Error generating patient summary:', error);
+      throw error;
+    }
+  } catch (error) {
+    console.error('Error generating patient summary:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: `Failed to generate patient summary: ${error.message}`,
+      error: error.message 
     });
   }
 });
@@ -3197,7 +3704,7 @@ app.post('/api/patient-summary', async (req, res) => {
     userDoc.patientSummary = summary;
     userDoc.updatedAt = new Date().toISOString();
     
-    await cloudant.updateDocument('maia_users', userDoc);
+    await cloudant.saveDocument('maia_users', userDoc);
     
     res.json({ 
       success: true, 

@@ -352,11 +352,93 @@
       v-model="showPdfViewer"
       :file="viewingFile"
     />
+
+    <!-- Patient Summary Available Modal -->
+    <q-dialog v-model="showSummaryAvailableModal" persistent>
+      <q-card style="min-width: 400px; max-width: 600px;">
+        <q-card-section class="row items-center q-pb-none">
+          <div class="text-h6">New Patient Summary Available</div>
+        </q-card-section>
+
+        <q-card-section>
+          <div class="text-body1">
+            A new patient summary has been generated based on your updated knowledge base.
+          </div>
+        </q-card-section>
+
+        <q-card-actions align="right" class="q-pa-md">
+          <q-btn 
+            flat 
+            label="CLOSE MyStuff" 
+            color="grey-8" 
+            @click="handleCloseMyStuff"
+          />
+          <q-btn 
+            flat 
+            label="SAVE SUMMARY" 
+            color="primary" 
+            @click="handleSaveSummary"
+          />
+          <q-btn 
+            label="VIEW SUMMARY" 
+            color="primary" 
+            @click="handleViewSummary"
+          />
+        </q-card-actions>
+      </q-card>
+    </q-dialog>
+
+    <!-- Patient Summary View Modal -->
+    <q-dialog v-model="showSummaryViewModal" persistent>
+      <q-card style="min-width: 600px; max-width: 900px; max-height: 80vh;">
+        <q-card-section class="row items-center q-pb-none">
+          <div class="text-h6">Patient Summary</div>
+          <q-space />
+          <q-btn icon="close" flat round dense @click="handleCloseWithoutSaving" />
+        </q-card-section>
+
+        <q-card-section style="max-height: 60vh; overflow-y: auto;">
+          <div v-if="!editingSummary" class="text-body2" style="white-space: pre-wrap;">
+            {{ summaryViewText }}
+          </div>
+          <q-input
+            v-else
+            v-model="summaryViewText"
+            type="textarea"
+            autofocus
+            rows="20"
+            filled
+            style="width: 100%;"
+          />
+        </q-card-section>
+
+        <q-card-actions align="right" class="q-pa-md">
+          <q-btn 
+            flat 
+            label="CLOSE WITHOUT SAVING" 
+            color="grey-8" 
+            @click="handleCloseWithoutSaving"
+          />
+          <q-btn 
+            v-if="editingSummary"
+            label="SAVE" 
+            color="primary" 
+            @click="handleSaveEditedSummary"
+          />
+          <q-btn 
+            v-else
+            label="EDIT" 
+            color="primary" 
+            @click="handleEditSummary"
+          />
+        </q-card-actions>
+      </q-card>
+    </q-dialog>
   </q-dialog>
 </template>
 
 <script setup lang="ts">
-import { ref, computed, watch, onMounted } from 'vue';
+import { ref, computed, watch, onMounted, onUnmounted } from 'vue';
 import VueMarkdown from 'vue-markdown-render';
 import PdfViewerModal from './PdfViewerModal.vue';
 import { useQuasar } from 'quasar';
@@ -393,6 +475,9 @@ const props = defineProps<Props>();
 const emit = defineEmits<{
   'update:modelValue': [value: boolean];
   'chat-selected': [chat: SavedChat];
+  'indexing-started': [data: { jobId: string; phase: string }];
+  'indexing-status-update': [data: { jobId: string; phase: string; tokens: string; filesIndexed: number; progress: number }];
+  'indexing-finished': [data: { jobId: string; phase: string; error?: string }];
 }>();
 
 const isOpen = ref(props.modelValue);
@@ -458,6 +543,16 @@ const indexingStatus = ref({
   error: ''
 });
 const currentIndexingJobId = ref<string | null>(null);
+const pollingInterval = ref<ReturnType<typeof setInterval> | null>(null);
+const indexingStartTime = ref<number | null>(null);
+const INDEXING_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes
+
+// Patient summary modal state
+const showSummaryAvailableModal = ref(false);
+const showSummaryViewModal = ref(false);
+const newPatientSummary = ref('');
+const editingSummary = ref(false);
+const summaryViewText = ref('');
 
 const $q = useQuasar();
 
@@ -859,6 +954,27 @@ const updateAndIndexKB = async () => {
       
       // Start polling for status
       pollIndexingProgress(result.jobId);
+    } else if (result.error === 'INDEXING_ALREADY_RUNNING') {
+      // KB already has an indexing job running - check if we can get the job ID
+      console.log('[KB] Indexing already running:', result.message);
+      if (result.kbId) {
+        // Try to get the existing job ID from user document
+        // For now, show a message and suggest waiting
+        indexingKB.value = false;
+        indexingStatus.value.phase = 'error';
+        indexingStatus.value.error = result.message || 'Indexing job already running';
+        if ($q && typeof $q.notify === 'function') {
+          $q.notify({
+            type: 'warning',
+            message: 'Indexing already in progress. Please wait for it to complete.',
+            timeout: 5000
+          });
+        } else {
+          alert('Indexing already in progress. Please wait for it to complete.');
+        }
+      } else {
+        throw new Error(result.message || 'Indexing job already running');
+      }
     } else {
       // No job ID - something went wrong
       console.error('[KB] No jobId in response:', result);
@@ -885,8 +1001,34 @@ const updateAndIndexKB = async () => {
 };
 
 const pollIndexingProgress = async (jobId: string) => {
-  const pollInterval = setInterval(async () => {
+  // Clear any existing polling interval
+  if (pollingInterval.value) {
+    clearInterval(pollingInterval.value);
+  }
+  
+  // Set start time for timeout tracking
+  indexingStartTime.value = Date.now();
+  
+  // Emit event to parent to update status tip
+  emit('indexing-started', { jobId, phase: 'indexing_started' });
+  
+  pollingInterval.value = setInterval(async () => {
     try {
+      // Check for timeout
+      if (indexingStartTime.value && (Date.now() - indexingStartTime.value) > INDEXING_TIMEOUT_MS) {
+        clearInterval(pollingInterval.value!);
+        pollingInterval.value = null;
+        indexingKB.value = false;
+        indexingStatus.value.phase = 'error';
+        indexingStatus.value.error = 'Indexing timed out after 30 minutes';
+        emit('indexing-finished', { jobId, phase: 'error', error: 'Indexing timed out' });
+        $q.notify({
+          type: 'negative',
+          message: 'Indexing timed out after 30 minutes. Please check the knowledge base status.'
+        });
+        return;
+      }
+      
       const response = await fetch(`http://localhost:3001/api/kb-indexing-status/${jobId}?userId=${encodeURIComponent(props.userId)}`, {
         credentials: 'include'
       });
@@ -907,10 +1049,20 @@ const pollIndexingProgress = async (jobId: string) => {
         progress: result.progress || 0,
         error: result.error || ''
       };
+      
+      // Emit status update to parent for status tip
+      emit('indexing-status-update', {
+        jobId,
+        phase: indexingStatus.value.phase,
+        tokens: indexingStatus.value.tokens,
+        filesIndexed: indexingStatus.value.filesIndexed,
+        progress: indexingStatus.value.progress
+      });
 
       // Handle completion
       if (result.completed) {
-        clearInterval(pollInterval);
+        clearInterval(pollingInterval.value);
+        pollingInterval.value = null;
         
         if (result.phase === 'complete') {
           indexingStatus.value.phase = 'complete';
@@ -924,10 +1076,10 @@ const pollIndexingProgress = async (jobId: string) => {
             .filter(file => file.inKnowledgeBase)
             .map(file => file.bucketKey);
           
-          $q.notify({
-            type: 'positive',
-            message: 'Knowledge base indexed successfully!'
-          });
+          emit('indexing-finished', { jobId, phase: 'complete' });
+          
+          // Attach KB to agent and generate patient summary
+          await attachKBAndGenerateSummary();
           
           // Auto-hide after 5 seconds
           setTimeout(() => {
@@ -936,6 +1088,7 @@ const pollIndexingProgress = async (jobId: string) => {
         } else if (result.phase === 'error') {
           indexingStatus.value.phase = 'error';
           indexingStatus.value.error = result.error || 'Indexing failed';
+          emit('indexing-finished', { jobId, phase: 'error', error: indexingStatus.value.error });
           $q.notify({
             type: 'negative',
             message: `Indexing failed: ${indexingStatus.value.error}`
@@ -943,17 +1096,27 @@ const pollIndexingProgress = async (jobId: string) => {
         }
       }
     } catch (err) {
-      clearInterval(pollInterval);
+      clearInterval(pollingInterval.value!);
+      pollingInterval.value = null;
       indexingKB.value = false;
       indexingStatus.value.phase = 'error';
       indexingStatus.value.error = err instanceof Error ? err.message : 'Failed to get indexing status';
+      emit('indexing-finished', { jobId, phase: 'error', error: indexingStatus.value.error });
       console.error('Error polling indexing status:', err);
       $q.notify({
         type: 'negative',
         message: `Error checking indexing status: ${indexingStatus.value.error}`
       });
     }
-  }, 2000); // Poll every 2 seconds
+  }, 10000); // Poll every 10 seconds (changed from 2 seconds)
+  
+  // Clean up on component unmount
+  onUnmounted(() => {
+    if (pollingInterval.value) {
+      clearInterval(pollingInterval.value);
+      pollingInterval.value = null;
+    }
+  });
 };
 
 // Chat management methods
@@ -1028,6 +1191,194 @@ const deleteChat = async (chat: SavedChat) => {
       type: 'negative',
       message: err instanceof Error ? err.message : 'Failed to delete chat'
     });
+  }
+};
+
+// Attach KB to agent and generate patient summary
+const attachKBAndGenerateSummary = async () => {
+  try {
+    console.log('[KB] Attaching KB to agent and generating patient summary...');
+    
+    // Keep indexing status visible and update message
+    indexingStatus.value.message = 'Attaching knowledge base to agent...';
+    emit('indexing-status-update', {
+      jobId: currentIndexingJobId.value || '',
+      phase: 'kb_setup',
+      tokens: indexingStatus.value.tokens,
+      filesIndexed: indexingStatus.value.filesIndexed,
+      progress: 1.0
+    });
+    
+    // Step 1: Attach KB to agent
+    const attachResponse = await fetch('http://localhost:3001/api/attach-kb-to-agent', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      credentials: 'include',
+      body: JSON.stringify({
+        userId: props.userId
+      })
+    });
+
+    if (!attachResponse.ok) {
+      const errorData = await attachResponse.json();
+      throw new Error(errorData.message || 'Failed to attach KB to agent');
+    }
+
+    const attachResult = await attachResponse.json();
+    console.log('[KB] KB attached to agent:', attachResult);
+    
+    // Step 2: Generate patient summary
+    indexingStatus.value.message = 'Generating patient summary...';
+    emit('indexing-status-update', {
+      jobId: currentIndexingJobId.value || '',
+      phase: 'kb_setup',
+      tokens: indexingStatus.value.tokens,
+      filesIndexed: indexingStatus.value.filesIndexed,
+      progress: 1.0
+    });
+    
+    const summaryResponse = await fetch('http://localhost:3001/api/generate-patient-summary', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      credentials: 'include',
+      body: JSON.stringify({
+        userId: props.userId
+      })
+    });
+
+    if (!summaryResponse.ok) {
+      const errorData = await summaryResponse.json();
+      throw new Error(errorData.message || 'Failed to generate patient summary');
+    }
+
+    const summaryResult = await summaryResponse.json();
+    console.log('[KB] Patient summary generated:', summaryResult);
+    
+    // Store the new summary and show modal
+    newPatientSummary.value = summaryResult.summary || '';
+    showSummaryAvailableModal.value = true;
+    
+    // Update indexing status to show completion
+    indexingStatus.value.message = 'Knowledge base indexed and patient summary generated!';
+    
+    $q.notify({
+      type: 'positive',
+      message: 'Knowledge base indexed and patient summary generated!'
+    });
+  } catch (error) {
+    console.error('[KB] Error in attachKBAndGenerateSummary:', error);
+    indexingStatus.value.message = `Error: ${error instanceof Error ? error.message : 'Failed to attach KB or generate summary'}`;
+    $q.notify({
+      type: 'negative',
+      message: error instanceof Error ? error.message : 'Failed to attach KB or generate summary'
+    });
+  }
+};
+
+// Patient Summary modal handlers
+const handleViewSummary = () => {
+  summaryViewText.value = newPatientSummary.value;
+  editingSummary.value = false;
+  showSummaryAvailableModal.value = false;
+  showSummaryViewModal.value = true;
+};
+
+const handleSaveSummary = async () => {
+  try {
+    const response = await fetch('http://localhost:3001/api/patient-summary', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      credentials: 'include',
+      body: JSON.stringify({
+        userId: props.userId,
+        summary: newPatientSummary.value
+      })
+    });
+
+    if (!response.ok) {
+      throw new Error('Failed to save patient summary');
+    }
+
+    // Update local summary
+    patientSummary.value = newPatientSummary.value;
+    
+    showSummaryAvailableModal.value = false;
+    if (showSummaryViewModal.value) {
+      showSummaryViewModal.value = false;
+    }
+    
+    $q.notify({
+      type: 'positive',
+      message: 'Patient summary saved successfully!'
+    });
+  } catch (error) {
+    $q.notify({
+      type: 'negative',
+      message: error instanceof Error ? error.message : 'Failed to save patient summary'
+    });
+  }
+};
+
+const handleCloseMyStuff = () => {
+  showSummaryAvailableModal.value = false;
+  emit('update:modelValue', false);
+};
+
+const handleEditSummary = () => {
+  editingSummary.value = true;
+};
+
+const handleSaveEditedSummary = async () => {
+  const summaryToSave = editingSummary.value ? summaryViewText.value : newPatientSummary.value;
+  
+  try {
+    const response = await fetch('http://localhost:3001/api/patient-summary', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      credentials: 'include',
+      body: JSON.stringify({
+        userId: props.userId,
+        summary: summaryToSave
+      })
+    });
+
+    if (!response.ok) {
+      throw new Error('Failed to save patient summary');
+    }
+
+    // Update local values
+    newPatientSummary.value = summaryToSave;
+    patientSummary.value = summaryToSave;
+    editingSummary.value = false;
+    showSummaryViewModal.value = false;
+    
+    $q.notify({
+      type: 'positive',
+      message: 'Patient summary saved successfully!'
+    });
+  } catch (error) {
+    $q.notify({
+      type: 'negative',
+      message: error instanceof Error ? error.message : 'Failed to save patient summary'
+    });
+  }
+};
+
+const handleCloseWithoutSaving = () => {
+  if (editingSummary.value) {
+    // Revert changes
+    summaryViewText.value = newPatientSummary.value;
+    editingSummary.value = false;
+  } else {
+    showSummaryViewModal.value = false;
   }
 };
 
