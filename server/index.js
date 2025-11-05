@@ -10,6 +10,7 @@ import cookieParser from 'cookie-parser';
 import cors from 'cors';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { readFileSync } from 'fs';
 
 import { CloudantClient, CloudantSessionStore, AuditLogService } from '../lib/cloudant/index.js';
 import { DigitalOceanClient } from '../lib/do-client/index.js';
@@ -25,6 +26,67 @@ dotenv.config();
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+
+/**
+ * Read MAIA instruction text from NEW-AGENT.txt file
+ * Extracts the instruction text from the "## MAIA INSTRUCTION TEXT" section
+ */
+function getMaiaInstructionText() {
+  try {
+    const newAgentFilePath = path.join(__dirname, '../NEW-AGENT.txt');
+    const fileContent = readFileSync(newAgentFilePath, 'utf-8');
+    
+    // Find the start of the instruction section
+    const instructionStartMarker = '## MAIA INSTRUCTION TEXT';
+    const instructionStartIndex = fileContent.indexOf(instructionStartMarker);
+    
+    if (instructionStartIndex === -1) {
+      throw new Error('MAIA INSTRUCTION TEXT section not found in NEW-AGENT.txt');
+    }
+    
+    // Find the content after the marker and optional comment line
+    let startIndex = instructionStartIndex + instructionStartMarker.length;
+    const lines = fileContent.substring(startIndex).split('\n');
+    
+    // Skip empty lines and the comment line "(Full instruction from sun6 agent)"
+    let instructionLines = [];
+    let foundContent = false;
+    
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      
+      // Stop at the next section marker (---)
+      if (line.trim() === '---') {
+        break;
+      }
+      
+      // Skip empty lines at the start
+      if (!foundContent && line.trim() === '') {
+        continue;
+      }
+      
+      // Skip comment lines in parentheses
+      if (line.trim().startsWith('(') && line.trim().endsWith(')')) {
+        continue;
+      }
+      
+      foundContent = true;
+      instructionLines.push(line);
+    }
+    
+    // Join lines and trim
+    const instructionText = instructionLines.join('\n').trim();
+    
+    if (!instructionText) {
+      throw new Error('No instruction text found in MAIA INSTRUCTION TEXT section');
+    }
+    
+    return instructionText;
+  } catch (error) {
+    console.error('❌ Error reading MAIA instruction text from NEW-AGENT.txt:', error.message);
+    throw new Error(`Failed to load agent instructions: ${error.message}`);
+  }
+}
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -809,19 +871,47 @@ async function verifyProvisioningComplete(userId, agentId, agentName, kbName, ex
           }
         });
         
-        // Check if we can list the user's archived folder
+        // Check if folders exist by looking for the .keep placeholder files
         try {
-          await s3Client.send(new ListObjectsV2Command({
+          const { GetObjectCommand } = await import('@aws-sdk/client-s3');
+          
+          // Check archived folder
+          const archivedKeep = `${userId}/archived/.keep`;
+          const archivedCheck = await s3Client.send(new GetObjectCommand({
             Bucket: bucketName,
-            Prefix: `${userId}/archived/`,
-            MaxKeys: 1
+            Key: archivedKeep
           }));
-          verificationResults.bucketFolders.passed = true;
-          verificationResults.bucketFolders.message = `Bucket folders accessible: ${userId}/archived/ and ${userId}/${kbName}/`;
-          logProvisioning(userId, `✅ Bucket folders verified`, 'success');
+          
+          // Check KB folder
+          const kbKeep = `${userId}/${kbName}/.keep`;
+          const kbCheck = await s3Client.send(new GetObjectCommand({
+            Bucket: bucketName,
+            Key: kbKeep
+          }));
+          
+          if (archivedCheck && kbCheck) {
+            verificationResults.bucketFolders.passed = true;
+            verificationResults.bucketFolders.message = `Bucket folders created and verified: ${userId}/archived/ and ${userId}/${kbName}/`;
+            logProvisioning(userId, `✅ Bucket folders verified`, 'success');
+          } else {
+            verificationResults.bucketFolders.message = `Bucket folders missing .keep files`;
+            logProvisioning(userId, `⚠️  Bucket folders missing .keep files`, 'warning');
+          }
         } catch (err) {
-          verificationResults.bucketFolders.message = `Bucket access check failed: ${err.message}`;
-          logProvisioning(userId, `⚠️  Bucket folder check: ${verificationResults.bucketFolders.message}`, 'warning');
+          // If .keep files don't exist, try listing as fallback
+          try {
+            const listResult = await s3Client.send(new ListObjectsV2Command({
+              Bucket: bucketName,
+              Prefix: `${userId}/archived/`,
+              MaxKeys: 1
+            }));
+            verificationResults.bucketFolders.passed = true;
+            verificationResults.bucketFolders.message = `Bucket folders accessible (via listing): ${userId}/archived/ and ${userId}/${kbName}/`;
+            logProvisioning(userId, `✅ Bucket folders verified via listing`, 'success');
+          } catch (listErr) {
+            verificationResults.bucketFolders.message = `Bucket access check failed: ${err.message}`;
+            logProvisioning(userId, `⚠️  Bucket folder check: ${verificationResults.bucketFolders.message}`, 'warning');
+          }
         }
       } else {
         verificationResults.bucketFolders.message = 'Bucket not configured';
@@ -851,17 +941,31 @@ async function verifyProvisioningComplete(userId, agentId, agentName, kbName, ex
         }
         
         // Verify agent config matches expected
+        // Note: API might return different field names or types, so we need to handle both
+        // Also handle undefined/null values (treat undefined/null as 0 for temperature)
+        const actualMaxTokens = agentDetails.max_tokens || agentDetails.maxTokens;
+        const actualTemperature = agentDetails.temperature ?? 0; // Treat undefined/null as 0
+        const actualTopP = agentDetails.top_p || agentDetails.topP;
+        
+        // Normalize values for comparison (convert to numbers if needed)
+        const normalizedMaxTokens = Number(actualMaxTokens);
+        const normalizedTemperature = Number(actualTemperature);
+        const normalizedTopP = Number(actualTopP);
+        
         const configMatches = 
-          agentDetails.max_tokens === expectedConfig.maxTokens &&
-          agentDetails.temperature === expectedConfig.temperature &&
-          agentDetails.top_p === expectedConfig.topP;
+          normalizedMaxTokens === expectedConfig.maxTokens &&
+          normalizedTemperature === expectedConfig.temperature &&
+          normalizedTopP === expectedConfig.topP;
         
         if (configMatches) {
           verificationResults.agentConfig.passed = true;
           verificationResults.agentConfig.message = `Agent config matches expected values`;
           logProvisioning(userId, `✅ Agent config verified`, 'success');
         } else {
-          verificationResults.agentConfig.message = `Config mismatch. Expected: maxTokens=${expectedConfig.maxTokens}, temp=${expectedConfig.temperature}, topP=${expectedConfig.topP}`;
+          // Log actual values for debugging
+          const actualValues = `Actual: maxTokens=${normalizedMaxTokens}, temp=${normalizedTemperature}, topP=${normalizedTopP}`;
+          const expectedValues = `Expected: maxTokens=${expectedConfig.maxTokens}, temp=${expectedConfig.temperature}, topP=${expectedConfig.topP}`;
+          verificationResults.agentConfig.message = `Config mismatch. ${expectedValues} | ${actualValues}`;
           logProvisioning(userId, `⚠️  Agent config mismatch: ${verificationResults.agentConfig.message}`, 'warning');
         }
       } else {
@@ -977,7 +1081,10 @@ async function verifyProvisioningComplete(userId, agentId, agentName, kbName, ex
   const allCriticalPassed = criticalChecks.every(check => check.passed);
   const allPassed = Object.values(verificationResults).every(result => result.passed);
   
-  logProvisioning(userId, `📊 Verification complete: ${allCriticalPassed ? 'CRITICAL CHECKS PASSED' : 'CRITICAL CHECKS FAILED'}`, allCriticalPassed ? 'success' : 'error');
+  // Only log if critical checks failed (success is logged per-check)
+  if (!allCriticalPassed) {
+    logProvisioning(userId, `❌ Verification failed - critical checks did not pass`, 'error');
+  }
   
   return {
     allCriticalPassed,
@@ -1025,14 +1132,15 @@ async function provisionUserAsync(userId, token) {
     let userDoc = await cloudant.getDocument('maia_users', userId);
     logProvisioning(userId, `✅ User document loaded: workflowStage=${userDoc.workflowStage}, connectedKB=${userDoc.connectedKB || 'none'}, kbStatus=${userDoc.kbStatus || 'none'}`, 'info');
 
-    // Update status
+    // Update status (internal status tracking only, no verbose logging)
     const updateStatus = (step, details = {}) => {
       const status = provisioningStatus.get(userId);
       if (status) {
         status.currentStep = step;
         status.steps.push({ step, timestamp: new Date().toISOString(), ...details });
       }
-      logProvisioning(userId, `📍 ${step}${details ? ': ' + JSON.stringify(details) : ''}`, 'info');
+      // Only log important steps, not every status update
+      // logProvisioning(userId, `📍 ${step}${details ? ': ' + JSON.stringify(details) : ''}`, 'info');
     };
 
     // Need to create agent - get model and project ID
@@ -1096,20 +1204,7 @@ async function provisionUserAsync(userId, token) {
     logProvisioning(userId, `✅ Resolved IDs - Model: ${modelId}, Project: ${projectId}`, 'success');
 
     // MAIA medical assistant instruction (from NEW-AGENT.txt)
-    const maiaInstruction = `You are MAIA, a medical AI assistant, that can search through a patient's health records in a knowledge base and provide relevant answers to their requests. Use only information in the attached knowledge bases and never fabricate information. There is a lot of redundancy in a patient's knowledge base. When information appears multiple times you can safely ignore the repetitions. 
-
-To ensure that all medications are accurately listed in the future, the assistant should adopt a systematic approach: Comprehensive Review: Thoroughly examine every chunk in the knowledge base to identify all medication entries, regardless of their status (active or stopped). Avoid Premature Filtering: Refrain from filtering medications based on their status unless explicitly instructed to do so. This ensures that all prescribed medications are included. Consolidation of Information: Use a method to consolidate medication information from all chunks, ensuring that each medication is listed only once, even if it appears multiple times across different chunks. Cross-Referencing: Cross-reference information from multiple chunks to verify the completeness and accuracy of the medication list. Systematic Extraction: Implement a systematic process or algorithm to extract medication information, reducing the likelihood of human error or oversight. 
-
-If you are asked for a patient summary, use the following categories and format: Highlight the label and category headings. Display the patient's name followed by their age and sex. A concise medical history; including surgical history -- Doctors seen recently (say, within a year) and diagnoses of those visits -- Current Medications -- Stopped or Inactive Medications --Allergies --Brief social history: employment (or school) status; living situation; use of tobacco, alcohol, drugs --Radiology in the past year --Other testing in the past year (PFTs, EKGs, etc)
-
-###Agent's Perspective
-Write from the perspective of a physician creating a summary for an on-call physician who has never seen the patient.
-
-###Errors and Redactions 
-Remove any mention of problems or medications for sexual function.
-
-###Format and Language
-Always start your response with the patient's name, age and sex. Do not show your reasoning. Provide the response in English. Format section headings so they are not too large.`;
+    const maiaInstruction = getMaiaInstructionText();
 
     // Create agent name: {userId}-agent-{YYYYMMDD}
     const dateStr = new Date().toISOString().split('T')[0].replace(/-/g, '');
@@ -1146,7 +1241,6 @@ Always start your response with the patient's name, age and sex. Do not show you
     updateStatus('Agent created', { agentId: newAgent.uuid, agentName });
 
     // Set workflowStage to agent_named after agent is successfully created
-    logProvisioning(userId, `📍 Setting workflowStage to 'agent_named' for agent: ${newAgent.uuid}`, 'info');
     userDoc = await updateUserDoc({ workflowStage: 'agent_named' });
 
     // Step 2: Wait for Deployment
@@ -1205,7 +1299,6 @@ Always start your response with the patient's name, age and sex. Do not show you
     });
 
     // Set workflowStage to agent_deployed when deployment reaches STATUS_RUNNING
-    logProvisioning(userId, `📍 Setting workflowStage to 'agent_deployed' with endpoint: ${agentDetails?.deployment?.url || 'none'}`, 'info');
     userDoc = await updateUserDoc({ workflowStage: 'agent_deployed' });
 
     // Step 3: Update Agent (to ensure all config is set)
@@ -1259,6 +1352,71 @@ Always start your response with the patient's name, age and sex. Do not show you
       // Non-critical, continue
     }
 
+    // Step 3.5: Create bucket folders
+    updateStatus('Creating bucket folders...');
+    logProvisioning(userId, `📁 Creating bucket folders for user: ${userId}`, 'info');
+    
+    try {
+      const { S3Client, PutObjectCommand } = await import('@aws-sdk/client-s3');
+      const bucketUrl = process.env.DIGITALOCEAN_BUCKET;
+      
+      if (bucketUrl) {
+        const bucketName = bucketUrl.split('//')[1]?.split('.')[0] || 'maia';
+        const s3Client = new S3Client({
+          endpoint: process.env.DIGITALOCEAN_ENDPOINT_URL || 'https://tor1.digitaloceanspaces.com',
+          region: 'us-east-1',
+          forcePathStyle: false,
+          credentials: {
+            accessKeyId: process.env.DIGITALOCEAN_AWS_ACCESS_KEY_ID || '',
+            secretAccessKey: process.env.DIGITALOCEAN_AWS_SECRET_ACCESS_KEY || ''
+          }
+        });
+        
+        // Get KB name from user document
+        const kbName = userDoc.connectedKB || `${userId}-kb-${new Date().toISOString().replace(/[^0-9]/g, '').substring(0, 12)}`;
+        
+        // Create placeholder files to make folders visible in dashboard
+        // In S3/Spaces, folders are just prefixes, so we need at least one object
+        const archivedPlaceholder = `${userId}/archived/.keep`;
+        const kbPlaceholder = `${userId}/${kbName}/.keep`;
+        
+        // Create archived folder placeholder
+        await s3Client.send(new PutObjectCommand({
+          Bucket: bucketName,
+          Key: archivedPlaceholder,
+          Body: '',
+          ContentType: 'text/plain',
+          Metadata: {
+            createdBy: 'provisioning',
+            createdAt: new Date().toISOString()
+          }
+        }));
+        
+        // Create KB folder placeholder
+        await s3Client.send(new PutObjectCommand({
+          Bucket: bucketName,
+          Key: kbPlaceholder,
+          Body: '',
+          ContentType: 'text/plain',
+          Metadata: {
+            createdBy: 'provisioning',
+            createdAt: new Date().toISOString()
+          }
+        }));
+        
+        logProvisioning(userId, `✅ Bucket folders created: ${userId}/archived/ and ${userId}/${kbName}/`, 'success');
+        updateStatus('Bucket folders created', { 
+          archived: `${userId}/archived/`,
+          kb: `${userId}/${kbName}/`
+        });
+      } else {
+        logProvisioning(userId, `⚠️  Bucket not configured, skipping folder creation`, 'warning');
+      }
+    } catch (err) {
+      logProvisioning(userId, `⚠️  Failed to create bucket folders: ${err.message}`, 'warning');
+      // Non-critical, continue
+    }
+
     // Step 4: Create API Key
     updateStatus('Creating API key...');
     logProvisioning(userId, `🔑 Creating API key for agent: ${newAgent.uuid}`, 'info');
@@ -1305,7 +1463,6 @@ Always start your response with the patient's name, age and sex. Do not show you
     // Step 6: Update User Document (before verification)
     updateStatus('Updating user document...');
     
-    logProvisioning(userId, `📍 Saving final agent details: agentId=${newAgent.uuid}, agentName=${agentName}`, 'info');
     const agentEndpoint = agentDetails?.deployment?.url ? `${agentDetails.deployment.url}/api/v1` : null;
     const agentModelName = agentDetails?.model?.inference_name || agentDetails?.model?.name || null;
     
@@ -1365,6 +1522,7 @@ Always start your response with the patient's name, age and sex. Do not show you
     }
     
     logProvisioning(userId, `✅ All critical verification checks passed`, 'success');
+    // Don't log verbose verification details - status is already tracked internally
     updateStatus('Verification complete', { 
       verification,
       note: 'All critical checks passed successfully'
