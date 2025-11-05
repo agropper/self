@@ -125,11 +125,63 @@
                 />
               </div>
               
-              <div v-if="indexingKB" class="q-mt-md">
-                <div class="text-body2">Indexing can take about 200 pages per minute.</div>
-                <div class="text-body2 q-mt-xs">KB: {{ indexingStatus.kb || 'Processing...' }}</div>
-                <div class="text-body2">Tokens: {{ indexingStatus.tokens || 'Calculating...' }}</div>
-                <div class="text-body2">Files indexed: {{ indexingStatus.filesIndexed || 0 }}</div>
+              <!-- Phase 1: Moving files -->
+              <div v-if="indexingKB && indexingStatus.phase === 'moving'" class="q-mt-md q-pa-md" style="background-color: #f5f5f5; border-radius: 4px;">
+                <q-linear-progress indeterminate color="primary" class="q-mb-sm" />
+                <div class="text-body2">{{ indexingStatus.message || 'Moving files to knowledge base folder...' }}</div>
+              </div>
+
+              <!-- Phase 2: KB Setup -->
+              <div v-if="indexingKB && indexingStatus.phase === 'kb_setup'" class="q-mt-md q-pa-md" style="background-color: #f5f5f5; border-radius: 4px;">
+                <q-linear-progress indeterminate color="primary" class="q-mb-sm" />
+                <div class="text-body2">{{ indexingStatus.message || 'Setting up knowledge base...' }}</div>
+                <div v-if="indexingStatus.kb" class="text-caption text-grey-7 q-mt-xs">KB: {{ indexingStatus.kb }}</div>
+              </div>
+
+              <!-- Phase 3: Indexing Started -->
+              <div v-if="indexingKB && indexingStatus.phase === 'indexing_started'" class="q-mt-md q-pa-md" style="background-color: #f5f5f5; border-radius: 4px;">
+                <q-linear-progress indeterminate color="primary" class="q-mb-sm" />
+                <div class="text-body2">{{ indexingStatus.message || 'Indexing job started...' }}</div>
+                <div class="text-caption text-grey-7 q-mt-xs">This may take several minutes</div>
+              </div>
+
+              <!-- Phase 4: Indexing In Progress -->
+              <div v-if="indexingKB && indexingStatus.phase === 'indexing'" class="q-mt-md q-pa-md" style="background-color: #f5f5f5; border-radius: 4px;">
+                <q-linear-progress 
+                  :value="indexingStatus.progress || 0" 
+                  color="primary" 
+                  animated
+                  class="q-mb-sm"
+                />
+                <div class="text-body2">Indexing in progress...</div>
+                <div class="text-caption text-grey-7 q-mt-xs">
+                  <span v-if="indexingStatus.kb">KB: {{ indexingStatus.kb }} • </span>
+                  Tokens: {{ indexingStatus.tokens || 'Calculating...' }} • 
+                  Files: {{ indexingStatus.filesIndexed || 0 }}
+                </div>
+                <div class="text-caption text-grey-6 q-mt-xs">
+                  Indexing can take about 200 pages per minute.
+                </div>
+              </div>
+
+              <!-- Phase 5: Complete -->
+              <div v-if="indexingKB && indexingStatus.phase === 'complete'" class="q-mt-md q-pa-md" style="background-color: #e8f5e9; border-radius: 4px; border: 1px solid #4caf50;">
+                <div class="text-body2 text-positive">
+                  ✅ {{ indexingStatus.message || 'Knowledge base indexed successfully!' }}
+                </div>
+                <div class="text-caption text-grey-7 q-mt-xs">
+                  <span v-if="indexingStatus.kb">KB: {{ indexingStatus.kb }} • </span>
+                  Tokens: {{ indexingStatus.tokens }} • 
+                  Files: {{ indexingStatus.filesIndexed }}
+                </div>
+              </div>
+
+              <!-- Phase 6: Error -->
+              <div v-if="indexingKB && indexingStatus.phase === 'error'" class="q-mt-md q-pa-md" style="background-color: #ffebee; border-radius: 4px; border: 1px solid #f44336;">
+                <div class="text-body2 text-negative">
+                  ❌ {{ indexingStatus.error || 'Indexing failed' }}
+                </div>
+                <div v-if="indexingStatus.kb" class="text-caption text-grey-7 q-mt-xs">KB: {{ indexingStatus.kb }}</div>
               </div>
             </div>
           </q-tab-panel>
@@ -397,9 +449,13 @@ const kbIndexingOutOfSync = computed(() => {
 });
 const indexingKB = ref(false);
 const indexingStatus = ref({
+  phase: 'moving', // 'moving' | 'kb_setup' | 'indexing_started' | 'indexing' | 'complete' | 'error'
+  message: '',
   kb: '',
   tokens: '',
-  filesIndexed: 0
+  filesIndexed: 0,
+  progress: 0,
+  error: ''
 });
 const currentIndexingJobId = ref<string | null>(null);
 
@@ -719,8 +775,17 @@ const deleteFile = async (file: UserFile) => {
 };
 
 const updateAndIndexKB = async () => {
+  console.log('[KB] Update and Index KB button clicked');
   indexingKB.value = true;
-  indexingStatus.value = { kb: '', tokens: '', filesIndexed: 0 };
+  indexingStatus.value = {
+    phase: 'moving',
+    message: 'Moving files to knowledge base folder...',
+    kb: '',
+    tokens: '',
+    filesIndexed: 0,
+    progress: 0,
+    error: ''
+  };
 
   try {
     // Get changed files
@@ -735,6 +800,20 @@ const updateAndIndexKB = async () => {
       return null;
     }).filter(Boolean);
 
+    console.log('[KB] Changes to process:', changes.length, changes);
+    console.log('[KB] kbIndexingOutOfSync:', kbIndexingOutOfSync.value);
+    console.log('[KB] hasCheckboxChanges:', hasCheckboxChanges.value);
+    
+    // If no changes but indexing is needed, we still need to trigger indexing
+    // This happens when files are in KB folder but not indexed yet
+    // Always send the request even if changes is empty - server will handle it
+
+    // Phase 1: Moving files (happens on server)
+    indexingStatus.value.phase = 'moving';
+    indexingStatus.value.message = 'Moving files to knowledge base folder...';
+
+    console.log('[KB] Calling /api/update-knowledge-base with userId:', props.userId, 'changes:', changes.length);
+    
     const response = await fetch('http://localhost:3001/api/update-knowledge-base', {
       method: 'POST',
       headers: {
@@ -747,30 +826,61 @@ const updateAndIndexKB = async () => {
       })
     });
 
+    console.log('[KB] Response status:', response.status, response.statusText);
+
     if (!response.ok) {
-      throw new Error('Failed to update knowledge base');
+      let errorData;
+      try {
+        errorData = await response.json();
+      } catch (e) {
+        errorData = { message: `HTTP ${response.status}: ${response.statusText}` };
+      }
+      console.error('[KB] Error response:', errorData);
+      throw new Error(errorData.message || `Failed to update knowledge base: ${response.status}`);
     }
 
     const result = await response.json();
+    console.log('[KB] Response result:', result);
     
-    if (result.jobId) {
-      currentIndexingJobId.value = result.jobId;
-      pollIndexingProgress(result.jobId);
-    }
-
     // Update original files
     originalFiles.value = JSON.parse(JSON.stringify(userFiles.value));
     
-    // Update indexed files to match current KB files after successful indexing
-    indexedFiles.value = userFiles.value
-      .filter(file => file.inKnowledgeBase)
-      .map(file => file.bucketKey);
+    // If jobId is returned, start polling
+    if (result.jobId) {
+      currentIndexingJobId.value = result.jobId;
+      // Update phase based on response
+      indexingStatus.value.phase = result.phase || 'indexing_started';
+      indexingStatus.value.message = result.phase === 'indexing_started' 
+        ? 'Indexing job started... This may take several minutes'
+        : 'Setting up knowledge base...';
+      indexingStatus.value.kb = result.kbId || result.kb || '';
+      
+      console.log('[KB] Starting to poll for job:', result.jobId);
+      
+      // Start polling for status
+      pollIndexingProgress(result.jobId);
+    } else {
+      // No job ID - something went wrong
+      console.error('[KB] No jobId in response:', result);
+      indexingKB.value = false;
+      throw new Error('No indexing job ID returned from server');
+    }
   } catch (err) {
+    console.error('[KB] Error in updateAndIndexKB:', err);
     indexingKB.value = false;
-    $q.notify({
-      type: 'negative',
-      message: err instanceof Error ? err.message : 'Failed to update knowledge base'
-    });
+    indexingStatus.value.phase = 'error';
+    indexingStatus.value.error = err instanceof Error ? err.message : 'Failed to update knowledge base';
+    if ($q && typeof $q.notify === 'function') {
+      $q.notify({
+        type: 'negative',
+        message: indexingStatus.value.error,
+        timeout: 5000
+      });
+    } else {
+      // Fallback if Quasar notify is not available
+      console.error('Notification error:', indexingStatus.value.error);
+      alert(`Error: ${indexingStatus.value.error}`);
+    }
   }
 };
 
@@ -786,26 +896,62 @@ const pollIndexingProgress = async (jobId: string) => {
       }
 
       const result = await response.json();
+      
+      // Update status with all fields from response
       indexingStatus.value = {
-        kb: result.kb || '',
-        tokens: result.tokens || '',
-        filesIndexed: result.filesIndexed || 0
+        phase: result.phase || indexingStatus.value.phase,
+        message: result.message || indexingStatus.value.message,
+        kb: result.kb || indexingStatus.value.kb,
+        tokens: result.tokens || indexingStatus.value.tokens || '0',
+        filesIndexed: result.filesIndexed || 0,
+        progress: result.progress || 0,
+        error: result.error || ''
       };
 
+      // Handle completion
       if (result.completed) {
         clearInterval(pollInterval);
-        indexingKB.value = false;
-        // Reload files to get updated indexed files from server
-        await loadFiles();
-        $q.notify({
-          type: 'positive',
-          message: 'Knowledge base updated successfully'
-        });
+        
+        if (result.phase === 'complete') {
+          indexingStatus.value.phase = 'complete';
+          indexingStatus.value.message = 'Knowledge base indexed successfully!';
+          
+          // Reload files to get updated indexed files from server
+          await loadFiles();
+          
+          // Update indexed files to match current KB files
+          indexedFiles.value = userFiles.value
+            .filter(file => file.inKnowledgeBase)
+            .map(file => file.bucketKey);
+          
+          $q.notify({
+            type: 'positive',
+            message: 'Knowledge base indexed successfully!'
+          });
+          
+          // Auto-hide after 5 seconds
+          setTimeout(() => {
+            indexingKB.value = false;
+          }, 5000);
+        } else if (result.phase === 'error') {
+          indexingStatus.value.phase = 'error';
+          indexingStatus.value.error = result.error || 'Indexing failed';
+          $q.notify({
+            type: 'negative',
+            message: `Indexing failed: ${indexingStatus.value.error}`
+          });
+        }
       }
     } catch (err) {
       clearInterval(pollInterval);
       indexingKB.value = false;
+      indexingStatus.value.phase = 'error';
+      indexingStatus.value.error = err instanceof Error ? err.message : 'Failed to get indexing status';
       console.error('Error polling indexing status:', err);
+      $q.notify({
+        type: 'negative',
+        message: `Error checking indexing status: ${indexingStatus.value.error}`
+      });
     }
   }, 2000); // Poll every 2 seconds
 };

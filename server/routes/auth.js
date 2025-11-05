@@ -128,17 +128,9 @@ export default function setupAuthRoutes(app, passkeyService, cloudant, doClient,
       // Set workflowStage to request_sent (admin has been notified and can provision)
       updatedUser.workflowStage = 'request_sent';
       
-      // Generate knowledge base name: userId-kb-<MMDDYYYYHHMM>
-      const now = new Date();
-      const month = String(now.getMonth() + 1).padStart(2, '0');
-      const day = String(now.getDate()).padStart(2, '0');
-      const year = now.getFullYear();
-      const hour = String(now.getHours()).padStart(2, '0');
-      const minute = String(now.getMinutes()).padStart(2, '0');
-      const kbName = `${updatedUser.userId}-kb-${month}${day}${year}${hour}${minute}`;
-      
-      updatedUser.connectedKB = kbName;
-      updatedUser.kbStatus = 'pending';
+      // Don't set connectedKB here - it should only be set when a KB is actually created in DO
+      // For now, we don't pre-generate KB names - they'll be created when user indexes files
+      // connectedKBs will be an array (for future multi-KB support), but for now it stays empty until KB is created
       
       await cloudant.saveDocument('maia_users', updatedUser);
 
