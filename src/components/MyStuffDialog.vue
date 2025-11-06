@@ -267,7 +267,7 @@
                 <div class="q-mt-md">
                   <div class="text-caption text-grey-7 q-mb-xs">Indexed Files:</div>
                   <div 
-                    v-if="getIndexedFileNames().length === 0"
+                    v-if="indexedFileNames.length === 0"
                     class="text-caption text-grey-5"
                   >
                     No files indexed yet
@@ -278,7 +278,7 @@
                     :class="{ 'text-grey-5': !kbInfo.connected }"
                   >
                     <q-item
-                      v-for="(fileName, index) in getIndexedFileNames()"
+                      v-for="(fileName, index) in indexedFileNames"
                       :key="index"
                       dense
                     >
@@ -850,27 +850,18 @@ const toggleKBConnection = async () => {
   }
 };
 
-// Get file names from indexed files (extract from bucketKey)
-const getIndexedFileNames = (): string[] => {
+// Get file names from indexed files (extract from bucketKey) - computed property for performance
+const indexedFileNames = computed((): string[] => {
   if (!kbInfo.value || !kbInfo.value.indexedFiles) {
-    console.log('[KB Info] No kbInfo or indexedFiles:', { kbInfo: kbInfo.value });
     return [];
   }
   
-  const fileNames = kbInfo.value.indexedFiles.map(bucketKey => {
+  return kbInfo.value.indexedFiles.map(bucketKey => {
     // Extract filename from bucketKey (format: userId/kbName/filename or userId/archived/filename)
     const parts = bucketKey.split('/');
     return parts[parts.length - 1] || bucketKey;
   });
-  
-  console.log('[KB Info] Indexed files:', { 
-    indexedFiles: kbInfo.value.indexedFiles, 
-    fileNames: fileNames,
-    count: fileNames.length 
-  });
-  
-  return fileNames;
-};
+});
 
 const loadSharedChats = async () => {
   loadingChats.value = true;
