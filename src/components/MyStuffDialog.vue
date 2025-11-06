@@ -116,13 +116,23 @@
                 <div v-if="kbIndexingOutOfSync && !hasCheckboxChanges" class="q-mb-md text-body2 text-amber-9">
                   You have changed the files to be indexed into your knowledge base. Click to index when ready.
                 </div>
-                <q-btn
-                  label="Update and index knowledge base"
-                  color="primary"
-                  @click="updateAndIndexKB"
-                  :disable="indexingKB"
-                  :loading="indexingKB"
-                />
+                <div class="row q-gutter-sm">
+                  <q-btn
+                    label="Update and index knowledge base"
+                    color="primary"
+                    @click="updateAndIndexKB"
+                    :disable="indexingKB || resettingKB"
+                    :loading="indexingKB"
+                  />
+                  <q-btn
+                    label="RESET KB"
+                    color="negative"
+                    outline
+                    @click="resetKB"
+                    :disable="indexingKB || resettingKB"
+                    :loading="resettingKB"
+                  />
+                </div>
               </div>
               
               <!-- Phase 1: Moving files -->
@@ -602,6 +612,7 @@ const kbIndexingOutOfSync = computed(() => {
   return currentSorted.some((key, index) => key !== indexedSorted[index]);
 });
 const indexingKB = ref(false);
+const resettingKB = ref(false);
 const indexingStatus = ref({
   phase: 'moving', // 'moving' | 'kb_setup' | 'indexing_started' | 'indexing' | 'complete' | 'error'
   message: '',
@@ -1044,31 +1055,15 @@ const updateAndIndexKB = async () => {
   };
 
   try {
-    // Get changed files
-    const changes = userFiles.value.map((file, index) => {
-      const original = originalFiles.value[index];
-      if (!original || file.inKnowledgeBase !== original.inKnowledgeBase) {
-        return {
-          bucketKey: file.bucketKey,
-          inKnowledgeBase: file.inKnowledgeBase
-        };
-      }
-      return null;
-    }).filter(Boolean);
-
-    console.log('[KB] Changes to process:', changes.length, changes);
     console.log('[KB] kbIndexingOutOfSync:', kbIndexingOutOfSync.value);
     console.log('[KB] hasCheckboxChanges:', hasCheckboxChanges.value);
     
-    // If no changes but indexing is needed, we still need to trigger indexing
-    // This happens when files are in KB folder but not indexed yet
-    // Always send the request even if changes is empty - server will handle it
+    // Files are already moved by checkboxes - no need to send changes array
+    // Phase 1: KB Setup (no longer moving files)
+    indexingStatus.value.phase = 'kb_setup';
+    indexingStatus.value.message = 'Setting up knowledge base...';
 
-    // Phase 1: Moving files (happens on server)
-    indexingStatus.value.phase = 'moving';
-    indexingStatus.value.message = 'Moving files to knowledge base folder...';
-
-    console.log('[KB] Calling /api/update-knowledge-base with userId:', props.userId, 'changes:', changes.length);
+    console.log('[KB] Calling /api/update-knowledge-base with userId:', props.userId);
 
     const response = await fetch('http://localhost:3001/api/update-knowledge-base', {
       method: 'POST',
@@ -1077,8 +1072,7 @@ const updateAndIndexKB = async () => {
       },
       credentials: 'include',
       body: JSON.stringify({
-        userId: props.userId,
-        changes: changes
+        userId: props.userId
       })
     });
 
@@ -1136,9 +1130,67 @@ const updateAndIndexKB = async () => {
       } else {
         throw new Error(result.message || 'Indexing job already running');
       }
+    } else if (result.kbId && result.success) {
+      // KB was created but jobId is null - indexing should start automatically
+      // Poll for the job ID to appear
+      console.log('[KB] KB created but no jobId yet. Polling for indexing job to appear...');
+      indexingKB.value = true;
+      indexingStatus.value.phase = 'indexing_started';
+      indexingStatus.value.message = 'Knowledge base created. Waiting for indexing to start...';
+      indexingStatus.value.kb = result.kbId;
+      
+      // Poll for job ID (up to 10 attempts with 3 second delays = 30 seconds max)
+      let foundJobId = null;
+      for (let attempt = 0; attempt < 10; attempt++) {
+        if (attempt > 0) {
+          await new Promise(resolve => setTimeout(resolve, 3000));
+        }
+        
+        try {
+          // Check user status to see if job ID is available
+          const statusResponse = await fetch(`http://localhost:3001/api/user-status?userId=${props.userId}`, {
+            method: 'GET',
+            credentials: 'include'
+          });
+          
+          if (statusResponse.ok) {
+            const statusData = await statusResponse.json();
+            if (statusData.kbLastIndexingJobId) {
+              foundJobId = statusData.kbLastIndexingJobId;
+              console.log(`[KB] Found job ID after polling: ${foundJobId} (attempt ${attempt + 1})`);
+              break;
+            }
+          }
+        } catch (pollError) {
+          console.log(`[KB] Polling attempt ${attempt + 1} failed:`, pollError);
+        }
+      }
+      
+      if (foundJobId) {
+        // Found job ID - start polling for progress
+        currentIndexingJobId.value = foundJobId;
+        console.log('[KB] Starting to poll for job:', foundJobId);
+        pollIndexingProgress(foundJobId);
+      } else {
+        // Still no job ID after polling - show message but don't error
+        console.log('[KB] Could not find job ID after polling. Indexing should start automatically.');
+        indexingKB.value = false;
+        indexingStatus.value.phase = 'complete';
+        indexingStatus.value.message = 'Knowledge base created. Indexing will start automatically - please check back in a moment.';
+        if ($q && typeof $q.notify === 'function') {
+          $q.notify({
+            type: 'info',
+            message: 'Knowledge base created. Indexing will start automatically - please check back in a moment.',
+            timeout: 5000
+          });
+        }
+        // Reload files to show updated state
+        await loadFiles();
+        await loadAgent();
+      }
     } else {
-      // No job ID - something went wrong
-      console.error('[KB] No jobId in response:', result);
+      // No job ID and no KB ID - something went wrong
+      console.error('[KB] No jobId or kbId in response:', result);
       indexingKB.value = false;
       throw new Error('No indexing job ID returned from server');
     }
@@ -1158,6 +1210,57 @@ const updateAndIndexKB = async () => {
       console.error('Notification error:', indexingStatus.value.error);
       alert(`Error: ${indexingStatus.value.error}`);
     }
+  }
+};
+
+const resetKB = async () => {
+  if (!confirm('Are you sure you want to reset the knowledge base? This will clear all KB-related data (KB ID, indexing status, indexed files) but keep the KB name and files unchanged.')) {
+    return;
+  }
+
+  resettingKB.value = true;
+  try {
+    const response = await fetch('http://localhost:3001/api/reset-kb', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      credentials: 'include',
+      body: JSON.stringify({
+        userId: props.userId
+      })
+    });
+
+    if (!response.ok) {
+      const errorData = await response.json();
+      throw new Error(errorData.message || 'Failed to reset KB');
+    }
+
+    const result = await response.json();
+    console.log('[KB] KB reset:', result);
+
+    // Reload files and agent info to reflect reset state
+    await loadFiles();
+    await loadAgent();
+
+    if ($q && typeof $q.notify === 'function') {
+      $q.notify({
+        type: 'positive',
+        message: 'Knowledge base reset successfully'
+      });
+    }
+  } catch (err) {
+    console.error('[KB] Error resetting KB:', err);
+    if ($q && typeof $q.notify === 'function') {
+      $q.notify({
+        type: 'negative',
+        message: err instanceof Error ? err.message : 'Failed to reset KB'
+      });
+    } else {
+      alert(`Error: ${err instanceof Error ? err.message : 'Failed to reset KB'}`);
+    }
+  } finally {
+    resettingKB.value = false;
   }
 };
 
