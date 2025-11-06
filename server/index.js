@@ -2063,6 +2063,45 @@ app.get('/api/load-chat/:chatId', async (req, res) => {
   }
 });
 
+// Load a specific chat by shareId (for deep links)
+app.get('/api/load-chat-by-share/:shareId', async (req, res) => {
+  try {
+    const { shareId } = req.params;
+    
+    if (!shareId) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Share ID is required',
+        error: 'MISSING_SHARE_ID'
+      });
+    }
+    
+    // Get all chats and find the one with matching shareId
+    const allChats = await cloudant.getAllDocuments('maia_chats');
+    const chat = allChats.find(c => c.shareId === shareId);
+    
+    if (!chat) {
+      return res.status(404).json({ 
+        success: false, 
+        message: 'Chat not found',
+        error: 'CHAT_NOT_FOUND'
+      });
+    }
+    
+    res.json({
+      success: true,
+      chat: chat
+    });
+  } catch (error) {
+    console.error('❌ Error loading chat by shareId:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: `Failed to load chat: ${error.message}`,
+      error: 'LOAD_CHAT_ERROR'
+    });
+  }
+});
+
 // Delete a specific chat
 app.delete('/api/delete-chat/:chatId', async (req, res) => {
   try {

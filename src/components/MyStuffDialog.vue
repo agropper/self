@@ -344,6 +344,10 @@
                     <q-item-label caption class="q-mt-xs">
                       Group Participants: {{ getGroupParticipants(chat) }}
                     </q-item-label>
+                    <q-item-label v-if="chat.shareId" caption class="q-mt-xs text-primary">
+                      <q-icon name="link" size="xs" />
+                      Deep link: /chat/{{ chat.shareId }}
+                    </q-item-label>
                   </q-item-section>
                   <q-item-section side @click.stop>
                     <div class="row items-center q-gutter-xs">
@@ -1395,10 +1399,19 @@ const pollIndexingProgress = async (jobId: string) => {
 // Chat management methods
 const selectChat = async (chat: SavedChat) => {
   try {
-    // Fetch full chat data first
-    const response = await fetch(`http://localhost:3001/api/load-chat/${chat._id}`, {
-      credentials: 'include'
-    });
+    let response;
+    
+    // If chat has a shareId, load it via shareId endpoint (for deep links)
+    if (chat.shareId) {
+      response = await fetch(`http://localhost:3001/api/load-chat-by-share/${chat.shareId}`, {
+        credentials: 'include'
+      });
+    } else {
+      // Otherwise, load chat via chatId
+      response = await fetch(`http://localhost:3001/api/load-chat/${chat._id}`, {
+        credentials: 'include'
+      });
+    }
     
     if (!response.ok) {
       throw new Error(`Failed to load chat: ${response.statusText}`);
@@ -1419,15 +1432,19 @@ const copyChatLink = (chat: SavedChat) => {
   const baseUrl = window.location.origin;
   const link = `${baseUrl}/chat/${chat.shareId}`;
   navigator.clipboard.writeText(link).then(() => {
-    $q.notify({
-      type: 'positive',
-      message: 'Deep link copied to clipboard'
-    });
+    if ($q && typeof $q.notify === 'function') {
+      $q.notify({
+        type: 'positive',
+        message: 'Deep link copied to clipboard'
+      });
+    }
   }).catch(() => {
-    $q.notify({
-      type: 'negative',
-      message: 'Failed to copy link'
-    });
+    if ($q && typeof $q.notify === 'function') {
+      $q.notify({
+        type: 'negative',
+        message: 'Failed to copy link'
+      });
+    }
   });
 };
 
