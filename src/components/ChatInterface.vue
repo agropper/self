@@ -258,7 +258,7 @@
                 class="text-grey-6" 
                 @click="openAdminEmail"
               >
-                <q-tooltip>Email admin for suggestions, support or questions</q-tooltip>
+                <q-tooltip anchor="top left" self="bottom right">Email admin for suggestions, support or questions</q-tooltip>
               </q-btn>
             </div>
           </div>
