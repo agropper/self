@@ -111,7 +111,7 @@ const loadSavedChats = async () => {
   error.value = '';
 
   try {
-    const response = await fetch(`http://localhost:3001/api/user-chats?userId=${encodeURIComponent(props.currentUser)}`);
+    const response = await fetch(`/api/user-chats?userId=${encodeURIComponent(props.currentUser)}`);
     if (!response.ok) {
       throw new Error(`Failed to fetch chats: ${response.statusText}`);
     }
@@ -126,7 +126,7 @@ const loadSavedChats = async () => {
 
 const openChat = async (chat: SavedChat) => {
   try {
-    const response = await fetch(`http://localhost:3001/api/load-chat/${chat._id}`);
+    const response = await fetch(`/api/load-chat/${chat._id}`);
     if (!response.ok) {
       throw new Error(`Failed to load chat: ${response.statusText}`);
     }
@@ -170,7 +170,7 @@ const getFirstMessagePreview = (chat: SavedChat): string => {
 
 const handleDeleteChat = async (chatId: string) => {
   try {
-    const response = await fetch(`http://localhost:3001/api/delete-chat/${chatId}`, {
+    const response = await fetch(`/api/delete-chat/${chatId}`, {
       method: 'DELETE',
     });
     

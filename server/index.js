@@ -480,10 +480,44 @@ const chatClient = new ChatClient({
 });
 
 // Middleware
+// CORS configuration - allow both local development and production origins
+// Check if we're in production first (needed for CORS logic)
+const distPathForCors = path.join(__dirname, '../dist');
+const distExistsForCors = existsSync(distPathForCors);
+const isProductionForCors = process.env.NODE_ENV === 'production' || distExistsForCors;
+
+const allowedOrigins = [
+  'http://localhost:5173', // Local development
+  'https://maia.agropper.xyz', // Production
+  process.env.PUBLIC_APP_URL, // From environment variable
+  process.env.PASSKEY_ORIGIN // From environment variable
+].filter(Boolean); // Remove undefined values
+
 app.use(cors({
-  origin: 'http://localhost:5173',
-  credentials: true
+  origin: (origin, callback) => {
+    // Allow requests with no origin (like mobile apps or curl requests)
+    if (!origin) return callback(null, true);
+    
+    // Check if origin is in allowed list
+    if (allowedOrigins.includes(origin)) {
+      callback(null, true);
+    } else {
+      // In production, be more strict
+      if (isProductionForCors) {
+        console.warn(`⚠️ [CORS] Blocked origin: ${origin}`);
+        callback(new Error('Not allowed by CORS'));
+      } else {
+        // In development, allow all origins
+        callback(null, true);
+      }
+    }
+  },
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With']
 }));
+
+console.log(`🌐 [CORS] Allowed origins: ${allowedOrigins.join(', ')}`);
 app.use(cookieParser());
 app.use(express.json({ limit: '10mb' }));
 
@@ -3953,6 +3987,7 @@ app.post('/api/patient-summary', async (req, res) => {
 console.log(`🔍 [STATIC] NODE_ENV: ${process.env.NODE_ENV}`);
 console.log(`🔍 [STATIC] __dirname: ${__dirname}`);
 
+// Check if we're in production (before CORS setup)
 const distPath = path.join(__dirname, '../dist');
 const distExists = existsSync(distPath);
 const isProduction = process.env.NODE_ENV === 'production' || distExists;

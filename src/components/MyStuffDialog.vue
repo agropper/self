@@ -648,7 +648,7 @@ const loadFiles = async () => {
     // First, auto-archive any files at root level (userId/)
     // This ensures files imported via paper clip are moved to archived when opening SAVED FILES tab
     try {
-      await fetch('http://localhost:3001/api/archive-user-files', {
+      await fetch('/api/archive-user-files', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json'
@@ -664,7 +664,7 @@ const loadFiles = async () => {
     }
 
     // Then load files as normal
-    const response = await fetch(`http://localhost:3001/api/user-files?userId=${encodeURIComponent(props.userId)}`, {
+    const response = await fetch(`/api/user-files?userId=${encodeURIComponent(props.userId)}`, {
       credentials: 'include'
     });
     if (!response.ok) {
@@ -699,7 +699,7 @@ const loadFiles = async () => {
 //   updatingFiles.value.add(file.bucketKey);
 //
 //   try {
-//     const response = await fetch('http://localhost:3001/api/toggle-file-knowledge-base', {
+//     const response = await fetch('/api/toggle-file-knowledge-base', {
 //       method: 'POST',
 //       headers: {
 //         'Content-Type': 'application/json'
@@ -732,7 +732,7 @@ const loadAgent = async () => {
   agentError.value = '';
 
   try {
-    const response = await fetch(`http://localhost:3001/api/agent-instructions?userId=${encodeURIComponent(props.userId)}`, {
+    const response = await fetch(`/api/agent-instructions?userId=${encodeURIComponent(props.userId)}`, {
       credentials: 'include'
     });
     if (!response.ok) {
@@ -753,7 +753,7 @@ const saveInstructions = async () => {
   savingInstructions.value = true;
 
   try {
-    const response = await fetch('http://localhost:3001/api/agent-instructions', {
+    const response = await fetch('/api/agent-instructions', {
       method: 'PUT',
       headers: {
         'Content-Type': 'application/json'
@@ -807,7 +807,7 @@ const toggleKBConnection = async () => {
   togglingKB.value = true;
   try {
     const action = kbInfo.value.connected ? 'detach' : 'attach';
-    const response = await fetch('http://localhost:3001/api/toggle-kb-connection', {
+    const response = await fetch('/api/toggle-kb-connection', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json'
@@ -868,7 +868,7 @@ const loadSharedChats = async () => {
   chatsError.value = '';
 
   try {
-    const response = await fetch(`http://localhost:3001/api/shared-group-chats?userId=${encodeURIComponent(props.userId)}`, {
+    const response = await fetch(`/api/shared-group-chats?userId=${encodeURIComponent(props.userId)}`, {
       credentials: 'include'
     });
     if (!response.ok) {
@@ -934,7 +934,7 @@ const onCheckboxChange = async (file: UserFile) => {
   updatingFiles.value.add(file.bucketKey);
 
   try {
-    const response = await fetch('http://localhost:3001/api/toggle-file-knowledge-base', {
+    const response = await fetch('/api/toggle-file-knowledge-base', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json'
@@ -1006,7 +1006,7 @@ const confirmDeleteFile = (file: UserFile) => {
 
 const deleteFile = async (file: UserFile) => {
   try {
-    const response = await fetch(`http://localhost:3001/api/delete-file`, {
+    const response = await fetch(`/api/delete-file`, {
       method: 'DELETE',
       headers: {
         'Content-Type': 'application/json'
@@ -1060,7 +1060,7 @@ const updateAndIndexKB = async () => {
 
     console.log('[KB] Calling /api/update-knowledge-base with userId:', props.userId);
 
-    const response = await fetch('http://localhost:3001/api/update-knowledge-base', {
+    const response = await fetch('/api/update-knowledge-base', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json'
@@ -1143,7 +1143,7 @@ const updateAndIndexKB = async () => {
         
         try {
           // Check user status to see if job ID is available
-          const statusResponse = await fetch(`http://localhost:3001/api/user-status?userId=${props.userId}`, {
+          const statusResponse = await fetch(`/api/user-status?userId=${props.userId}`, {
             method: 'GET',
             credentials: 'include'
           });
@@ -1215,7 +1215,7 @@ const resetKB = async () => {
 
   resettingKB.value = true;
   try {
-    const response = await fetch('http://localhost:3001/api/reset-kb', {
+    const response = await fetch('/api/reset-kb', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json'
@@ -1288,7 +1288,7 @@ const pollIndexingProgress = async (jobId: string) => {
         return;
       }
       
-      const response = await fetch(`http://localhost:3001/api/kb-indexing-status/${jobId}?userId=${encodeURIComponent(props.userId)}`, {
+      const response = await fetch(`/api/kb-indexing-status/${jobId}?userId=${encodeURIComponent(props.userId)}`, {
         credentials: 'include'
       });
 
@@ -1396,12 +1396,12 @@ const selectChat = async (chat: SavedChat) => {
     
     // If chat has a shareId, load it via shareId endpoint (for deep links)
     if (chat.shareId) {
-      response = await fetch(`http://localhost:3001/api/load-chat-by-share/${chat.shareId}`, {
+      response = await fetch(`/api/load-chat-by-share/${chat.shareId}`, {
         credentials: 'include'
       });
     } else {
       // Otherwise, load chat via chatId
-      response = await fetch(`http://localhost:3001/api/load-chat/${chat._id}`, {
+      response = await fetch(`/api/load-chat/${chat._id}`, {
         credentials: 'include'
       });
     }
@@ -1454,7 +1454,7 @@ const confirmDeleteChat = (chat: SavedChat) => {
 
 const deleteChat = async (chat: SavedChat) => {
   try {
-    const response = await fetch(`http://localhost:3001/api/delete-chat/${chat._id}`, {
+    const response = await fetch(`/api/delete-chat/${chat._id}`, {
       method: 'DELETE',
       credentials: 'include'
     });
@@ -1493,7 +1493,7 @@ const attachKBAndGenerateSummary = async () => {
     });
     
     // Step 1: Attach KB to agent
-    const attachResponse = await fetch('http://localhost:3001/api/attach-kb-to-agent', {
+    const attachResponse = await fetch('/api/attach-kb-to-agent', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json'
@@ -1522,7 +1522,7 @@ const attachKBAndGenerateSummary = async () => {
       progress: 1.0
     });
     
-    const summaryResponse = await fetch('http://localhost:3001/api/generate-patient-summary', {
+    const summaryResponse = await fetch('/api/generate-patient-summary', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json'
@@ -1572,7 +1572,7 @@ const handleViewSummary = () => {
 
 const handleSaveSummary = async () => {
   try {
-    const response = await fetch('http://localhost:3001/api/patient-summary', {
+    const response = await fetch('/api/patient-summary', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json'
@@ -1621,7 +1621,7 @@ const handleSaveEditedSummary = async () => {
   const summaryToSave = editingSummary.value ? summaryViewText.value : newPatientSummary.value;
   
   try {
-    const response = await fetch('http://localhost:3001/api/patient-summary', {
+    const response = await fetch('/api/patient-summary', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json'
@@ -1671,7 +1671,7 @@ const loadPatientSummary = async () => {
   summaryError.value = '';
 
   try {
-    const response = await fetch(`http://localhost:3001/api/patient-summary?userId=${encodeURIComponent(props.userId)}`, {
+    const response = await fetch(`/api/patient-summary?userId=${encodeURIComponent(props.userId)}`, {
       credentials: 'include'
     });
     

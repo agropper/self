@@ -421,7 +421,7 @@ const getProviderLabel = () => {
 // Fetch available providers
 const loadProviders = async () => {
   try {
-    const response = await fetch('http://localhost:3001/api/chat/providers');
+    const response = await fetch('/api/chat/providers');
     const data = await response.json();
     providers.value = data.providers;
     if (providers.value.length > 0) {
@@ -466,7 +466,7 @@ const sendMessage = async () => {
     // If this is a patient summary request, check for existing summary first
     if (isPatientSummaryRequest && props.user?.userId) {
       try {
-        const summaryResponse = await fetch(`http://localhost:3001/api/patient-summary?userId=${encodeURIComponent(props.user.userId)}`, {
+        const summaryResponse = await fetch(`/api/patient-summary?userId=${encodeURIComponent(props.user.userId)}`, {
           credentials: 'include'
         });
         
@@ -523,7 +523,7 @@ const sendMessage = async () => {
     // Convert displayed label to API key
     const providerKey = getProviderKey(selectedProvider.value);
     const response = await fetch(
-      `http://localhost:3001/api/chat/${providerKey}`,
+      `/api/chat/${providerKey}`,
       {
         method: 'POST',
         headers: {
@@ -638,7 +638,7 @@ const handleSignOut = () => {
 const openAdminEmail = async () => {
   try {
     // Try to get admin email from server
-    const response = await fetch('http://localhost:3001/api/admin-email', {
+    const response = await fetch('/api/admin-email', {
       credentials: 'include'
     });
     let adminEmail = 'admin@yourdomain.com'; // Default fallback
@@ -663,7 +663,7 @@ const savePatientSummary = async (summary: string) => {
   if (!props.user?.userId || !summary) return;
   
   try {
-    const response = await fetch('http://localhost:3001/api/patient-summary', {
+    const response = await fetch('/api/patient-summary', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json'
@@ -741,7 +741,7 @@ const uploadPDFFile = async (file: File) => {
   const formData = new FormData();
   formData.append('pdfFile', file);
   
-  const parseResponse = await fetch('http://localhost:3001/api/files/parse-pdf', {
+  const parseResponse = await fetch('/api/files/parse-pdf', {
     method: 'POST',
     body: formData
   });
@@ -759,7 +759,7 @@ const uploadPDFFile = async (file: File) => {
   const uploadFormData = new FormData();
   uploadFormData.append('file', file);
 
-  const uploadResponse = await fetch('http://localhost:3001/api/files/upload', {
+  const uploadResponse = await fetch('/api/files/upload', {
     method: 'POST',
     credentials: 'include',
     body: uploadFormData
@@ -775,7 +775,7 @@ const uploadPDFFile = async (file: File) => {
   // Update user document with file metadata
   if (props.user?.userId) {
     try {
-      await fetch('http://localhost:3001/api/user-file-metadata', {
+      await fetch('/api/user-file-metadata', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json'
@@ -948,7 +948,7 @@ const saveToGroup = async () => {
       return;
     }
 
-    const response = await fetch('http://localhost:3001/api/save-group-chat', {
+    const response = await fetch('/api/save-group-chat', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json'
@@ -991,7 +991,7 @@ const loadSavedChatCount = async () => {
   if (!props.user?.userId) return;
   
   try {
-    const response = await fetch(`http://localhost:3001/api/user-chats?userId=${encodeURIComponent(props.user.userId)}`);
+    const response = await fetch(`/api/user-chats?userId=${encodeURIComponent(props.user.userId)}`);
     if (response.ok) {
       const result = await response.json();
       savedChatCount.value = result.count || 0;
@@ -1118,7 +1118,7 @@ const syncAgent = async () => {
   if (!props.user?.userId) return;
   
   try {
-    const response = await fetch('http://localhost:3001/api/sync-agent', {
+    const response = await fetch('/api/sync-agent', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json'
@@ -1225,7 +1225,7 @@ const updateContextualTip = async () => {
 
   try {
     // Priority 2: Fetch user document to get workflowStage
-    const userResponse = await fetch(`http://localhost:3001/api/user-status?userId=${encodeURIComponent(props.user.userId)}`, {
+    const userResponse = await fetch(`/api/user-status?userId=${encodeURIComponent(props.user.userId)}`, {
       credentials: 'include'
     });
 
