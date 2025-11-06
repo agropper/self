@@ -3106,7 +3106,7 @@ app.post('/api/update-knowledge-base', async (req, res) => {
               if (finalUserDoc.workflowStage === 'indexing') {
                 if (finalUserDoc.files && finalUserDoc.files.length > 0) {
                   finalUserDoc.workflowStage = 'files_archived';
-                } else {
+            } else {
                   finalUserDoc.workflowStage = 'agent_deployed';
                 }
               }
@@ -3948,15 +3948,22 @@ app.post('/api/patient-summary', async (req, res) => {
 });
 
 // Serve static files from dist in production
+// On DigitalOcean App Platform, NODE_ENV might not be set to 'production'
+// So we also check if dist folder exists as an indicator
 console.log(`🔍 [STATIC] NODE_ENV: ${process.env.NODE_ENV}`);
 console.log(`🔍 [STATIC] __dirname: ${__dirname}`);
 
-if (process.env.NODE_ENV === 'production') {
-  const distPath = path.join(__dirname, '../dist');
+const distPath = path.join(__dirname, '../dist');
+const distExists = existsSync(distPath);
+const isProduction = process.env.NODE_ENV === 'production' || distExists;
+
+console.log(`🔍 [STATIC] dist folder exists: ${distExists}`);
+console.log(`🔍 [STATIC] isProduction: ${isProduction}`);
+
+if (isProduction) {
   const indexPath = path.join(distPath, 'index.html');
   
-  // Check if dist folder exists
-  const distExists = existsSync(distPath);
+  // Check if index.html exists
   const indexExists = existsSync(indexPath);
   
   console.log(`📁 [STATIC] Serving static files from: ${distPath}`);
