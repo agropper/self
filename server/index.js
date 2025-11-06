@@ -3948,9 +3948,29 @@ app.post('/api/patient-summary', async (req, res) => {
 });
 
 // Serve static files from dist in production
+console.log(`🔍 [STATIC] NODE_ENV: ${process.env.NODE_ENV}`);
+console.log(`🔍 [STATIC] __dirname: ${__dirname}`);
+
 if (process.env.NODE_ENV === 'production') {
   const distPath = path.join(__dirname, '../dist');
-  console.log(`📁 Serving static files from: ${distPath}`);
+  const indexPath = path.join(distPath, 'index.html');
+  
+  // Check if dist folder exists
+  const distExists = existsSync(distPath);
+  const indexExists = existsSync(indexPath);
+  
+  console.log(`📁 [STATIC] Serving static files from: ${distPath}`);
+  console.log(`📁 [STATIC] dist folder exists: ${distExists}`);
+  console.log(`📁 [STATIC] index.html exists: ${indexExists}`);
+  
+  if (distExists) {
+    try {
+      const distFiles = readdirSync(distPath);
+      console.log(`📁 [STATIC] Files in dist: ${distFiles.slice(0, 10).join(', ')}${distFiles.length > 10 ? '...' : ''}`);
+    } catch (err) {
+      console.error(`❌ [STATIC] Error reading dist folder:`, err);
+    }
+  }
   
   // Serve static assets (JS, CSS, images, etc.)
   // fallthrough: true allows requests to continue to the catch-all if file not found
@@ -3960,24 +3980,40 @@ if (process.env.NODE_ENV === 'production') {
     fallthrough: true // Allow fallthrough to catch-all for SPA routes
   }));
   
+  // Add middleware to log static file requests
+  app.use((req, res, next) => {
+    if (!req.path.startsWith('/api')) {
+      console.log(`📄 [STATIC] Request: ${req.method} ${req.path}`);
+    }
+    next();
+  });
+  
   // Catch-all handler: serve index.html for all non-API routes
   // This enables client-side routing for the Vue SPA
   // IMPORTANT: This must be the LAST route handler
   app.get('*', (req, res) => {
+    console.log(`🎯 [CATCH-ALL] Request: ${req.method} ${req.path}`);
+    
     // Skip API routes - these should have been handled by API routes above
     if (req.path.startsWith('/api')) {
+      console.log(`❌ [CATCH-ALL] API route not found: ${req.path}`);
       return res.status(404).json({ error: 'API endpoint not found' });
     }
     
     // For all other routes, serve index.html (SPA fallback)
-    const indexPath = path.join(distPath, 'index.html');
+    console.log(`📄 [CATCH-ALL] Serving index.html for: ${req.path}`);
     res.sendFile(indexPath, (err) => {
       if (err) {
-        console.error(`❌ Error serving index.html from ${indexPath}:`, err);
+        console.error(`❌ [CATCH-ALL] Error serving index.html from ${indexPath}:`, err);
+        console.error(`❌ [CATCH-ALL] Error details:`, err.message);
         res.status(500).send('Error loading application');
+      } else {
+        console.log(`✅ [CATCH-ALL] Successfully served index.html for: ${req.path}`);
       }
     });
   });
+} else {
+  console.log(`⚠️ [STATIC] Not in production mode, skipping static file serving`);
 }
 
 // Start server
