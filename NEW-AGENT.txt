@@ -32,9 +32,25 @@ The following workflow stages are used to track user progress through the provis
 5. **agent_deployed** - Agent deployment has reached STATUS_RUNNING and is ready to use
 6. **files_stored** - User has uploaded files to their account
 7. **unknown** - Fallback/default value when workflowStage is not set
+8. **files_archived** - User has imported at least one file
+9. ##indexing** - KB creatio and indexing in progress
+10. ##patient_summary** - A patient summary has been saved in My Stuff
+11. ##public_llm** - The AI dropdown is not set to "Private AI"
+12. ##chat_modified** - The chat save locally and to group buttons are shown.
+13. ##link_stored** - The chat has been added to a group.
+
+
 
 Tips for each stage can be added below:
 
+2. Support requested. You will be notified when your private AI agent is ready.
+5. Your agent is ready. Use the paperclip to import files for your knowledge base.
+8. Update your knowledge base using the [Stored Files](Stored Files tab link) tab.
+9. Knowledge base being indexed. This can take up to 30 minutes.
+10. Your patient summary is available. Ask your agent for it in the chat anytime.
+11. Public AIs see only what you see in the chat, including any paperclip documents.
+12. You can save the chat to your computer or save it online.
+13. Open [Saved Chats](Saved Chats tab link) to restore one or share a deep link.
 
 ---
 
