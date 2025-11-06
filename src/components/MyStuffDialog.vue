@@ -229,6 +229,65 @@
                   <vue-markdown :source="agentInstructions" />
                 </div>
               </div>
+
+              <!-- Agent Knowledge Base Section -->
+              <div v-if="kbInfo" class="q-mt-lg" style="border-top: 1px solid #e0e0e0; padding-top: 16px;">
+                <div class="text-h6 q-mb-md">Agent Knowledge Base</div>
+                
+                <div class="row items-center q-mb-sm">
+                  <div class="col">
+                    <div class="text-weight-medium">{{ kbInfo.name }}</div>
+                    <div class="text-caption text-grey-7 q-mt-xs">
+                      Last indexed: {{ formatRelativeTime(kbInfo.lastIndexedAt) }}
+                    </div>
+                  </div>
+                  <div class="col-auto">
+                    <q-chip
+                      :color="kbInfo.connected ? 'green' : 'amber'"
+                      text-color="white"
+                      :label="kbInfo.connected ? 'Connected' : 'Not Connected'"
+                      clickable
+                      @click="toggleKBConnection"
+                      :disable="togglingKB"
+                      :loading="togglingKB"
+                    />
+                  </div>
+                </div>
+                
+                <div class="q-mt-md">
+                  <div class="text-caption text-grey-7 q-mb-xs">Indexed Files:</div>
+                  <div 
+                    v-if="getIndexedFileNames().length === 0"
+                    class="text-caption text-grey-5"
+                  >
+                    No files indexed yet
+                  </div>
+                  <q-list
+                    v-else
+                    dense
+                    :class="{ 'text-grey-5': !kbInfo.connected }"
+                  >
+                    <q-item
+                      v-for="(fileName, index) in getIndexedFileNames()"
+                      :key="index"
+                      dense
+                    >
+                      <q-item-section>
+                        <q-item-label 
+                          :class="{ 'text-grey-5': !kbInfo.connected }"
+                          class="text-caption"
+                        >
+                          {{ fileName }}
+                        </q-item-label>
+                      </q-item-section>
+                    </q-item>
+                  </q-list>
+                </div>
+              </div>
+
+              <div v-else-if="!loadingAgent" class="q-mt-lg text-center text-grey-7">
+                <div class="text-caption">No knowledge base configured</div>
+              </div>
             </div>
 
             <div v-else class="text-center q-pa-md text-grey">
@@ -494,6 +553,16 @@ const editMode = ref(false);
 const editedInstructions = ref('');
 const savingInstructions = ref(false);
 
+// KB info for agent tab
+const kbInfo = ref<{
+  name: string;
+  kbId: string;
+  connected: boolean;
+  indexedFiles: string[];
+  lastIndexedAt: string | null;
+} | null>(null);
+const togglingKB = ref(false);
+
 const loadingChats = ref(false);
 const chatsError = ref('');
 const sharedChats = ref<SavedChat[]>([]);
@@ -655,6 +724,7 @@ const loadAgent = async () => {
     const result = await response.json();
     agentInstructions.value = result.instructions || '';
     editedInstructions.value = result.instructions || '';
+    kbInfo.value = result.kbInfo || null;
   } catch (err) {
     agentError.value = err instanceof Error ? err.message : 'Failed to load agent';
   } finally {
@@ -694,6 +764,95 @@ const saveInstructions = async () => {
 const cancelEdit = () => {
   editedInstructions.value = agentInstructions.value;
   editMode.value = false;
+};
+
+// Format relative time (minutes, hours, days ago)
+const formatRelativeTime = (dateString: string | null): string => {
+  if (!dateString) return 'Never';
+  
+  const date = new Date(dateString);
+  const now = new Date();
+  const diffMs = now.getTime() - date.getTime();
+  const diffMins = Math.floor(diffMs / 60000);
+  const diffHours = Math.floor(diffMs / 3600000);
+  const diffDays = Math.floor(diffMs / 86400000);
+  
+  if (diffMins < 1) return 'Just now';
+  if (diffMins < 60) return `${diffMins} minute${diffMins !== 1 ? 's' : ''} ago`;
+  if (diffHours < 24) return `${diffHours} hour${diffHours !== 1 ? 's' : ''} ago`;
+  return `${diffDays} day${diffDays !== 1 ? 's' : ''} ago`;
+};
+
+// Toggle KB connection
+const toggleKBConnection = async () => {
+  if (!kbInfo.value || togglingKB.value) return;
+  
+  togglingKB.value = true;
+  try {
+    const action = kbInfo.value.connected ? 'detach' : 'attach';
+    const response = await fetch('http://localhost:3001/api/toggle-kb-connection', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      credentials: 'include',
+      body: JSON.stringify({
+        userId: props.userId,
+        action: action
+      })
+    });
+
+    if (!response.ok) {
+      throw new Error('Failed to toggle KB connection');
+    }
+
+    const result = await response.json();
+    
+    // Reload agent info to get updated KB connection status and other info
+    await loadAgent();
+    
+    // Show notification
+    if ($q && typeof $q.notify === 'function') {
+      $q.notify({
+        type: 'positive',
+        message: result.message || `KB ${action === 'attach' ? 'attached' : 'detached'} successfully`,
+        timeout: 3000
+      });
+    }
+  } catch (err) {
+    const errorMsg = err instanceof Error ? err.message : 'Failed to toggle KB connection';
+    if ($q && typeof $q.notify === 'function') {
+      $q.notify({
+        type: 'negative',
+        message: errorMsg,
+        timeout: 5000
+      });
+    }
+  } finally {
+    togglingKB.value = false;
+  }
+};
+
+// Get file names from indexed files (extract from bucketKey)
+const getIndexedFileNames = (): string[] => {
+  if (!kbInfo.value || !kbInfo.value.indexedFiles) {
+    console.log('[KB Info] No kbInfo or indexedFiles:', { kbInfo: kbInfo.value });
+    return [];
+  }
+  
+  const fileNames = kbInfo.value.indexedFiles.map(bucketKey => {
+    // Extract filename from bucketKey (format: userId/kbName/filename or userId/archived/filename)
+    const parts = bucketKey.split('/');
+    return parts[parts.length - 1] || bucketKey;
+  });
+  
+  console.log('[KB Info] Indexed files:', { 
+    indexedFiles: kbInfo.value.indexedFiles, 
+    fileNames: fileNames,
+    count: fileNames.length 
+  });
+  
+  return fileNames;
 };
 
 const loadSharedChats = async () => {
@@ -908,7 +1067,7 @@ const updateAndIndexKB = async () => {
     indexingStatus.value.message = 'Moving files to knowledge base folder...';
 
     console.log('[KB] Calling /api/update-knowledge-base with userId:', props.userId, 'changes:', changes.length);
-    
+
     const response = await fetch('http://localhost:3001/api/update-knowledge-base', {
       method: 'POST',
       headers: {
@@ -987,11 +1146,11 @@ const updateAndIndexKB = async () => {
     indexingStatus.value.phase = 'error';
     indexingStatus.value.error = err instanceof Error ? err.message : 'Failed to update knowledge base';
     if ($q && typeof $q.notify === 'function') {
-      $q.notify({
-        type: 'negative',
+    $q.notify({
+      type: 'negative',
         message: indexingStatus.value.error,
         timeout: 5000
-      });
+    });
     } else {
       // Fallback if Quasar notify is not available
       console.error('Notification error:', indexingStatus.value.error);
@@ -1034,10 +1193,19 @@ const pollIndexingProgress = async (jobId: string) => {
       });
 
       if (!response.ok) {
-        throw new Error('Failed to get indexing status');
+        throw new Error(`Failed to get indexing status: ${response.status} ${response.statusText}`);
       }
 
       const result = await response.json();
+      
+      console.log(`[KB Polling] Status check for job ${jobId}:`, {
+        phase: result.phase,
+        status: result.status,
+        completed: result.completed,
+        tokens: result.tokens,
+        filesIndexed: result.filesIndexed,
+        progress: result.progress
+      });
       
       // Update status with all fields from response
       indexingStatus.value = {
@@ -1059,8 +1227,8 @@ const pollIndexingProgress = async (jobId: string) => {
         progress: indexingStatus.value.progress
       });
 
-      // Handle completion
-      if (result.completed) {
+      // Handle completion - check both result.completed and result.phase
+      if (result.completed || result.phase === 'complete' || result.status === 'INDEX_JOB_STATUS_COMPLETED') {
         clearInterval(pollingInterval.value);
         pollingInterval.value = null;
         
@@ -1078,6 +1246,11 @@ const pollIndexingProgress = async (jobId: string) => {
           
           emit('indexing-finished', { jobId, phase: 'complete' });
           
+          // Reload agent info to update KB info (including indexed files and connection status)
+          if (currentTab.value === 'agent') {
+            await loadAgent();
+          }
+          
           // Attach KB to agent and generate patient summary
           await attachKBAndGenerateSummary();
           
@@ -1089,10 +1262,10 @@ const pollIndexingProgress = async (jobId: string) => {
           indexingStatus.value.phase = 'error';
           indexingStatus.value.error = result.error || 'Indexing failed';
           emit('indexing-finished', { jobId, phase: 'error', error: indexingStatus.value.error });
-          $q.notify({
+        $q.notify({
             type: 'negative',
             message: `Indexing failed: ${indexingStatus.value.error}`
-          });
+        });
         }
       }
     } catch (err) {
@@ -1109,14 +1282,6 @@ const pollIndexingProgress = async (jobId: string) => {
       });
     }
   }, 10000); // Poll every 10 seconds (changed from 2 seconds)
-  
-  // Clean up on component unmount
-  onUnmounted(() => {
-    if (pollingInterval.value) {
-      clearInterval(pollingInterval.value);
-      pollingInterval.value = null;
-    }
-  });
 };
 
 // Chat management methods
@@ -1457,6 +1622,14 @@ watch(currentTab, (newTab) => {
     } else if (newTab === 'summary') {
       loadPatientSummary();
     }
+  }
+});
+
+// Clean up polling interval on component unmount
+onUnmounted(() => {
+  if (pollingInterval.value) {
+    clearInterval(pollingInterval.value);
+    pollingInterval.value = null;
   }
 });
 </script>

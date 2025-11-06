@@ -574,14 +574,14 @@ app.post('/api/sync-agent', async (req, res) => {
       
       while (retries > 0 && !saved) {
         try {
-          userDoc.assignedAgentId = userAgent.uuid;
-          userDoc.assignedAgentName = userAgent.name;
-          userDoc.agentEndpoint = userAgent.deployment?.url ? `${userAgent.deployment.url}/api/v1` : null;
-          // Store model inference_name for API requests
-          userDoc.agentModelName = userAgent.model?.inference_name || userAgent.model?.name || null;
-          
-          await cloudant.saveDocument('maia_users', userDoc);
-          console.log(`✅ Synced agent ${userAgent.name} for user ${userId}`);
+      userDoc.assignedAgentId = userAgent.uuid;
+      userDoc.assignedAgentName = userAgent.name;
+      userDoc.agentEndpoint = userAgent.deployment?.url ? `${userAgent.deployment.url}/api/v1` : null;
+      // Store model inference_name for API requests
+      userDoc.agentModelName = userAgent.model?.inference_name || userAgent.model?.name || null;
+      
+      await cloudant.saveDocument('maia_users', userDoc);
+      console.log(`✅ Synced agent ${userAgent.name} for user ${userId}`);
           saved = true;
         } catch (error) {
           // Handle 409 conflict - document was updated by another process
@@ -1218,9 +1218,9 @@ async function verifyProvisioningComplete(userId, agentId, agentName, kbName, ex
           }));
           
           if (rootCheck && archivedCheck && kbCheck) {
-            verificationResults.bucketFolders.passed = true;
+          verificationResults.bucketFolders.passed = true;
             verificationResults.bucketFolders.message = `Bucket folders created and verified: ${userId}/ (root), ${userId}/archived/ (archived), and ${userId}/${kbName}/ (KB)`;
-            logProvisioning(userId, `✅ Bucket folders verified`, 'success');
+          logProvisioning(userId, `✅ Bucket folders verified`, 'success');
           } else {
             verificationResults.bucketFolders.message = `Bucket folders missing .keep files`;
             logProvisioning(userId, `⚠️  Bucket folders missing .keep files`, 'warning');
@@ -2570,9 +2570,36 @@ app.get('/api/agent-instructions', async (req, res) => {
       });
     }
 
+    // Get KB info and connection status
+    let kbInfo = null;
+    if (userDoc.kbId) {
+      // Validate KB resources to get current connection status
+      const { kbStatus } = await validateUserResources(userId);
+      
+      // Get KB name
+      const kbName = getKBNameFromUserDoc(userDoc, userId);
+      
+      // Get indexed files - source of truth is userDoc.kbIndexedFiles
+      // This array contains bucketKeys of files that were successfully indexed
+      // It's updated when indexing completes (not just intent)
+      const indexedFiles = userDoc.kbIndexedFiles || [];
+      
+      // Get last indexed time
+      const lastIndexedAt = userDoc.kbLastIndexedAt || userDoc.kbIndexingStartedAt || null;
+      
+      kbInfo = {
+        name: kbName,
+        kbId: userDoc.kbId,
+        connected: kbStatus === 'attached',
+        indexedFiles: indexedFiles,
+        lastIndexedAt: lastIndexedAt
+      };
+    }
+
     res.json({
       success: true,
-      instructions: agent.instruction || ''
+      instructions: agent.instruction || '',
+      kbInfo: kbInfo
     });
   } catch (error) {
     console.error('❌ Error fetching agent instructions:', error);
@@ -3269,7 +3296,9 @@ app.get('/api/kb-indexing-status/:jobId', async (req, res) => {
     try {
       // Get job status from DO API
       jobStatus = await doClient.indexing.getStatus(jobId);
-      status = jobStatus.status || 'INDEX_JOB_STATUS_RUNNING';
+      status = jobStatus.status || jobStatus.job?.status || 'INDEX_JOB_STATUS_RUNNING';
+      
+      console.log(`[KB Indexing Status] Job ${jobId} status: ${status}`);
       
       // Determine phase based on status
       if (status === 'INDEX_JOB_STATUS_PENDING') {
@@ -3279,9 +3308,11 @@ app.get('/api/kb-indexing-status/:jobId', async (req, res) => {
       } else if (status === 'INDEX_JOB_STATUS_COMPLETED') {
         phase = 'complete';
         completed = true;
+        console.log(`[KB Indexing Status] ✅ Job ${jobId} completed successfully`);
       } else if (status === 'INDEX_JOB_STATUS_FAILED') {
         phase = 'error';
         completed = true;
+        console.log(`[KB Indexing Status] ❌ Job ${jobId} failed`);
       }
       
       // Get KB details for token count and name
@@ -3296,8 +3327,10 @@ app.get('/api/kb-indexing-status/:jobId', async (req, res) => {
         }
       }
       
-      // Count files in KB folder
-      if (userDoc.kbPendingFiles && Array.isArray(userDoc.kbPendingFiles)) {
+      // Count files - prioritize kbIndexedFiles (actual indexed), then kbPendingFiles (being indexed), then derive from KB folder
+      if (userDoc.kbIndexedFiles && Array.isArray(userDoc.kbIndexedFiles) && userDoc.kbIndexedFiles.length > 0) {
+        filesIndexed = userDoc.kbIndexedFiles.length;
+      } else if (userDoc.kbPendingFiles && Array.isArray(userDoc.kbPendingFiles) && userDoc.kbPendingFiles.length > 0) {
         filesIndexed = userDoc.kbPendingFiles.length;
       } else if (userDoc.files) {
         const kbNameForCount = getKBNameFromUserDoc(userDoc, userId);
@@ -3320,16 +3353,33 @@ app.get('/api/kb-indexing-status/:jobId', async (req, res) => {
     if (completed && status === 'INDEX_JOB_STATUS_COMPLETED' && userId) {
       try {
         const updatedUserDoc = await cloudant.getDocument('maia_users', userId);
-        if (updatedUserDoc && updatedUserDoc.kbPendingFiles) {
-          // Update indexed files to match pending files (indexing completed)
-          updatedUserDoc.kbIndexedFiles = updatedUserDoc.kbPendingFiles;
+        if (updatedUserDoc) {
+          // If kbPendingFiles exists, use it to set kbIndexedFiles
+          // Otherwise, if kbIndexedFiles doesn't exist, derive from files in KB folder
+          if (updatedUserDoc.kbPendingFiles && Array.isArray(updatedUserDoc.kbPendingFiles) && updatedUserDoc.kbPendingFiles.length > 0) {
+            // Update indexed files to match pending files (indexing completed)
+            updatedUserDoc.kbIndexedFiles = [...updatedUserDoc.kbPendingFiles]; // Create a copy
+            updatedUserDoc.kbPendingFiles = undefined;
+            console.log(`[KB Indexing Status] ✅ Updated kbIndexedFiles with ${updatedUserDoc.kbIndexedFiles.length} files:`, updatedUserDoc.kbIndexedFiles);
+          } else if (!updatedUserDoc.kbIndexedFiles || updatedUserDoc.kbIndexedFiles.length === 0) {
+            // Fallback: derive from files in KB folder if kbPendingFiles was already cleared
+            const kbNameForFiles = getKBNameFromUserDoc(updatedUserDoc, userId);
+            const kbFiles = (updatedUserDoc.files || []).filter(file => 
+              file.bucketKey && file.bucketKey.startsWith(`${userId}/${kbNameForFiles}/`)
+            ).map(file => file.bucketKey);
+            if (kbFiles.length > 0) {
+              updatedUserDoc.kbIndexedFiles = kbFiles;
+              console.log(`[KB Indexing Status] ✅ Derived kbIndexedFiles from KB folder (${kbFiles.length} files):`, kbFiles);
+            }
+          }
+          
+          // Update metadata
           updatedUserDoc.kbIndexingNeeded = false;
-          updatedUserDoc.kbPendingFiles = undefined;
           updatedUserDoc.kbLastIndexedAt = new Date().toISOString();
           await cloudant.saveDocument('maia_users', updatedUserDoc);
           
           // Update filesIndexed count from actual indexed files
-          if (updatedUserDoc.kbIndexedFiles) {
+          if (updatedUserDoc.kbIndexedFiles && Array.isArray(updatedUserDoc.kbIndexedFiles)) {
             filesIndexed = updatedUserDoc.kbIndexedFiles.length;
           }
         }
@@ -3465,7 +3515,126 @@ app.get('/api/user-status', async (req, res) => {
   }
 });
 
-// Attach KB to Agent endpoint
+// Toggle KB connection to Agent endpoint (attach/detach)
+app.post('/api/toggle-kb-connection', async (req, res) => {
+  try {
+    const { userId, action } = req.body; // action: 'attach' | 'detach'
+    
+    if (!userId) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'User ID is required',
+        error: 'MISSING_USER_ID'
+      });
+    }
+
+    if (!action || (action !== 'attach' && action !== 'detach')) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Action must be "attach" or "detach"',
+        error: 'INVALID_ACTION'
+      });
+    }
+
+    // Get user document
+    const userDoc = await cloudant.getDocument('maia_users', userId);
+    
+    if (!userDoc) {
+      return res.status(404).json({ 
+        success: false, 
+        message: 'User not found',
+        error: 'USER_NOT_FOUND'
+      });
+    }
+
+    if (!userDoc.assignedAgentId) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'User has no assigned agent',
+        error: 'NO_AGENT'
+      });
+    }
+
+    if (!userDoc.kbId) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'User has no knowledge base',
+        error: 'NO_KB'
+      });
+    }
+
+    try {
+      if (action === 'attach') {
+        // Attach KB to agent
+        await doClient.agent.attachKB(userDoc.assignedAgentId, userDoc.kbId);
+        console.log(`✅ Attached KB ${userDoc.kbId} to agent ${userDoc.assignedAgentId}`);
+        
+        res.json({ 
+          success: true, 
+          message: 'Knowledge base attached to agent successfully',
+          agentId: userDoc.assignedAgentId,
+          kbId: userDoc.kbId,
+          connected: true
+        });
+      } else {
+        // Detach KB from agent
+        await doClient.agent.detachKB(userDoc.assignedAgentId, userDoc.kbId);
+        console.log(`✅ Detached KB ${userDoc.kbId} from agent ${userDoc.assignedAgentId}`);
+        
+        res.json({ 
+          success: true, 
+          message: 'Knowledge base detached from agent successfully',
+          agentId: userDoc.assignedAgentId,
+          kbId: userDoc.kbId,
+          connected: false
+        });
+      }
+    } catch (error) {
+      console.error(`❌ Error ${action}ing KB:`, error);
+      // Check if KB is already in the desired state (might return 409 or 404)
+      if (error.message && (error.message.includes('already') || error.message.includes('409'))) {
+        if (action === 'attach') {
+          console.log('ℹ️ KB already attached to agent');
+          res.json({ 
+            success: true, 
+            message: 'Knowledge base is already attached to agent',
+            agentId: userDoc.assignedAgentId,
+            kbId: userDoc.kbId,
+            connected: true,
+            alreadyAttached: true
+          });
+        } else {
+          throw error; // Can't detach if already attached means something's wrong
+        }
+      } else if (error.message && error.message.includes('404')) {
+        if (action === 'detach') {
+          console.log('ℹ️ KB already detached from agent');
+          res.json({ 
+            success: true, 
+            message: 'Knowledge base is already detached from agent',
+            agentId: userDoc.assignedAgentId,
+            kbId: userDoc.kbId,
+            connected: false,
+            alreadyDetached: true
+          });
+        } else {
+          throw error;
+        }
+      } else {
+        throw error;
+      }
+    }
+  } catch (error) {
+    console.error('Error toggling KB connection:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: `Failed to ${req.body.action || 'toggle'} KB connection: ${error.message}`,
+      error: error.message 
+    });
+  }
+});
+
+// Attach KB to Agent endpoint (kept for backward compatibility)
 app.post('/api/attach-kb-to-agent', async (req, res) => {
   try {
     const { userId } = req.body;
