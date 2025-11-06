@@ -1154,17 +1154,31 @@ const handleIndexingFinished = (data: { jobId: string; phase: string; error?: st
   updateContextualTip();
 };
 
+// Map workflow stages to user-friendly tips
+const getWorkflowTip = (workflowStage: string | null): string => {
+  const tips: Record<string, string> = {
+    'request_sent': 'Support requested. You will be notified when your private AI agent is ready.',
+    'agent_deployed': 'Your agent is ready. Use the paperclip to import files for your knowledge base.',
+    'files_archived': 'Update your knowledge base using the [Stored Files] tab.',
+    'indexing': 'Knowledge base being indexed. This can take up to 30 minutes.',
+    'patient_summary': 'Your patient summary is available. Ask your agent for it in the chat anytime.',
+    'link_stored': 'Open [Saved Chats] to restore one or share a deep link.'
+  };
+  
+  return tips[workflowStage || ''] || '';
+};
+
 const updateContextualTip = async () => {
   if (!props.user?.userId) {
     contextualTip.value = 'User not logged in';
     return;
   }
 
-  // If indexing is active, show indexing status
+  // Priority 1: If indexing is active, show indexing status
   if (indexingStatus.value && indexingStatus.value.active) {
     const status = indexingStatus.value;
     if (status.phase === 'indexing' || status.phase === 'indexing_started') {
-      contextualTip.value = `Indexing KB: ${status.filesIndexed} files, ${status.tokens} tokens (${Math.round(status.progress * 100)}%)`;
+      contextualTip.value = 'Knowledge base being indexed. This can take up to 30 minutes.';
     } else if (status.phase === 'complete') {
       contextualTip.value = `KB Indexing Complete: ${status.filesIndexed} files indexed`;
       // Clear after a short delay
@@ -1186,7 +1200,19 @@ const updateContextualTip = async () => {
   }
 
   try {
-    // Fetch user document to get workflowStage and other info
+    // Priority 2: Check UI state (public_llm, chat_modified)
+    // These are computed, not saved to database
+    if (selectedProvider.value !== 'Private AI') {
+      contextualTip.value = 'Public AIs see only what you see in the chat, including any paperclip documents.';
+      return;
+    }
+    
+    if (messages.value.length > 0) {
+      contextualTip.value = 'You can save the chat to your computer or save it online.';
+      return;
+    }
+
+    // Priority 3: Fetch user document to get workflowStage
     const userResponse = await fetch(`http://localhost:3001/api/user-status?userId=${encodeURIComponent(props.user.userId)}`, {
       credentials: 'include'
     });
@@ -1197,21 +1223,16 @@ const updateContextualTip = async () => {
     }
 
     const userData = await userResponse.json();
-    const workflowStage = userData.workflowStage || 'unknown';
-    const hasAgent = userData.hasAgent ? 'yes' : 'no';
-    const fileCount = userData.fileCount || 0;
+    const workflowStage = userData.workflowStage || null;
     
-    // Display KB status based on kbStatus field
-    let kbDisplay = 'no';
-    if (userData.kbStatus === 'attached') {
-      kbDisplay = 'yes';
-    } else if (userData.kbStatus === 'not_attached') {
-      kbDisplay = 'Not attached';
+    // Get tip for workflow stage
+    const tip = getWorkflowTip(workflowStage);
+    if (tip) {
+      contextualTip.value = tip;
+    } else {
+      // Fallback to default message if no tip found
+      contextualTip.value = 'Ready to chat';
     }
-    
-    const chatCount = savedChatCount.value;
-
-    contextualTip.value = `Workflow: ${workflowStage}, Agent: ${hasAgent}, Files: ${fileCount}, KB: ${kbDisplay}, Chats: ${chatCount}`;
   } catch (error) {
     console.error('Failed to update contextual tip:', error);
     contextualTip.value = 'Error loading status';
@@ -1226,6 +1247,16 @@ onMounted(() => {
   
   // Update tip periodically and when saved chat count changes
   watch(() => savedChatCount.value, () => {
+    updateContextualTip();
+  });
+  
+  // Update tip when messages change (for chat_modified state)
+  watch(() => messages.value.length, () => {
+    updateContextualTip();
+  });
+  
+  // Update tip when provider changes (for public_llm state)
+  watch(() => selectedProvider.value, () => {
     updateContextualTip();
   });
   

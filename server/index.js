@@ -1982,6 +1982,18 @@ app.post('/api/save-group-chat', async (req, res) => {
     // Save to maia_chats database
     const result = await cloudant.saveDocument('maia_chats', groupChatDoc);
     
+    // Set workflowStage to link_stored when chat is saved with shareId
+    try {
+      const userDoc = await cloudant.getDocument('maia_users', currentUser);
+      if (userDoc) {
+        userDoc.workflowStage = 'link_stored';
+        await cloudant.saveDocument('maia_users', userDoc);
+      }
+    } catch (err) {
+      console.error('Error setting workflowStage to link_stored:', err);
+      // Don't fail the request if workflowStage update fails
+    }
+    
     res.json({ 
       success: true, 
       chatId: result.id,
@@ -2322,6 +2334,8 @@ app.post('/api/archive-user-files', async (req, res) => {
 
     // Save updated user document if files were moved
     if (archivedCount > 0 && userDoc.files) {
+      // Set workflowStage to files_archived when files are archived
+      userDoc.workflowStage = 'files_archived';
       await cloudant.saveDocument('maia_users', userDoc);
     }
 
@@ -2996,6 +3010,17 @@ app.post('/api/update-knowledge-base', async (req, res) => {
     let pollCount = 0;
     let activeJobId = null;
     
+    // Set workflowStage to indexing when indexing starts
+    try {
+      const indexingUserDoc = await cloudant.getDocument('maia_users', userId);
+      if (indexingUserDoc) {
+        indexingUserDoc.workflowStage = 'indexing';
+        await cloudant.saveDocument('maia_users', indexingUserDoc);
+      }
+    } catch (err) {
+      console.error('[KB AUTO] Error setting workflowStage to indexing:', err);
+    }
+    
     const pollInterval = setInterval(async () => {
       pollCount++;
       
@@ -3077,6 +3102,14 @@ app.post('/api/update-knowledge-base', async (req, res) => {
               finalUserDoc.kbIndexingNeeded = false;
               finalUserDoc.kbLastIndexedAt = new Date().toISOString();
               finalUserDoc.kbLastIndexingJobId = activeJobId;
+              // Revert workflowStage from 'indexing' back to previous stage (files_archived if files exist, otherwise agent_deployed)
+              if (finalUserDoc.workflowStage === 'indexing') {
+                if (finalUserDoc.files && finalUserDoc.files.length > 0) {
+                  finalUserDoc.workflowStage = 'files_archived';
+                } else {
+                  finalUserDoc.workflowStage = 'agent_deployed';
+                }
+              }
               await cloudant.saveDocument('maia_users', finalUserDoc);
             }
             
@@ -3116,6 +3149,8 @@ app.post('/api/update-knowledge-base', async (req, res) => {
                 if (summaryUserDoc) {
                   summaryUserDoc.patientSummary = summary;
                   summaryUserDoc.patientSummaryGeneratedAt = new Date().toISOString();
+                  // Set workflowStage to patient_summary when summary is saved
+                  summaryUserDoc.workflowStage = 'patient_summary';
                   await cloudant.saveDocument('maia_users', summaryUserDoc);
                 }
               }
@@ -3794,6 +3829,8 @@ app.post('/api/generate-patient-summary', async (req, res) => {
       // Save the summary to user document
       userDoc.patientSummary = summary;
       userDoc.patientSummaryGeneratedAt = new Date().toISOString();
+      // Set workflowStage to patient_summary when summary is saved
+      userDoc.workflowStage = 'patient_summary';
       await cloudant.saveDocument('maia_users', userDoc);
 
       console.log(`✅ Patient summary generated successfully for user ${userId}`);
@@ -3891,6 +3928,8 @@ app.post('/api/patient-summary', async (req, res) => {
     // Update the patient summary
     userDoc.patientSummary = summary;
     userDoc.updatedAt = new Date().toISOString();
+    // Set workflowStage to patient_summary when summary is saved
+    userDoc.workflowStage = 'patient_summary';
     
     await cloudant.saveDocument('maia_users', userDoc);
     
