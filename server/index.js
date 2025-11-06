@@ -3949,10 +3949,34 @@ app.post('/api/patient-summary', async (req, res) => {
 
 // Serve static files from dist in production
 if (process.env.NODE_ENV === 'production') {
-  app.use(express.static(path.join(__dirname, '../dist')));
+  const distPath = path.join(__dirname, '../dist');
+  console.log(`📁 Serving static files from: ${distPath}`);
   
+  // Serve static assets (JS, CSS, images, etc.)
+  // fallthrough: true allows requests to continue to the catch-all if file not found
+  app.use(express.static(distPath, {
+    maxAge: '1y', // Cache static assets for 1 year
+    etag: true,
+    fallthrough: true // Allow fallthrough to catch-all for SPA routes
+  }));
+  
+  // Catch-all handler: serve index.html for all non-API routes
+  // This enables client-side routing for the Vue SPA
+  // IMPORTANT: This must be the LAST route handler
   app.get('*', (req, res) => {
-    res.sendFile(path.join(__dirname, '../dist/index.html'));
+    // Skip API routes - these should have been handled by API routes above
+    if (req.path.startsWith('/api')) {
+      return res.status(404).json({ error: 'API endpoint not found' });
+    }
+    
+    // For all other routes, serve index.html (SPA fallback)
+    const indexPath = path.join(distPath, 'index.html');
+    res.sendFile(indexPath, (err) => {
+      if (err) {
+        console.error(`❌ Error serving index.html from ${indexPath}:`, err);
+        res.status(500).send('Error loading application');
+      }
+    });
   });
 }
 
