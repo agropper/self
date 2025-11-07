@@ -1708,16 +1708,56 @@ const loadPatientSummary = async () => {
   }
 };
 
-const requestNewSummary = () => {
-  // Close the dialog and emit an event to trigger summary request
-  // This will be handled by ChatInterface
-  emit('update:modelValue', false);
-  // The actual summary request will be handled by ChatInterface when user types "patient summary"
-  if ($q && typeof $q.notify === 'function') {
-    $q.notify({
-      type: 'info',
-      message: 'Type "patient summary" in the chat to generate a new summary'
+const requestNewSummary = async () => {
+  // Generate a new patient summary using the agent and KB
+  loadingSummary.value = true;
+  summaryError.value = '';
+
+  try {
+    console.log('[Summary] Requesting new patient summary...');
+    
+    const response = await fetch('/api/generate-patient-summary', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      credentials: 'include',
+      body: JSON.stringify({
+        userId: props.userId
+      })
     });
+
+    if (!response.ok) {
+      const errorData = await response.json();
+      throw new Error(errorData.message || 'Failed to generate patient summary');
+    }
+
+    const result = await response.json();
+    console.log('[Summary] Patient summary generated:', result);
+    
+    // Update the displayed summary
+    patientSummary.value = result.summary || '';
+    
+    if ($q && typeof $q.notify === 'function') {
+      $q.notify({
+        type: 'positive',
+        message: 'Patient summary generated successfully!',
+        timeout: 3000
+      });
+    }
+  } catch (error) {
+    console.error('[Summary] Error generating patient summary:', error);
+    summaryError.value = error instanceof Error ? error.message : 'Failed to generate patient summary';
+    
+    if ($q && typeof $q.notify === 'function') {
+      $q.notify({
+        type: 'negative',
+        message: summaryError.value,
+        timeout: 5000
+      });
+    }
+  } finally {
+    loadingSummary.value = false;
   }
 };
 
