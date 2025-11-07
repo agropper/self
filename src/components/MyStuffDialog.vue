@@ -564,6 +564,7 @@ import { ref, computed, watch, onUnmounted } from 'vue';
 import VueMarkdown from 'vue-markdown-render';
 import PdfViewerModal from './PdfViewerModal.vue';
 import { useQuasar } from 'quasar';
+import { deleteChatById } from '../utils/chatApi';
 
 interface UserFile {
   fileName: string;
@@ -1508,38 +1509,41 @@ const copyChatLink = (chat: SavedChat) => {
 };
 
 const confirmDeleteChat = (chat: SavedChat) => {
-  $q.dialog({
-    title: 'Delete Chat',
-    message: 'Are you sure you want to delete this chat?',
-    cancel: true,
-    persistent: true
-  }).onOk(() => {
+  if ($q && typeof $q.dialog === 'function') {
+    $q.dialog({
+      title: 'Delete Chat',
+      message: 'Are you sure you want to delete this chat?',
+      cancel: true,
+      persistent: true
+    }).onOk(() => {
+      deleteChat(chat);
+    });
+  } else if (window.confirm('Are you sure you want to delete this chat?')) {
     deleteChat(chat);
-  });
+  }
 };
 
 const deleteChat = async (chat: SavedChat) => {
   try {
-    const response = await fetch(`/api/delete-chat/${chat._id}`, {
-      method: 'DELETE',
-      credentials: 'include'
-    });
-
-    if (!response.ok) {
-      throw new Error('Failed to delete chat');
-    }
+    await deleteChatById(chat._id);
 
     // Remove from list
     sharedChats.value = sharedChats.value.filter(c => c._id !== chat._id);
-    $q.notify({
-      type: 'positive',
-      message: 'Chat deleted successfully'
-    });
+    if ($q && typeof $q.notify === 'function') {
+      $q.notify({
+        type: 'positive',
+        message: 'Chat deleted successfully'
+      });
+    }
   } catch (err) {
-    $q.notify({
-      type: 'negative',
-      message: err instanceof Error ? err.message : 'Failed to delete chat'
-    });
+    if ($q && typeof $q.notify === 'function') {
+      $q.notify({
+        type: 'negative',
+        message: err instanceof Error ? err.message : 'Failed to delete chat'
+      });
+    } else {
+      console.error('Failed to delete chat:', err);
+    }
   }
 };
 

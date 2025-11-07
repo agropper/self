@@ -156,7 +156,7 @@
                 label="SAVE LOCALLY"
                 icon="save"
                 @click="saveLocally"
-                :disable="isStreaming || !hasChatChanged"
+                :disable="isStreaming || !canSaveLocally"
               />
               <q-btn 
                 flat 
@@ -166,7 +166,7 @@
                 label="SAVE TO GROUP"
                 icon="group"
                 @click="saveToGroup"
-                :disable="isStreaming || !hasChatChanged"
+                :disable="isStreaming || !canSaveToGroup"
               />
               <q-btn 
                 flat 
@@ -360,10 +360,10 @@ const precedingUserMessage = ref<Message | null>(null);
 const chatMessagesRef = ref<HTMLElement | null>(null);
 
 // Track initial chat state for change detection
-const initialMessages = ref<Message[]>([]);
-const initialUploadedFiles = ref<UploadedFile[]>([]);
 const currentSavedChatId = ref<string | null>(null);
 const currentSavedChatShareId = ref<string | null>(null);
+const lastLocalSaveSnapshot = ref<string | null>(null);
+const lastGroupSaveSnapshot = ref<string | null>(null);
 
 type UploadedFilePayload = {
   id: string;
@@ -388,11 +388,37 @@ const buildUploadedFilePayload = (): UploadedFilePayload[] =>
 
 const buildChatHistoryPayload = () => JSON.parse(JSON.stringify(messages.value));
 
+const getComparableChatState = () => ({
+  messages: messages.value.map(msg => ({
+    role: msg.role,
+    content: msg.content,
+    authorId: msg.authorId,
+    authorLabel: msg.authorLabel,
+    authorType: msg.authorType,
+    providerKey: msg.providerKey
+  })),
+  files: uploadedFiles.value.map(file => ({
+    id: file.id,
+    name: file.name,
+    size: file.size,
+    type: file.type,
+    bucketKey: file.bucketKey,
+    bucketPath: file.bucketPath
+  }))
+});
+
+const currentChatSnapshot = computed(() => JSON.stringify(getComparableChatState()));
+
+const canSaveLocally = computed(() => currentChatSnapshot.value !== lastLocalSaveSnapshot.value);
+const canSaveToGroup = computed(() => currentChatSnapshot.value !== lastGroupSaveSnapshot.value);
+
 watch(
   () => props.user?.userId,
   () => {
     currentSavedChatId.value = null;
     currentSavedChatShareId.value = null;
+    lastLocalSaveSnapshot.value = null;
+    lastGroupSaveSnapshot.value = null;
   }
 );
 
@@ -402,40 +428,11 @@ watch(
     if (messageCount === 0 && fileCount === 0) {
       currentSavedChatId.value = null;
       currentSavedChatShareId.value = null;
+      lastLocalSaveSnapshot.value = currentChatSnapshot.value;
+      lastGroupSaveSnapshot.value = currentChatSnapshot.value;
     }
   }
 );
-
-// Computed property to check if chat has changed
-const hasChatChanged = computed(() => {
-  if (messages.value.length !== initialMessages.value.length) {
-    return true;
-  }
-  
-  // Compare messages
-  for (let i = 0; i < messages.value.length; i++) {
-    const current = messages.value[i];
-    const initial = initialMessages.value[i];
-    if (!initial || current.role !== initial.role || current.content !== initial.content) {
-      return true;
-    }
-  }
-  
-  // Compare uploaded files
-  if (uploadedFiles.value.length !== initialUploadedFiles.value.length) {
-    return true;
-  }
-  
-  for (let i = 0; i < uploadedFiles.value.length; i++) {
-    const current = uploadedFiles.value[i];
-    const initial = initialUploadedFiles.value[i];
-    if (!initial || current.id !== initial.id) {
-      return true;
-    }
-  }
-  
-  return false;
-});
 
 // Provider labels map
 const providerLabels: Record<string, string> = {
@@ -541,7 +538,7 @@ const sendMessage = async () => {
   const isPatientSummaryRequest = /patient\s+summary/i.test(inputMessage.value);
   messages.value.push(userMessage);
   inputMessage.value = '';
-  // Don't update initialMessages here - wait until after save
+  // Defer snapshot updates so save buttons stay enabled until the user chooses how to persist the chat
   
   isStreaming.value = true;
 
@@ -998,10 +995,8 @@ const saveLocally = async () => {
         await writable.write(blob);
         await writable.close();
         
-        alert('Chat saved successfully!');
-        // Reset initial state after save
-        initialMessages.value = JSON.parse(JSON.stringify(messages.value));
-        initialUploadedFiles.value = JSON.parse(JSON.stringify(uploadedFiles.value));
+    alert('Chat saved successfully!');
+    lastLocalSaveSnapshot.value = currentChatSnapshot.value;
         return;
       } catch (err: any) {
         // User cancelled or error - fall through to regular download
@@ -1037,9 +1032,7 @@ const saveLocally = async () => {
     await html2pdf().from(chatAreaElement as HTMLElement).set(opt).save();
     
     alert('Chat saved successfully!');
-    // Reset initial state after save
-    initialMessages.value = JSON.parse(JSON.stringify(messages.value));
-    initialUploadedFiles.value = JSON.parse(JSON.stringify(uploadedFiles.value));
+    lastLocalSaveSnapshot.value = currentChatSnapshot.value;
   } catch (error) {
     console.error('Error saving chat:', error);
     alert(`Failed to save chat: ${error instanceof Error ? error.message : 'Unknown error'}`);
@@ -1090,12 +1083,11 @@ const saveToGroup = async () => {
 
         currentSavedChatId.value = result.chatId || currentSavedChatId.value;
         currentSavedChatShareId.value = shareId || null;
+        lastGroupSaveSnapshot.value = currentChatSnapshot.value;
 
         alert(`Chat updated successfully!${shareId ? ` Share ID: ${shareId}` : ''}`);
 
         loadSavedChatCount();
-        initialMessages.value = JSON.parse(JSON.stringify(messages.value));
-        initialUploadedFiles.value = JSON.parse(JSON.stringify(uploadedFiles.value));
         return;
       }
     }
@@ -1119,12 +1111,11 @@ const saveToGroup = async () => {
 
       currentSavedChatId.value = result.chatId || null;
       currentSavedChatShareId.value = result.shareId || null;
+      lastGroupSaveSnapshot.value = currentChatSnapshot.value;
 
       alert(`Chat saved successfully!${result.shareId ? ` Share ID: ${result.shareId}` : ''}`);
 
       loadSavedChatCount();
-      initialMessages.value = JSON.parse(JSON.stringify(messages.value));
-      initialUploadedFiles.value = JSON.parse(JSON.stringify(uploadedFiles.value));
     }
   } catch (error) {
     console.error('Error saving to group:', error);
@@ -1141,7 +1132,9 @@ const loadSavedChatCount = async () => {
   if (!props.user?.userId) return;
   
   try {
-    const response = await fetch(`/api/user-chats?userId=${encodeURIComponent(props.user.userId)}`);
+    const response = await fetch(`/api/user-chats?userId=${encodeURIComponent(props.user.userId)}`, {
+      credentials: 'include'
+    });
     if (response.ok) {
       const result = await response.json();
       savedChatCount.value = result.count || 0;
@@ -1155,6 +1148,7 @@ const handleChatDeleted = (chatId: string) => {
   if (currentSavedChatId.value === chatId) {
     currentSavedChatId.value = null;
     currentSavedChatShareId.value = null;
+    lastGroupSaveSnapshot.value = null;
   }
   loadSavedChatCount();
 };
@@ -1167,8 +1161,6 @@ const handleChatSelected = (chat: any) => {
   if (chat.chatHistory) {
     const normalizedHistory = chat.chatHistory.map((msg: Message) => normalizeMessage(msg));
     messages.value = normalizedHistory;
-    // Update initial state after loading chat
-    initialMessages.value = JSON.parse(JSON.stringify(normalizedHistory));
   }
   
   // Load the uploaded files
@@ -1184,20 +1176,21 @@ const handleChatSelected = (chat: any) => {
       bucketPath: file.bucketPath,
       uploadedAt: file.uploadedAt ? new Date(file.uploadedAt) : new Date()
     }));
-    // Update initial state after loading files
-    initialUploadedFiles.value = JSON.parse(JSON.stringify(uploadedFiles.value));
   } else {
     uploadedFiles.value = [];
-    initialUploadedFiles.value = [];
   }
+
+  nextTick(() => {
+    const snapshot = currentChatSnapshot.value;
+    lastLocalSaveSnapshot.value = snapshot;
+    lastGroupSaveSnapshot.value = snapshot;
+  });
 };
 
-// Reset initial state when chat is cleared
+// Reset chat when needed (kept for reference)
 // const _clearChat = () => {
 //   messages.value = [];
 //   uploadedFiles.value = [];
-//   initialMessages.value = [];
-//   initialUploadedFiles.value = [];
 // };
 
 const startEditing = (idx: number) => {
@@ -1254,7 +1247,7 @@ const deleteMessageConfirmed = () => {
   showDeleteDialog.value = false;
   messageToDelete.value = null;
   precedingUserMessage.value = null;
-  // Don't update initialMessages here - deletion is a change that should enable save buttons
+  // Deletion counts as a change, so leave snapshots untouched and let the user re-save if needed
 };
 
 // Auto-scroll chat to bottom when messages change
@@ -1436,6 +1429,12 @@ onMounted(() => {
   loadSavedChatCount();
   syncAgent();
   updateContextualTip();
+
+  nextTick(() => {
+    const snapshot = currentChatSnapshot.value;
+    lastLocalSaveSnapshot.value = snapshot;
+    lastGroupSaveSnapshot.value = snapshot;
+  });
   
   // Update tip periodically and when saved chat count changes
   watch(() => savedChatCount.value, () => {

@@ -75,6 +75,7 @@
 
 <script setup lang="ts">
 import { ref, computed, watch, onMounted } from 'vue';
+import { deleteChatById } from '../utils/chatApi';
 
 interface SavedChat {
   _id: string;
@@ -171,15 +172,8 @@ const getFirstMessagePreview = (chat: SavedChat): string => {
 
 const handleDeleteChat = async (chatId: string) => {
   try {
-    const response = await fetch(`/api/delete-chat/${chatId}`, {
-      method: 'DELETE',
-      credentials: 'include'
-    });
-    
-    if (!response.ok) {
-      throw new Error(`HTTP error! status: ${response.status}`);
-    }
-    
+    await deleteChatById(chatId);
+
     savedChats.value = savedChats.value.filter(chat => chat._id !== chatId);
     emit('chat-deleted', chatId);
   } catch (err) {
