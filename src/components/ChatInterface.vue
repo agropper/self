@@ -46,7 +46,7 @@
             >
               <q-badge 
                 :color="msg.role === 'user' ? 'primary' : 'secondary'"
-                :label="msg.role === 'assistant' ? getProviderLabel() : getUserLabel()"
+                :label="getMessageLabel(msg)"
               />
               <div 
                 class="q-mt-xs q-pa-sm rounded-borders"
@@ -77,7 +77,7 @@
             >
               <q-badge 
                 :color="msg.role === 'user' ? 'primary' : 'secondary'"
-                :label="msg.role === 'assistant' ? getProviderLabel() : getUserLabel()"
+                :label="getMessageLabel(msg)"
               />
               <div 
                 class="q-mt-xs q-pa-sm rounded-borders"
@@ -302,7 +302,11 @@ import VueMarkdown from 'vue-markdown-render';
 interface Message {
   role: 'user' | 'assistant';
   content: string;
-  name?: string;
+  name?: string; // legacy field for compatibility
+  authorId?: string;
+  authorLabel?: string;
+  authorType?: 'user' | 'assistant';
+  providerKey?: string;
 }
 
 interface User {
@@ -414,8 +418,39 @@ const getUserLabel = () => {
   return props.user?.userId || 'You';
 };
 
+const getProviderLabelFromKey = (providerKey: string | undefined) => {
+  if (!providerKey) return 'Assistant';
+  return providerLabels[providerKey] || providerKey.charAt(0).toUpperCase() + providerKey.slice(1);
+};
+
 const getProviderLabel = () => {
   return providerLabels[selectedProvider.value] || selectedProvider.value;
+};
+
+const getMessageLabel = (msg: Message) => {
+  if (msg.authorLabel) return msg.authorLabel;
+  if (msg.name) return msg.name;
+  if (msg.authorType === 'assistant') {
+    return getProviderLabelFromKey(msg.providerKey);
+  }
+  if (msg.authorId) return msg.authorId;
+  return getUserLabel();
+};
+
+const normalizeMessage = (msg: Message): Message => {
+  const authorType = msg.authorType || (msg.role === 'assistant' ? 'assistant' : 'user');
+  const providerKey = msg.providerKey || (authorType === 'assistant' ? getProviderKey(msg.authorLabel || msg.name || selectedProvider.value) : undefined);
+  const authorLabel = msg.authorLabel || msg.name || (authorType === 'assistant' ? getProviderLabelFromKey(providerKey) : msg.authorId || getUserLabel());
+  const authorId = msg.authorId || (authorType === 'assistant' ? providerKey : (msg.authorLabel === getUserLabel() ? getUserLabel() : props.user?.userId));
+
+  return {
+    ...msg,
+    authorType,
+    providerKey,
+    authorLabel,
+    authorId,
+    name: authorLabel
+  };
 };
 
 // Fetch available providers
@@ -448,10 +483,14 @@ const sendMessage = async () => {
 
   const startTime = Date.now();
 
+  const userLabel = getUserLabel();
   const userMessage: Message = {
     role: 'user',
     content: inputMessage.value,
-    name: getUserLabel()
+    authorType: 'user',
+    authorId: props.user?.userId || userLabel,
+    authorLabel: userLabel,
+    name: userLabel
   };
 
   // Check if this is a patient summary request
@@ -474,10 +513,16 @@ const sendMessage = async () => {
           const summaryData = await summaryResponse.json();
           if (summaryData.summary && summaryData.summary.trim()) {
             // Use existing summary
+            const existingProviderKey = getProviderKey(selectedProvider.value);
+            const existingProviderLabel = getProviderLabelFromKey(existingProviderKey);
             messages.value.push({
               role: 'assistant',
               content: summaryData.summary,
-              name: getProviderLabel()
+              authorType: 'assistant',
+              providerKey: existingProviderKey,
+              authorId: existingProviderKey,
+              authorLabel: existingProviderLabel,
+              name: existingProviderLabel
             });
             isStreaming.value = false;
             return;
@@ -504,9 +549,14 @@ const sendMessage = async () => {
           return msg;
         })
       : messages.value;
+
+    const sanitizedMessages = messagesWithContext.map(msg => ({
+      role: msg.role,
+      content: msg.content
+    }));
     
     // Calculate tokens and context size for logging
-    const allMessagesText = messagesWithContext.map(msg => msg.content).join('\n');
+    const allMessagesText = sanitizedMessages.map(msg => msg.content).join('\n');
     const totalTokens = estimateTokenCount(allMessagesText);
     const contextSizeKB = Math.round(allMessagesText.length / 1024 * 100) / 100;
     const uploadedFilesCount = uploadedFiles.value.length;
@@ -532,7 +582,7 @@ const sendMessage = async () => {
         },
         credentials: 'include', // Include session cookie
         body: JSON.stringify({
-          messages: messagesWithContext,
+          messages: sanitizedMessages,
           options: {
             stream: true
           }
@@ -549,10 +599,15 @@ const sendMessage = async () => {
     const decoder = new TextDecoder();
 
     // Create assistant message
+    const providerLabel = getProviderLabelFromKey(providerKey);
     const assistantMessage: Message = {
       role: 'assistant',
       content: '',
-      name: getProviderLabel()
+      authorType: 'assistant',
+      providerKey,
+      authorId: providerKey,
+      authorLabel: providerLabel,
+      name: providerLabel
     };
     messages.value.push(assistantMessage);
 
@@ -622,10 +677,16 @@ const sendMessage = async () => {
       errorMessage = 'Failed to get response';
     }
     
+    const errorProviderKey = getProviderKey(selectedProvider.value);
+    const errorProviderLabel = getProviderLabelFromKey(errorProviderKey);
     messages.value.push({
       role: 'assistant',
       content: `Error: ${errorMessage}`,
-      name: getProviderLabel()
+      authorType: 'assistant',
+      providerKey: errorProviderKey,
+      authorId: errorProviderKey,
+      authorLabel: errorProviderLabel,
+      name: errorProviderLabel
     });
     isStreaming.value = false;
   }
@@ -1004,9 +1065,10 @@ const loadSavedChatCount = async () => {
 const handleChatSelected = (chat: any) => {
   // Load the chat history
   if (chat.chatHistory) {
-    messages.value = chat.chatHistory;
+    const normalizedHistory = chat.chatHistory.map((msg: Message) => normalizeMessage(msg));
+    messages.value = normalizedHistory;
     // Update initial state after loading chat
-    initialMessages.value = JSON.parse(JSON.stringify(chat.chatHistory));
+    initialMessages.value = JSON.parse(JSON.stringify(normalizedHistory));
   }
   
   // Load the uploaded files
