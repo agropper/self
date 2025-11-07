@@ -976,10 +976,12 @@ const onCheckboxChange = async (file: UserFile) => {
     console.error(`[KB Management] ❌ Error toggling file ${file.fileName}:`, err);
     // Revert checkbox on error
     file.inKnowledgeBase = !newStatus;
-    $q.notify({
-      type: 'negative',
-      message: err instanceof Error ? err.message : 'Failed to update knowledge base status'
-    });
+    if ($q && typeof $q.notify === 'function') {
+      $q.notify({
+        type: 'negative',
+        message: err instanceof Error ? err.message : 'Failed to update knowledge base status'
+      });
+    }
   } finally {
     updatingFiles.value.delete(oldBucketKey);
   }
@@ -1024,15 +1026,19 @@ const deleteFile = async (file: UserFile) => {
 
     // Reload files
     await loadFiles();
-    $q.notify({
-      type: 'positive',
-      message: 'File deleted successfully'
-    });
+    if ($q && typeof $q.notify === 'function') {
+      $q.notify({
+        type: 'positive',
+        message: 'File deleted successfully'
+      });
+    }
   } catch (err) {
-    $q.notify({
-      type: 'negative',
-      message: err instanceof Error ? err.message : 'Failed to delete file'
-    });
+    if ($q && typeof $q.notify === 'function') {
+      $q.notify({
+        type: 'negative',
+        message: err instanceof Error ? err.message : 'Failed to delete file'
+      });
+    }
   }
 };
 
@@ -1281,10 +1287,12 @@ const pollIndexingProgress = async (jobId: string) => {
         indexingStatus.value.phase = 'error';
         indexingStatus.value.error = 'Indexing timed out after 30 minutes';
         emit('indexing-finished', { jobId, phase: 'error', error: 'Indexing timed out' });
-        $q.notify({
-          type: 'negative',
-          message: 'Indexing timed out after 30 minutes. Please check the knowledge base status.'
-        });
+        if ($q && typeof $q.notify === 'function') {
+          $q.notify({
+            type: 'negative',
+            message: 'Indexing timed out after 30 minutes. Please check the knowledge base status.'
+          });
+        }
         return;
       }
       
@@ -1548,17 +1556,21 @@ const attachKBAndGenerateSummary = async () => {
     // Update indexing status to show completion
     indexingStatus.value.message = 'Knowledge base indexed and patient summary generated!';
     
-    $q.notify({
-      type: 'positive',
-      message: 'Knowledge base indexed and patient summary generated!'
-    });
+    if ($q && typeof $q.notify === 'function') {
+      $q.notify({
+        type: 'positive',
+        message: 'Knowledge base indexed and patient summary generated!'
+      });
+    }
   } catch (error) {
     console.error('[KB] Error in attachKBAndGenerateSummary:', error);
     indexingStatus.value.message = `Error: ${error instanceof Error ? error.message : 'Failed to attach KB or generate summary'}`;
-    $q.notify({
-      type: 'negative',
-      message: error instanceof Error ? error.message : 'Failed to attach KB or generate summary'
-    });
+    if ($q && typeof $q.notify === 'function') {
+      $q.notify({
+        type: 'negative',
+        message: error instanceof Error ? error.message : 'Failed to attach KB or generate summary'
+      });
+    }
   }
 };
 
@@ -1596,15 +1608,19 @@ const handleSaveSummary = async () => {
       showSummaryViewModal.value = false;
     }
     
-    $q.notify({
-      type: 'positive',
-      message: 'Patient summary saved successfully!'
-    });
+    if ($q && typeof $q.notify === 'function') {
+      $q.notify({
+        type: 'positive',
+        message: 'Patient summary saved successfully!'
+      });
+    }
   } catch (error) {
-    $q.notify({
-      type: 'negative',
-      message: error instanceof Error ? error.message : 'Failed to save patient summary'
-    });
+    if ($q && typeof $q.notify === 'function') {
+      $q.notify({
+        type: 'negative',
+        message: error instanceof Error ? error.message : 'Failed to save patient summary'
+      });
+    }
   }
 };
 
@@ -1643,15 +1659,19 @@ const handleSaveEditedSummary = async () => {
     editingSummary.value = false;
     showSummaryViewModal.value = false;
     
-    $q.notify({
-      type: 'positive',
-      message: 'Patient summary saved successfully!'
-    });
+    if ($q && typeof $q.notify === 'function') {
+      $q.notify({
+        type: 'positive',
+        message: 'Patient summary saved successfully!'
+      });
+    }
   } catch (error) {
-    $q.notify({
-      type: 'negative',
-      message: error instanceof Error ? error.message : 'Failed to save patient summary'
-    });
+    if ($q && typeof $q.notify === 'function') {
+      $q.notify({
+        type: 'negative',
+        message: error instanceof Error ? error.message : 'Failed to save patient summary'
+      });
+    }
   }
 };
 
@@ -1693,10 +1713,12 @@ const requestNewSummary = () => {
   // This will be handled by ChatInterface
   emit('update:modelValue', false);
   // The actual summary request will be handled by ChatInterface when user types "patient summary"
-  $q.notify({
-    type: 'info',
-    message: 'Type "patient summary" in the chat to generate a new summary'
-  });
+  if ($q && typeof $q.notify === 'function') {
+    $q.notify({
+      type: 'info',
+      message: 'Type "patient summary" in the chat to generate a new summary'
+    });
+  }
 };
 
 const sortedSharedChats = computed(() => {
