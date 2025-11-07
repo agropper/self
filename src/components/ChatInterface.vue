@@ -297,7 +297,7 @@ import { ref, onMounted, computed, watch, nextTick } from 'vue';
 import PdfViewerModal from './PdfViewerModal.vue';
 import SavedChatsModal from './SavedChatsModal.vue';
 import MyStuffDialog from './MyStuffDialog.vue';
-import html2pdf from 'html2pdf.js';
+import { jsPDF } from 'jspdf';
 import VueMarkdown from 'vue-markdown-render';
 
 interface Message {
@@ -954,87 +954,139 @@ const removeFile = (file: UploadedFile) => {
   }
 };
 
+const formatBytes = (bytes: number) => {
+  if (!bytes && bytes !== 0) return 'unknown size';
+  if (bytes < 1024) return `${bytes} B`;
+  const units = ['KB', 'MB', 'GB'];
+  let size = bytes / 1024;
+  let unitIndex = 0;
+  while (size >= 1024 && unitIndex < units.length - 1) {
+    size /= 1024;
+    unitIndex += 1;
+  }
+  return `${size.toFixed(1)} ${units[unitIndex]}`;
+};
+
+const stripBasicMarkdown = (text: string) =>
+  text
+    .replace(/!\[[^\]]*]\([^)]*\)/g, '') // images
+    .replace(/\[([^\]]+)]\(([^)]+)\)/g, '$1 ($2)') // links to text (url)
+    .replace(/[`*_~>#]/g, '') // simple formatting marks
+    .replace(/\s+\n/g, '\n')
+    .trim();
+
+const generateChatTranscriptPdf = () => {
+  const doc = new jsPDF({ unit: 'pt', format: 'letter' });
+  const margin = 48;
+  const pageWidth = doc.internal.pageSize.getWidth();
+  const pageHeight = doc.internal.pageSize.getHeight();
+  const usableWidth = pageWidth - margin * 2;
+  const lineHeight = 16;
+  let cursorY = margin;
+
+  const ensureSpace = (height = lineHeight) => {
+    if (cursorY + height > pageHeight - margin) {
+      doc.addPage();
+      cursorY = margin;
+    }
+  };
+
+  const writeParagraph = (text = '', options: { bold?: boolean; extraGap?: number } = {}) => {
+    const { bold = false, extraGap = 0 } = options;
+    const content = text ? doc.splitTextToSize(text, usableWidth) : [''];
+    ensureSpace(content.length * lineHeight + extraGap);
+    doc.setFont('Helvetica', bold ? 'bold' : 'normal');
+    content.forEach(line => {
+      doc.text(line, margin, cursorY);
+      cursorY += lineHeight;
+    });
+    doc.setFont('Helvetica', 'normal');
+    cursorY += extraGap;
+  };
+
+  const now = new Date();
+  writeParagraph('MAIA Chat Transcript', { bold: true, extraGap: 8 });
+  writeParagraph(`Saved at: ${now.toLocaleString()}`);
+  if (props.user?.userId) {
+    writeParagraph(`User: ${props.user.userId}`);
+  }
+  if (currentSavedChatShareId.value) {
+    writeParagraph(`Shared deep link: /chat/${currentSavedChatShareId.value}`);
+  }
+  writeParagraph();
+
+  messages.value.forEach((msg, index) => {
+    const label = msg.authorLabel || (msg.role === 'user' ? getUserLabel() : getProviderLabelFromKey(msg.providerKey));
+    const heading = `${index + 1}. ${label}`;
+    writeParagraph(heading, { bold: true });
+    const cleanedContent = stripBasicMarkdown(msg.content || '');
+    if (cleanedContent) {
+      writeParagraph(cleanedContent);
+    } else {
+      writeParagraph('[No content]');
+    }
+    writeParagraph(); // blank line between messages
+  });
+
+  if (uploadedFiles.value.length > 0) {
+    writeParagraph('Attached Files:', { bold: true, extraGap: 4 });
+    uploadedFiles.value.forEach(file => {
+      const details = `• ${file.name || 'Unnamed file'} (${formatBytes(file.size)}${file.bucketPath ? ` – ${file.bucketPath}` : ''})`;
+      writeParagraph(details);
+    });
+    writeParagraph();
+  }
+
+  return doc;
+};
+
 const saveLocally = async () => {
   try {
-    // Get the chat area element to capture (including file chips)
-    const chatAreaElement = document.querySelector('.chat-interface');
-    
-    if (!chatAreaElement) {
-      alert('Chat area not found');
+    if (messages.value.length === 0) {
+      alert('There is no chat content to save yet.');
       return;
     }
-    
-    // Generate filename with date and time (HH:MM format)
+
+    const doc = generateChatTranscriptPdf();
     const now = new Date();
-    const year = now.getFullYear();
-    const month = String(now.getMonth() + 1).padStart(2, '0');
-    const day = String(now.getDate()).padStart(2, '0');
-    const hours = String(now.getHours()).padStart(2, '0');
-    const minutes = String(now.getMinutes()).padStart(2, '0');
-    const dateStr = `${year}-${month}-${day} ${hours}:${minutes}`;
-    const filename = `MAIA chat ${dateStr}.pdf`;
-    
-    // Try to use File System Access API to save to MAIA folder
-    // @ts-ignore - File System Access API types not in TypeScript
+    const filename = `MAIA chat ${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')} ${String(now.getHours()).padStart(2, '0')}-${String(now.getMinutes()).padStart(2, '0')}.pdf`;
+
+    // Prefer the File System Access API when available
+    // @ts-ignore - File System Access API types not in TypeScript libs
     if ('showSaveFilePicker' in window) {
       try {
         // @ts-ignore
         const fileHandle = await window.showSaveFilePicker({
           suggestedName: filename,
-          types: [{
-            description: 'PDF files',
-            accept: { 'application/pdf': ['.pdf'] }
-          }]
+          types: [
+            {
+              description: 'PDF files',
+              accept: { 'application/pdf': ['.pdf'] }
+            }
+          ]
         });
-        
-        // Generate PDF as blob
-        const blob = await html2pdf().from(chatAreaElement as HTMLElement).output('blob');
-        
-        // Write to file
+
         const writable = await fileHandle.createWritable();
-        await writable.write(blob);
+        await writable.write(await doc.output('blob'));
         await writable.close();
-        
-    alert('Chat saved successfully!');
-    lastLocalSaveSnapshot.value = currentChatSnapshot.value;
+
+        alert('Chat saved successfully!');
+        lastLocalSaveSnapshot.value = currentChatSnapshot.value;
         return;
       } catch (err: any) {
-        // User cancelled or error - fall through to regular download
-        if (err.name !== 'AbortError') {
-          console.error('File System Access API error:', err);
+        if (err?.name === 'AbortError') {
+          return; // user cancelled
         }
+        console.warn('File System Access API not available or failed, falling back to download.', err);
       }
     }
-    
-    // Fallback: Regular download
-    const opt = {
-      margin: 0.5,
-      filename: filename,
-      image: { 
-        type: 'jpeg' as const, 
-        quality: 0.98 
-      },
-      html2canvas: { 
-        scale: 2,
-        useCORS: true,
-        allowTaint: true,
-        backgroundColor: '#ffffff',
-        logging: false
-      },
-      jsPDF: { 
-        unit: 'in', 
-        format: 'a4', 
-        orientation: 'portrait' as const
-      }
-    };
-    
-    // Generate and save PDF
-    await html2pdf().from(chatAreaElement as HTMLElement).set(opt).save();
-    
+
+    // Fallback: regular download
+    doc.save(filename);
     alert('Chat saved successfully!');
     lastLocalSaveSnapshot.value = currentChatSnapshot.value;
   } catch (error) {
-    console.error('Error saving chat:', error);
+    console.error('Error saving chat locally:', error);
     alert(`Failed to save chat: ${error instanceof Error ? error.message : 'Unknown error'}`);
   }
 };
