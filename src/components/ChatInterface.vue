@@ -1671,16 +1671,16 @@ const renderMessage = (
       }
 
       if (segmentItems.length > 0 && nextHeight > available) {
+        if (segmentItems.length === 1 && segmentItems[0].kind === 'padding') {
+          segmentItems.length = 0;
+          segmentHeight = 0;
+          segmentIndex = startIndex;
+          doc.addPage();
+          state.cursorY = pdfMargin.top;
+          available = state.pageHeight - pdfMargin.bottom - state.cursorY;
+          continue;
+        }
         break;
-      }
-
-      if (segmentItems.length === 0 && nextHeight > available) {
-        doc.addPage();
-        state.cursorY = pdfMargin.top;
-        available = state.pageHeight - pdfMargin.bottom - state.cursorY;
-        startIndex = segmentIndex;
-        segmentHeight = 0;
-        continue;
       }
 
       segmentItems.push(item);
