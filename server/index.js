@@ -207,6 +207,62 @@ const doClient = new DigitalOceanClient(process.env.DIGITALOCEAN_TOKEN, {
   region: process.env.DO_REGION || 'tor1'
 });
 
+// Simple in-memory caches to reduce repeated DO API calls
+const RESOURCE_CACHE_TTL = 30 * 1000; // 30 seconds
+const KB_LIST_CACHE_TTL = 60 * 1000; // 1 minute
+const AGENT_CACHE_TTL = 30 * 1000;
+const KB_CACHE_TTL = 30 * 1000;
+
+const resourceValidationCache = new Map(); // userId -> { timestamp, data }
+const agentDetailsCache = new Map(); // agentId -> { timestamp, value }
+const kbDetailsCache = new Map(); // kbId -> { timestamp, value }
+let kbListCache = { timestamp: 0, value: null };
+
+const isCacheEntryValid = (entry, ttl) => entry && Date.now() - entry.timestamp < ttl;
+
+const isRateLimitError = (error) => {
+  if (!error) return false;
+  const message = (error.message || '').toLowerCase();
+  return error.status === 429 || error.code === 429 || message.includes('too many requests') || message.includes('rate limit');
+};
+
+const getCachedAgent = async (agentId) => {
+  if (!agentId) return null;
+  const cacheEntry = agentDetailsCache.get(agentId);
+  if (isCacheEntryValid(cacheEntry, AGENT_CACHE_TTL)) {
+    return cacheEntry.value;
+  }
+  const value = await doClient.agent.get(agentId);
+  agentDetailsCache.set(agentId, { timestamp: Date.now(), value });
+  return value;
+};
+
+const getCachedKB = async (kbId) => {
+  if (!kbId) return null;
+  const cacheEntry = kbDetailsCache.get(kbId);
+  if (isCacheEntryValid(cacheEntry, KB_CACHE_TTL)) {
+    return cacheEntry.value;
+  }
+  const value = await doClient.kb.get(kbId);
+  kbDetailsCache.set(kbId, { timestamp: Date.now(), value });
+  return value;
+};
+
+const getCachedKBList = async () => {
+  if (isCacheEntryValid(kbListCache, KB_LIST_CACHE_TTL) && Array.isArray(kbListCache.value)) {
+    return kbListCache.value;
+  }
+  const list = await doClient.kb.list();
+  kbListCache = { timestamp: Date.now(), value: list };
+  return list;
+};
+
+const invalidateResourceCache = (userId) => {
+  if (userId) {
+    resourceValidationCache.delete(userId);
+  }
+};
+
 /**
  * Centralized validation function to verify user resources exist in DigitalOcean
  * This is the single source of truth for resource validation - DO API is authoritative
@@ -215,14 +271,27 @@ const doClient = new DigitalOceanClient(process.env.DIGITALOCEAN_TOKEN, {
  * kbStatus: 'none' | 'not_attached' | 'attached'
  */
 async function validateUserResources(userId) {
+  const cachedEntry = resourceValidationCache.get(userId);
+  if (isCacheEntryValid(cachedEntry, RESOURCE_CACHE_TTL)) {
+    return cachedEntry.data;
+  }
+
   let userDoc = await cloudant.getDocument('maia_users', userId);
   if (!userDoc) {
-    return { hasAgent: false, kbStatus: 'none', userDoc: null, cleaned: false };
+    const result = { hasAgent: false, kbStatus: 'none', userDoc: null, cleaned: false };
+    resourceValidationCache.set(userId, { timestamp: Date.now(), data: result });
+    return result;
   }
 
   let cleaned = false;
   let hasAgent = false;
   let kbStatus = 'none'; // 'none' | 'not_attached' | 'attached'
+
+  const finishAndCache = () => {
+    const result = { hasAgent, kbStatus, userDoc, cleaned };
+    resourceValidationCache.set(userId, { timestamp: Date.now(), data: result });
+    return result;
+  };
 
   // Helper function to check if error is a 404/not found
   const isNotFoundError = (error) => {
@@ -235,7 +304,7 @@ async function validateUserResources(userId) {
   // 1. Validate Agent - verify it exists in DigitalOcean
   if (userDoc.assignedAgentId && typeof userDoc.assignedAgentId === 'string' && userDoc.assignedAgentId.trim().length > 0) {
     try {
-      const agent = await doClient.agent.get(userDoc.assignedAgentId);
+      const agent = await getCachedAgent(userDoc.assignedAgentId);
       if (agent && agent.uuid === userDoc.assignedAgentId) {
         // Verify agent name matches expected pattern
         const expectedPattern = new RegExp(`^${userId}-agent-`);
@@ -271,6 +340,9 @@ async function validateUserResources(userId) {
         userDoc.agentModelName = null;
         userDoc.agentApiKey = null;
         cleaned = true;
+      } else if (isRateLimitError(error)) {
+        console.warn(`⚠️ Rate limit while checking agent for user ${userId}. Using cached validation result.`);
+        return finishAndCache();
       } else {
         // Other error - log but don't fail validation
         console.error(`❌ Error checking agent existence in DO for user ${userId}:`, error.message);
@@ -286,7 +358,7 @@ async function validateUserResources(userId) {
   // First, check if KB exists in DO (either from database or by searching)
   if (userDoc.kbId && typeof userDoc.kbId === 'string' && userDoc.kbId.trim().length > 0) {
     try {
-      const kb = await doClient.kb.get(userDoc.kbId);
+      const kb = await getCachedKB(userDoc.kbId);
       if (kb && kb.uuid === userDoc.kbId) {
         kbExists = true;
         kbIdFound = userDoc.kbId;
@@ -314,6 +386,9 @@ async function validateUserResources(userId) {
         userDoc.kbLastIndexingJobId = null;
         userDoc.kbIndexedFiles = [];
         cleaned = true;
+      } else if (isRateLimitError(error)) {
+        console.warn(`⚠️ Rate limit while fetching KB ${userDoc.kbId} for user ${userId}. Returning cached result.`);
+        return finishAndCache();
       } else {
         // Other error - log but don't fail validation
         console.error(`❌ Error checking KB existence in DO for user ${userId}:`, error.message);
@@ -325,7 +400,7 @@ async function validateUserResources(userId) {
   if (!kbExists) {
     try {
       const kbName = getKBNameFromUserDoc(userDoc, userId);
-      const allKBs = await doClient.kb.list();
+      const allKBs = await getCachedKBList();
       const foundKB = allKBs.find(kb => kb.name === kbName);
       
       if (foundKB) {
@@ -348,6 +423,10 @@ async function validateUserResources(userId) {
         cleaned = true;
       }
     } catch (error) {
+      if (isRateLimitError(error)) {
+        console.warn(`⚠️ Rate limit while listing KBs for user ${userId}. Using cached validation result.`);
+        return finishAndCache();
+      }
       console.error(`❌ Error searching for KB in DO for user ${userId}:`, error.message);
     }
   }
@@ -355,7 +434,7 @@ async function validateUserResources(userId) {
   // If KB exists, check if it's attached to agent
   if (kbExists && kbIdFound && hasAgent && userDoc.assignedAgentId) {
     try {
-      const agentDetails = await doClient.agent.get(userDoc.assignedAgentId);
+      const agentDetails = await getCachedAgent(userDoc.assignedAgentId);
       
       // Check multiple possible field names for attached KBs in agent details
       // Agent might have: knowledge_bases, knowledge_base_ids, connected_knowledge_bases, etc.
@@ -384,6 +463,10 @@ async function validateUserResources(userId) {
         // The status is already reflected in the API response
       }
     } catch (error) {
+      if (isRateLimitError(error)) {
+        console.warn(`⚠️ Rate limit while checking KB attachment for user ${userId}. Using cached result.`);
+        return finishAndCache();
+      }
       console.error(`❌ Error checking KB attachment status for user ${userId}:`, error.message);
       // Default to not_attached if we can't verify
       kbStatus = 'not_attached';
@@ -452,7 +535,7 @@ async function validateUserResources(userId) {
     }
   }
 
-  return { hasAgent, kbStatus, userDoc, cleaned };
+  return finishAndCache();
 }
 
 const passkeyService = new PasskeyService({
@@ -3019,6 +3102,8 @@ async function setupKnowledgeBase(userId, kbName, filesInKB, bucketName, existin
       console.log(`[KB AUTO] Calling doClient.kb.get(${kbId}) to get full KB details after creation`);
       kbDetails = await doClient.kb.get(kbId);
       
+      invalidateResourceCache(userId);
+      
       return {
         kbId: kbId,
         kbDetails: kbDetails
@@ -3030,6 +3115,8 @@ async function setupKnowledgeBase(userId, kbName, filesInKB, bucketName, existin
   }
   
   // KB exists - return it
+  invalidateResourceCache(userId);
+  
   return {
     kbId: kbId,
     kbDetails: kbDetails
@@ -3139,11 +3226,103 @@ app.post('/api/update-knowledge-base', async (req, res) => {
     // Start polling for indexing jobs in background (non-blocking)
     // Poll every 10 seconds for max 30 minutes (180 polls)
     const startTime = Date.now();
-    const maxPolls = 180; // 30 minutes * 60 seconds / 10 seconds
+    const pollDelayMs = 30000; // 30 seconds
+    const maxPolls = Math.ceil((30 * 60 * 1000) / pollDelayMs);
     let pollCount = 0;
     let activeJobId = null;
-    
-    // Set workflowStage to indexing when indexing starts
+    let finished = false;
+    let pollTimer = null;
+
+    const clearPollTimer = () => {
+      if (pollTimer) {
+        clearTimeout(pollTimer);
+        pollTimer = null;
+      }
+    };
+
+    const scheduleNextPoll = () => {
+      if (finished) return;
+      pollTimer = setTimeout(runPoll, pollDelayMs);
+    };
+
+    const completeIndexing = async (job, fileCount, tokenValue, indexedFiles) => {
+      if (finished) return;
+      finished = true;
+      clearPollTimer();
+
+      const elapsedTime = Math.round((Date.now() - startTime) / 1000); // seconds
+      const elapsedMinutes = Math.floor(elapsedTime / 60);
+      const elapsedSeconds = elapsedTime % 60;
+
+      const finalTokens = String(job.tokens || job.total_tokens || tokenValue || 0);
+      const finalFileCount = job.data_source_jobs?.[0]?.indexed_file_count || fileCount;
+
+      console.log(`[KB AUTO] ✅ Indexing completed! Files: ${finalFileCount}, Tokens: ${finalTokens}, Elapsed: ${elapsedMinutes}m ${elapsedSeconds}s`);
+
+      try {
+        const finalUserDoc = await cloudant.getDocument('maia_users', userId);
+        if (finalUserDoc) {
+          finalUserDoc.kbIndexedFiles = indexedFiles;
+          finalUserDoc.kbPendingFiles = undefined;
+          finalUserDoc.kbIndexingNeeded = false;
+          finalUserDoc.kbLastIndexedAt = new Date().toISOString();
+          finalUserDoc.kbLastIndexingJobId = activeJobId;
+          if (finalUserDoc.workflowStage === 'indexing') {
+            if (finalUserDoc.files && finalUserDoc.files.length > 0) {
+              finalUserDoc.workflowStage = 'files_archived';
+            } else {
+              finalUserDoc.workflowStage = 'agent_deployed';
+            }
+          }
+          await cloudant.saveDocument('maia_users', finalUserDoc);
+          invalidateResourceCache(userId);
+        }
+
+        // Attach KB to agent if needed
+        try {
+          if (finalUserDoc && finalUserDoc.assignedAgentId) {
+            await doClient.agent.attachKB(finalUserDoc.assignedAgentId, kbId);
+          }
+        } catch (attachError) {
+          if (!attachError.message || !attachError.message.includes('already')) {
+            console.error(`[KB AUTO] ❌ Error attaching KB to agent:`, attachError.message);
+          }
+        }
+
+        // Generate patient summary after indexing completes
+        try {
+          if (finalUserDoc && finalUserDoc.assignedAgentId && finalUserDoc.agentEndpoint && finalUserDoc.agentApiKey) {
+            const { DigitalOceanProvider } = await import('../lib/chat-client/providers/digitalocean.js');
+            const agentProvider = new DigitalOceanProvider(finalUserDoc.agentApiKey, {
+              baseURL: finalUserDoc.agentEndpoint
+            });
+
+            const summaryPrompt = 'Please generate a comprehensive patient summary based on all available medical records and documents in the knowledge base. Include key medical history, diagnoses, medications, allergies, and important notes.';
+
+            const summaryResponse = await agentProvider.chat(
+              [{ role: 'user', content: summaryPrompt }],
+              { model: finalUserDoc.agentModelName || 'openai-gpt-oss-120b' }
+            );
+
+            const summary = summaryResponse.content || summaryResponse.text || '';
+
+            const summaryUserDoc = await cloudant.getDocument('maia_users', userId);
+            if (summaryUserDoc) {
+              summaryUserDoc.patientSummary = summary;
+              summaryUserDoc.patientSummaryGeneratedAt = new Date().toISOString();
+              summaryUserDoc.workflowStage = 'patient_summary';
+              await cloudant.saveDocument('maia_users', summaryUserDoc);
+              invalidateResourceCache(userId);
+            }
+          }
+        } catch (summaryError) {
+          console.error(`[KB AUTO] ❌ Error generating patient summary:`, summaryError.message);
+        }
+      } catch (completionError) {
+        console.error('[KB AUTO] ❌ Error finalizing indexing completion:', completionError.message);
+      }
+    };
+
     try {
       const indexingUserDoc = await cloudant.getDocument('maia_users', userId);
       if (indexingUserDoc) {
@@ -3153,187 +3332,106 @@ app.post('/api/update-knowledge-base', async (req, res) => {
     } catch (err) {
       console.error('[KB AUTO] Error setting workflowStage to indexing:', err);
     }
-    
-    const pollInterval = setInterval(async () => {
-      pollCount++;
-      
+
+    const runPoll = async () => {
+      if (finished) return;
+      pollCount += 1;
+
       try {
-        // Get indexing jobs for this KB
-        const apiEndpoint = `GET /v2/gen-ai/knowledge_bases/${kbId}/indexing_jobs`;
         const indexingJobs = await doClient.indexing.listForKB(kbId);
-        
-        
-        // listForKB already returns the jobs array, so indexingJobs should be an array
-        // But handle case where it might still be wrapped
-        let jobsArray = indexingJobs;
-        if (Array.isArray(indexingJobs)) {
-          jobsArray = indexingJobs;
-        } else if (indexingJobs.jobs && Array.isArray(indexingJobs.jobs)) {
-          jobsArray = indexingJobs.jobs; // API returns { "jobs": [...] }
-        } else if (indexingJobs.indexing_jobs && Array.isArray(indexingJobs.indexing_jobs)) {
-          jobsArray = indexingJobs.indexing_jobs;
-        } else if (indexingJobs.data && Array.isArray(indexingJobs.data)) {
-          jobsArray = indexingJobs.data;
-            } else {
-          jobsArray = [];
-        }
-        
-        // Find active or completed job
-        const job = jobsArray.find(j => {
-          const jobStatus = j.status || j.job_status || j.state;
-          return jobStatus === 'INDEX_JOB_STATUS_PENDING' || 
-                 jobStatus === 'INDEX_JOB_STATUS_RUNNING' ||
-                 jobStatus === 'INDEX_JOB_STATUS_IN_PROGRESS' || // Actual status from API
-                 jobStatus === 'INDEX_JOB_STATUS_COMPLETED' ||
-                 jobStatus === 'pending' ||
-                 jobStatus === 'running' ||
-                 jobStatus === 'in_progress' ||
-                 jobStatus === 'completed';
-        });
-        
-        if (job) {
-          activeJobId = job.uuid || job.id || job.indexing_job_id;
-          const status = job.status || job.job_status || job.state;
-          
-          // Get KB details for tokens and files
-          const kbDetails = await doClient.kb.get(kbId);
-          const tokens = String(kbDetails.total_tokens || kbDetails.token_count || kbDetails.tokens || job.tokens || job.total_tokens || 0);
-          
-          // Get files from user document or from job data
-          const updatedUserDoc = await cloudant.getDocument('maia_users', userId);
-          const indexedFiles = updatedUserDoc?.kbPendingFiles || filesInKB;
-          const fileCount = job.data_source_jobs?.[0]?.indexed_file_count || indexedFiles.length;
-          
-          // Log essential poll info only
-          console.log(`[KB AUTO] Poll ${pollCount}/180, Files: ${fileCount}, Tokens: ${tokens}`);
-          
-          // Check if indexing completed (handle various status formats)
-          const isCompleted = status === 'INDEX_JOB_STATUS_COMPLETED' || 
-                            status === 'completed' ||
-                            status === 'COMPLETED' ||
-                            (job.completed === true) ||
-                            (job.phase === 'BATCH_JOB_PHASE_COMPLETED') ||
-                            (job.phase === 'BATCH_JOB_PHASE_SUCCEEDED');
-          
-          if (isCompleted) {
-            clearInterval(pollInterval);
-            const elapsedTime = Math.round((Date.now() - startTime) / 1000); // seconds
-            const elapsedMinutes = Math.floor(elapsedTime / 60);
-            const elapsedSeconds = elapsedTime % 60;
-            
-            // Get final token count from job (more accurate than KB details)
-            const finalTokens = String(job.tokens || job.total_tokens || tokens);
-            const finalFileCount = job.data_source_jobs?.[0]?.indexed_file_count || indexedFiles.length;
-            
-            console.log(`[KB AUTO] ✅ Indexing completed! Files: ${finalFileCount}, Tokens: ${finalTokens}, Elapsed: ${elapsedMinutes}m ${elapsedSeconds}s`);
-            
-            // Update user document with indexed files
-            const finalUserDoc = await cloudant.getDocument('maia_users', userId);
-            if (finalUserDoc) {
-              finalUserDoc.kbIndexedFiles = indexedFiles;
-              finalUserDoc.kbPendingFiles = undefined;
-              finalUserDoc.kbIndexingNeeded = false;
-              finalUserDoc.kbLastIndexedAt = new Date().toISOString();
-              finalUserDoc.kbLastIndexingJobId = activeJobId;
-              // Revert workflowStage from 'indexing' back to previous stage (files_archived if files exist, otherwise agent_deployed)
-              if (finalUserDoc.workflowStage === 'indexing') {
-                if (finalUserDoc.files && finalUserDoc.files.length > 0) {
-                  finalUserDoc.workflowStage = 'files_archived';
-            } else {
-                  finalUserDoc.workflowStage = 'agent_deployed';
-                }
-              }
-              await cloudant.saveDocument('maia_users', finalUserDoc);
-            }
-            
-            // Attach KB to agent
-            try {
-              if (finalUserDoc && finalUserDoc.assignedAgentId) {
-                await doClient.agent.attachKB(finalUserDoc.assignedAgentId, kbId);
-              }
-            } catch (attachError) {
-              // Ignore "already attached" errors, log others
-              if (!attachError.message || !attachError.message.includes('already')) {
-                console.error(`[KB AUTO] ❌ Error attaching KB to agent:`, attachError.message);
-              }
-            }
-            
-            // Generate patient summary
-            try {
-              if (finalUserDoc && finalUserDoc.assignedAgentId && finalUserDoc.agentEndpoint && finalUserDoc.agentApiKey) {
-                const { DigitalOceanProvider } = await import('../lib/chat-client/providers/digitalocean.js');
-                const agentProvider = new DigitalOceanProvider(finalUserDoc.agentApiKey, {
-                  baseURL: finalUserDoc.agentEndpoint
-                });
-                
-                const summaryPrompt = 'Please generate a comprehensive patient summary based on all available medical records and documents in the knowledge base. Include key medical history, diagnoses, medications, allergies, and important notes.';
-                
-                // chat() method expects: chat(messages, options, onUpdate)
-                // messages is an array, options is an object
-                const summaryResponse = await agentProvider.chat(
-                  [{ role: 'user', content: summaryPrompt }],
-                  { model: finalUserDoc.agentModelName || 'openai-gpt-oss-120b' }
-                );
-                
-                const summary = summaryResponse.content || summaryResponse.text || '';
-                
-                // Save summary to user document
-                const summaryUserDoc = await cloudant.getDocument('maia_users', userId);
-                if (summaryUserDoc) {
-                  summaryUserDoc.patientSummary = summary;
-                  summaryUserDoc.patientSummaryGeneratedAt = new Date().toISOString();
-                  // Set workflowStage to patient_summary when summary is saved
-                  summaryUserDoc.workflowStage = 'patient_summary';
-                  await cloudant.saveDocument('maia_users', summaryUserDoc);
-                }
-              }
-            } catch (summaryError) {
-              console.error(`[KB AUTO] ❌ Error generating patient summary:`, summaryError.message);
-            }
-          } else {
-            // Job is still running or pending - log status
-            const isRunning = status === 'INDEX_JOB_STATUS_RUNNING' || 
-                            status === 'INDEX_JOB_STATUS_IN_PROGRESS' ||
-                            status === 'running' || 
-                            status === 'in_progress' ||
-                            status === 'RUNNING' ||
-                            status === 'IN_PROGRESS' ||
-                            job.phase === 'BATCH_JOB_PHASE_RUNNING';
-            const isPending = status === 'INDEX_JOB_STATUS_PENDING' || 
-                            status === 'pending' || 
-                            status === 'PENDING' ||
-                            job.phase === 'BATCH_JOB_PHASE_PENDING';
-            
-            // No logging needed for running jobs - already logged above
-          }
-        } else {
-          // No job found - no logging needed
-          
-          // Check for failed status in any job
-          const failedJob = jobsArray.find(j => {
-            const jobStatus = j.status || j.job_status || j.state;
-            return jobStatus === 'INDEX_JOB_STATUS_FAILED' || 
-                   jobStatus === 'failed' || 
-                   jobStatus === 'FAILED' ||
-                   (j.failed === true);
-          });
-          
-          if (failedJob) {
-            clearInterval(pollInterval);
-            const failedJobId = failedJob.uuid || failedJob.id || failedJob.indexing_job_id;
-            console.error(`[KB AUTO] ❌ Indexing job ${failedJobId} failed:`, failedJob.error || failedJob.message || 'Unknown error');
-          } else if (pollCount >= maxPolls) {
-            clearInterval(pollInterval);
-            console.error(`[KB AUTO] ⚠️ Polling timeout: No indexing job found after ${maxPolls} polls (30 minutes)`);
-          }
-        }
-      } catch (error) {
-        console.error(`[KB AUTO] ❌ Error polling indexing status (poll ${pollCount}):`, error.message);
-        if (pollCount >= maxPolls) {
-          clearInterval(pollInterval);
-        }
-      }
-    }, 10000); // Poll every 10 seconds
+         
+         
+         // listForKB already returns the jobs array, so indexingJobs should be an array
+         // But handle case where it might still be wrapped
+         let jobsArray = indexingJobs;
+         if (Array.isArray(indexingJobs)) {
+           jobsArray = indexingJobs;
+         } else if (indexingJobs.jobs && Array.isArray(indexingJobs.jobs)) {
+           jobsArray = indexingJobs.jobs; // API returns { "jobs": [...] }
+         } else if (indexingJobs.indexing_jobs && Array.isArray(indexingJobs.indexing_jobs)) {
+           jobsArray = indexingJobs.indexing_jobs;
+         } else if (indexingJobs.data && Array.isArray(indexingJobs.data)) {
+           jobsArray = indexingJobs.data;
+             } else {
+           jobsArray = [];
+         }
+         
+         // Find active or completed job
+         const job = jobsArray.find(j => {
+           const jobStatus = j.status || j.job_status || j.state;
+           return jobStatus === 'INDEX_JOB_STATUS_PENDING' || 
+                  jobStatus === 'INDEX_JOB_STATUS_RUNNING' ||
+                  jobStatus === 'INDEX_JOB_STATUS_IN_PROGRESS' || // Actual status from API
+                  jobStatus === 'INDEX_JOB_STATUS_COMPLETED' ||
+                  jobStatus === 'pending' ||
+                  jobStatus === 'running' ||
+                  jobStatus === 'in_progress' ||
+                  jobStatus === 'completed';
+         });
+         
+         if (job) {
+           activeJobId = job.uuid || job.id || job.indexing_job_id;
+           const status = job.status || job.job_status || job.state;
+
+           const kbDetails = await getCachedKB(kbId);
+           const tokens = String(kbDetails?.total_tokens || kbDetails?.token_count || kbDetails?.tokens || job.tokens || job.total_tokens || 0);
+
+           const updatedUserDoc = await cloudant.getDocument('maia_users', userId);
+           const indexedFiles = updatedUserDoc?.kbPendingFiles || filesInKB;
+           const fileCount = job.data_source_jobs?.[0]?.indexed_file_count || indexedFiles.length;
+
+           console.log(`[KB AUTO] Poll ${pollCount}/${maxPolls}, Files: ${fileCount}, Tokens: ${tokens}`);
+
+           const isCompleted = status === 'INDEX_JOB_STATUS_COMPLETED' || 
+                             status === 'completed' ||
+                             status === 'COMPLETED' ||
+                             (job.completed === true) ||
+                             (job.phase === 'BATCH_JOB_PHASE_COMPLETED') ||
+                             (job.phase === 'BATCH_JOB_PHASE_SUCCEEDED');
+
+           const numericTokens = parseInt(tokens, 10);
+           const hasIndexedData = Number.isFinite(numericTokens) && numericTokens > 0 && fileCount > 0;
+
+           if (isCompleted || hasIndexedData) {
+             await completeIndexing(job, fileCount, tokens, indexedFiles);
+             return;
+           }
+         } else {
+           const failedJob = jobsArray.find(j => {
+             const jobStatus = j.status || j.job_status || j.state;
+             return jobStatus === 'INDEX_JOB_STATUS_FAILED' || 
+                    jobStatus === 'failed' || 
+                    jobStatus === 'FAILED' ||
+                    (j.failed === true);
+           });
+
+           if (failedJob) {
+             finished = true;
+             clearPollTimer();
+             const failedJobId = failedJob.uuid || failedJob.id || failedJob.indexing_job_id;
+             console.error(`[KB AUTO] ❌ Indexing job ${failedJobId} failed:`, failedJob.error || failedJob.message || 'Unknown error');
+             return;
+           }
+         }
+       } catch (error) {
+         console.error(`[KB AUTO] ❌ Error polling indexing status (poll ${pollCount}):`, error.message);
+         if (isRateLimitError(error) && pollCount > 0) {
+           pollCount -= 1; // do not count this attempt when rate limited
+         }
+       }
+
+       if (!finished) {
+         if (pollCount >= maxPolls) {
+           finished = true;
+           clearPollTimer();
+           console.error(`[KB AUTO] ⚠️ Polling timeout: No indexing job found after ${maxPolls} polls (${Math.round((maxPolls * pollDelayMs) / 60000)} minutes)`);
+         } else {
+           scheduleNextPoll();
+         }
+       }
+     };
+
+     runPoll();
   } catch (error) {
     console.error('❌ Error updating knowledge base:', error);
     res.status(500).json({ 

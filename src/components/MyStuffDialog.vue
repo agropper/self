@@ -697,6 +697,22 @@ watch(patientSummary, (newValue) => {
   }
 });
 
+const hasUnsavedAgentChanges = computed(() => {
+  if (!editMode.value) return false;
+  const current = (editedInstructions.value || '').trim();
+  const original = (agentInstructions.value || '').trim();
+  return current !== original;
+});
+
+const hasUnsavedSummaryChanges = computed(() => {
+  if (!isEditingSummaryTab.value) return false;
+  const current = (summaryEditText.value || '').trim();
+  const original = (patientSummary.value || '').trim();
+  return current !== original;
+});
+
+const hasUnsavedChanges = computed(() => hasUnsavedAgentChanges.value || hasUnsavedSummaryChanges.value);
+
 const $q = useQuasar();
 
 const loadFiles = async () => {
@@ -1478,13 +1494,17 @@ const selectChat = async (chat: SavedChat) => {
     }
     
     const result = await response.json();
+    const closed = await closeDialog();
+    if (closed) {
     emit('chat-selected', result.chat);
-    closeDialog();
+    }
   } catch (err) {
     console.error('Failed to load full chat data:', err);
     // Fallback: emit the chat we have
+    const closed = await closeDialog();
+    if (closed) {
     emit('chat-selected', chat);
-    closeDialog();
+    }
   }
 };
 
@@ -1510,14 +1530,14 @@ const copyChatLink = (chat: SavedChat) => {
 
 const confirmDeleteChat = (chat: SavedChat) => {
   if ($q && typeof $q.dialog === 'function') {
-    $q.dialog({
-      title: 'Delete Chat',
-      message: 'Are you sure you want to delete this chat?',
-      cancel: true,
-      persistent: true
-    }).onOk(() => {
-      deleteChat(chat);
-    });
+  $q.dialog({
+    title: 'Delete Chat',
+    message: 'Are you sure you want to delete this chat?',
+    cancel: true,
+    persistent: true
+  }).onOk(() => {
+    deleteChat(chat);
+  });
   } else if (window.confirm('Are you sure you want to delete this chat?')) {
     deleteChat(chat);
   }
@@ -1530,17 +1550,17 @@ const deleteChat = async (chat: SavedChat) => {
     // Remove from list
     sharedChats.value = sharedChats.value.filter(c => c._id !== chat._id);
     if ($q && typeof $q.notify === 'function') {
-      $q.notify({
-        type: 'positive',
-        message: 'Chat deleted successfully'
-      });
+    $q.notify({
+      type: 'positive',
+      message: 'Chat deleted successfully'
+    });
     }
   } catch (err) {
     if ($q && typeof $q.notify === 'function') {
-      $q.notify({
-        type: 'negative',
-        message: err instanceof Error ? err.message : 'Failed to delete chat'
-      });
+    $q.notify({
+      type: 'negative',
+      message: err instanceof Error ? err.message : 'Failed to delete chat'
+    });
     } else {
       console.error('Failed to delete chat:', err);
     }
@@ -1923,8 +1943,43 @@ const sortedSharedChats = computed(() => {
   });
 });
 
-const closeDialog = () => {
+const closeDialog = async (): Promise<boolean> => {
+  if (hasUnsavedChanges.value) {
+    const confirmClose = await new Promise<boolean>((resolve) => {
+      if ($q && typeof $q.dialog === 'function') {
+        $q.dialog({
+          title: 'Unsaved changes',
+          message: 'You have unsaved changes in My Agent or Patient Summary. Close without saving?',
+          cancel: true,
+          persistent: true,
+          ok: {
+            label: 'Discard and Close',
+            color: 'negative'
+          }
+        }).onOk(() => resolve(true))
+          .onCancel(() => resolve(false))
+          .onDismiss(() => resolve(false));
+      } else {
+        const shouldClose = window.confirm('You have unsaved changes in My Agent or Patient Summary. Close without saving?');
+        resolve(shouldClose);
+      }
+    });
+
+    if (!confirmClose) {
+      return false;
+    }
+
+    if (hasUnsavedAgentChanges.value) {
+      cancelEdit();
+    }
+
+    if (hasUnsavedSummaryChanges.value) {
+      cancelSummaryEdit();
+    }
+  }
+
   isOpen.value = false;
+  return true;
 };
 
 watch(() => props.modelValue, (newValue) => {

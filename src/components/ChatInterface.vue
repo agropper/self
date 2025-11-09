@@ -82,7 +82,7 @@
               <div 
                 class="q-mt-xs q-pa-sm rounded-borders"
                 :class="msg.role === 'user' ? 'bg-blue-1' : 'bg-grey-2'"
-                style="display: inline-block; max-width: 80%"
+                style="display: inline-block; width: 90%; max-width: 90%"
               >
                 <textarea 
                   v-model="msg.content" 
@@ -97,6 +97,13 @@
                     color="primary"
                     label="Save"
                     @click="saveEditedMessage(idx)"
+                  />
+                  <q-btn
+                    size="sm"
+                    icon="close"
+                    color="grey-7"
+                    label="Cancel"
+                    @click="cancelEditing(idx)"
                   />
                   <q-btn
                     size="sm"
@@ -355,6 +362,7 @@ const savedChatCount = ref(0);
 const showMyStuffDialog = ref(false);
 const contextualTip = ref('Loading...');
 const editingMessageIdx = ref<number[]>([]);
+const editingOriginalContent = ref<Record<number, string>>({});
 const showDeleteDialog = ref(false);
 const messageToDelete = ref<Message | null>(null);
 const precedingUserMessage = ref<Message | null>(null);
@@ -1997,6 +2005,10 @@ const handleChatSelected = (chat: any) => {
 const startEditing = (idx: number) => {
   if (!editingMessageIdx.value.includes(idx)) {
     editingMessageIdx.value.push(idx);
+    const message = messages.value[idx];
+    if (message) {
+      editingOriginalContent.value[idx] = message.content;
+    }
   }
 };
 
@@ -2005,6 +2017,19 @@ const saveEditedMessage = (idx: number) => {
   if (editIndex > -1) {
     editingMessageIdx.value.splice(editIndex, 1);
   }
+  delete editingOriginalContent.value[idx];
+};
+
+const cancelEditing = (idx: number) => {
+  const original = editingOriginalContent.value[idx];
+  if (original !== undefined && messages.value[idx]) {
+    messages.value[idx].content = original;
+  }
+  const editIndex = editingMessageIdx.value.indexOf(idx);
+  if (editIndex > -1) {
+    editingMessageIdx.value.splice(editIndex, 1);
+  }
+  delete editingOriginalContent.value[idx];
 };
 
 const confirmDeleteMessage = (idx: number) => {
@@ -2035,6 +2060,7 @@ const deleteMessageConfirmed = () => {
     const userIdx = idx - 1;
     if (messages.value[userIdx]?.role === 'user') {
       messages.value.splice(userIdx, 1);
+      delete editingOriginalContent.value[userIdx];
     }
   }
   
