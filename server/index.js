@@ -663,6 +663,7 @@ app.use(cors({
 console.log(`🌐 [CORS] Allowed origins: ${allowedOrigins.join(', ')}`);
 app.use(cookieParser());
 app.use(express.json({ limit: '10mb' }));
+app.use(express.urlencoded({ extended: true }));
 
 app.use(session({
   secret: process.env.SESSION_SECRET || 'change-this-secret',
@@ -1651,6 +1652,289 @@ app.get('/api/admin/provision-logs', async (req, res) => {
   }
 });
 
+// Admin agent diagnostic endpoint - identify which agent is connected to a user
+app.get('/api/admin/agent-diagnostic', async (req, res) => {
+  try {
+    const { userId } = req.query;
+    
+    if (!userId) {
+      return res.status(400).send(`
+        <html>
+          <head><title>Agent Diagnostic</title></head>
+          <body style="font-family: Arial, sans-serif; max-width: 800px; margin: 50px auto; padding: 20px;">
+            <h2 style="color: #d32f2f;">❌ Missing Parameter</h2>
+            <p>User ID is required. Use: <code>/api/admin/agent-diagnostic?userId=USERNAME</code></p>
+          </body>
+        </html>
+      `);
+    }
+
+    // Get user document
+    let userDoc;
+    try {
+      userDoc = await cloudant.getDocument('maia_users', userId);
+    } catch (error) {
+      return res.status(404).send(`
+        <html>
+          <head><title>Agent Diagnostic</title></head>
+          <body style="font-family: Arial, sans-serif; max-width: 800px; margin: 50px auto; padding: 20px;">
+            <h2 style="color: #d32f2f;">❌ User Not Found</h2>
+            <p>User "${userId}" not found in database.</p>
+          </body>
+        </html>
+      `);
+    }
+
+    const storedAgentId = userDoc.assignedAgentId || null;
+    const storedAgentName = userDoc.assignedAgentName || null;
+    const agentProfile = userDoc.agentProfiles?.[userDoc.agentProfileDefaultKey || 'default'] || null;
+    const profileAgentId = agentProfile?.agentId || null;
+
+    // Find all agents matching the user's name pattern
+    const agentPattern = new RegExp(`^${userId}-agent-`);
+    let matchingAgents = [];
+    let errorMessage = null;
+
+    try {
+      const allAgents = await doClient.agent.list();
+      matchingAgents = allAgents.filter(agent => agentPattern.test(agent.name));
+      
+      // Get full details for each matching agent
+      const agentDetails = await Promise.all(
+        matchingAgents.map(async (agent) => {
+          try {
+            const details = await doClient.agent.get(agent.uuid || agent.id);
+            // Extract temperature - DigitalOcean API omits temperature field when it's 0
+            // According to DO API docs, temperature is a top-level field
+            // If missing, it's likely 0 (the value we set), but we should check if it exists with a different value
+            let extractedTemperature;
+            if (details.temperature !== undefined) {
+              extractedTemperature = details.temperature;
+            } else {
+              // Temperature field is missing - DO API omits it when value is 0
+              // Since we set temperature: 0, missing field likely means 0
+              // But we'll show it as "0 (omitted)" to indicate it's inferred
+              extractedTemperature = '0 (omitted by API)';
+            }
+            
+            return {
+              uuid: details.uuid || agent.uuid || agent.id,
+              name: details.name || agent.name,
+              maxTokens: details.max_tokens ?? details.maxTokens ?? 'unknown',
+              temperature: extractedTemperature,
+              topP: details.top_p ?? details.topP ?? 'unknown',
+              deploymentStatus: details.deployment?.status || 'unknown',
+              deploymentUrl: details.deployment?.url || null,
+              createdAt: details.created_at || 'unknown',
+              isStoredAgent: (details.uuid || agent.uuid || agent.id) === storedAgentId,
+              isProfileAgent: (details.uuid || agent.uuid || agent.id) === profileAgentId
+            };
+          } catch (err) {
+            return {
+              uuid: agent.uuid || agent.id,
+              name: agent.name,
+              error: err.message
+            };
+          }
+        })
+      );
+      matchingAgents = agentDetails;
+    } catch (err) {
+      errorMessage = err.message;
+    }
+
+    // Generate HTML report
+    const html = `
+      <!DOCTYPE html>
+      <html>
+        <head>
+          <title>Agent Diagnostic - ${userId}</title>
+          <meta charset="UTF-8">
+          <style>
+            body {
+              font-family: Arial, sans-serif;
+              max-width: 1000px;
+              margin: 20px auto;
+              padding: 20px;
+              background-color: #f5f5f5;
+            }
+            .container {
+              background-color: white;
+              padding: 30px;
+              border-radius: 8px;
+              box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            }
+            h1 { color: #1976d2; margin-top: 0; }
+            h2 { color: #388e3c; border-bottom: 2px solid #388e3c; padding-bottom: 10px; }
+            h3 { color: #f57c00; margin-top: 30px; }
+            .info-box {
+              background-color: #e3f2fd;
+              padding: 15px;
+              border-radius: 4px;
+              margin: 15px 0;
+              border-left: 4px solid #1976d2;
+            }
+            .agent-box {
+              background-color: #fff3e0;
+              padding: 20px;
+              border-radius: 4px;
+              margin: 15px 0;
+              border-left: 4px solid #f57c00;
+            }
+            .agent-box.connected {
+              background-color: #e8f5e9;
+              border-left-color: #388e3c;
+            }
+            .agent-box.disconnected {
+              background-color: #ffebee;
+              border-left-color: #d32f2f;
+            }
+            .badge {
+              display: inline-block;
+              padding: 4px 8px;
+              border-radius: 4px;
+              font-size: 12px;
+              font-weight: bold;
+              margin-left: 10px;
+            }
+            .badge.connected { background-color: #388e3c; color: white; }
+            .badge.disconnected { background-color: #d32f2f; color: white; }
+            .badge.warning { background-color: #f57c00; color: white; }
+            code {
+              background-color: #f5f5f5;
+              padding: 2px 6px;
+              border-radius: 3px;
+              font-family: 'Courier New', monospace;
+              font-size: 13px;
+            }
+            .config-table {
+              width: 100%;
+              border-collapse: collapse;
+              margin: 10px 0;
+            }
+            .config-table th,
+            .config-table td {
+              padding: 8px;
+              text-align: left;
+              border-bottom: 1px solid #ddd;
+            }
+            .config-table th {
+              background-color: #f5f5f5;
+              font-weight: bold;
+            }
+            .action-box {
+              background-color: #fff9c4;
+              padding: 15px;
+              border-radius: 4px;
+              margin: 20px 0;
+              border-left: 4px solid #fbc02d;
+            }
+            .error-box {
+              background-color: #ffebee;
+              padding: 15px;
+              border-radius: 4px;
+              margin: 15px 0;
+              border-left: 4px solid #d32f2f;
+              color: #c62828;
+            }
+          </style>
+        </head>
+        <body>
+          <div class="container">
+            <h1>Agent Diagnostic Report</h1>
+            <p><strong>User:</strong> <code>${userId}</code></p>
+
+            <h2>Database Information</h2>
+            <div class="info-box">
+              <p><strong>Stored Agent ID:</strong> <code>${storedAgentId || 'NOT SET'}</code></p>
+              <p><strong>Stored Agent Name:</strong> <code>${storedAgentName || 'NOT SET'}</code></p>
+              ${profileAgentId ? `<p><strong>Agent Profile ID:</strong> <code>${profileAgentId}</code></p>` : ''}
+            </div>
+
+            ${errorMessage ? `
+              <div class="error-box">
+                <h3>Error Fetching Agents</h3>
+                <p>${errorMessage}</p>
+              </div>
+            ` : ''}
+
+            <h2>Agents in DigitalOcean</h2>
+            ${matchingAgents.length === 0 ? `
+              <div class="info-box">
+                <p>No agents found matching pattern: <code>${userId}-agent-*</code></p>
+              </div>
+            ` : `
+              <p>Found <strong>${matchingAgents.length}</strong> agent(s) matching pattern: <code>${userId}-agent-*</code></p>
+              
+              ${matchingAgents.map((agent, idx) => {
+                const isConnected = agent.isStoredAgent || agent.isProfileAgent;
+                const isCorrect = isConnected && (agent.maxTokens === 16384 || agent.maxTokens === 'unknown');
+                return `
+                  <div class="agent-box ${isConnected ? 'connected' : 'disconnected'}">
+                    <h3>Agent ${idx + 1} ${isConnected ? '<span class="badge connected">CONNECTED</span>' : '<span class="badge disconnected">NOT CONNECTED</span>'}</h3>
+                    <table class="config-table">
+                      <tr><th>UUID</th><td><code>${agent.uuid}</code></td></tr>
+                      <tr><th>Name</th><td><code>${agent.name}</code></td></tr>
+                      <tr><th>Max Tokens</th><td><code>${agent.maxTokens}</code> ${agent.maxTokens === 16384 ? '✅' : agent.maxTokens !== 'unknown' ? '⚠️ Should be 16384' : ''}</td></tr>
+                      <tr><th>Temperature</th><td><code>${agent.temperature}</code></td></tr>
+                      <tr><th>Top P</th><td><code>${agent.topP}</code></td></tr>
+                      <tr><th>Deployment Status</th><td><code>${agent.deploymentStatus}</code></td></tr>
+                      <tr><th>Deployment URL</th><td><code>${agent.deploymentUrl || 'Not available'}</code></td></tr>
+                      <tr><th>Created At</th><td><code>${agent.createdAt}</code></td></tr>
+                      <tr><th>Matches Stored ID</th><td>${agent.isStoredAgent ? '✅ YES' : '❌ NO'}</td></tr>
+                      <tr><th>Matches Profile ID</th><td>${agent.isProfileAgent ? '✅ YES' : '❌ NO'}</td></tr>
+                    </table>
+                    ${!isConnected ? `
+                      <div class="action-box">
+                        <strong>⚠️ This agent is NOT connected to the user.</strong><br>
+                        You can safely delete this agent in the DigitalOcean dashboard.
+                      </div>
+                    ` : isCorrect ? `
+                      <div class="action-box" style="background-color: #e8f5e9; border-left-color: #388e3c;">
+                        <strong>✅ This is the correct agent.</strong><br>
+                        Keep this agent - it's connected to the user and has the correct configuration.
+                      </div>
+                    ` : `
+                      <div class="action-box" style="background-color: #fff3e0; border-left-color: #f57c00;">
+                        <strong>⚠️ This agent is connected but has incorrect max_tokens.</strong><br>
+                        The agent should have max_tokens=16384 but shows ${agent.maxTokens}.<br>
+                        Consider updating the agent configuration or recreating it.
+                      </div>
+                    `}
+                  </div>
+                `;
+              }).join('')}
+            `}
+
+            ${matchingAgents.length > 1 ? `
+              <div class="action-box">
+                <h3>Summary</h3>
+                <p><strong>Connected Agent:</strong> ${matchingAgents.find(a => a.isStoredAgent) ? matchingAgents.find(a => a.isStoredAgent).uuid : 'NONE FOUND'}</p>
+                <p><strong>Agents to Delete:</strong> ${matchingAgents.filter(a => !a.isStoredAgent && !a.isProfileAgent).map(a => a.uuid).join(', ') || 'NONE'}</p>
+                <p><em>Go to DigitalOcean dashboard and delete the disconnected agents listed above.</em></p>
+              </div>
+            ` : ''}
+          </div>
+        </body>
+      </html>
+    `;
+
+    res.send(html);
+  } catch (error) {
+    console.error('❌ Agent diagnostic error:', error);
+    res.status(500).send(`
+      <html>
+        <head><title>Agent Diagnostic Error</title></head>
+        <body style="font-family: Arial, sans-serif; max-width: 800px; margin: 50px auto; padding: 20px;">
+          <h2 style="color: #d32f2f;">❌ Diagnostic Error</h2>
+          <p>An error occurred while generating the diagnostic report:</p>
+          <pre style="background-color: #f5f5f5; padding: 15px; border-radius: 4px; overflow-x: auto;">${error.message}</pre>
+        </body>
+      </html>
+    `);
+  }
+});
+
 // Admin provision endpoint - create agent for user
 app.get('/api/admin/provision', async (req, res) => {
   try {
@@ -1697,20 +1981,13 @@ app.get('/api/admin/provision', async (req, res) => {
       `);
     }
 
-    // Set workflowStage to approved when admin starts provisioning
-    // Initialize logs if not already done
-    if (!provisioningLogs.has(userId)) {
-      provisioningLogs.set(userId, []);
-    }
-    logProvisioning(userId, `🔵 Admin provision request for user: ${userId}, token: ${token.substring(0, 8)}...`, 'info');
-    logProvisioning(userId, `📍 Setting workflowStage to 'approved'`, 'info');
-    userDoc.workflowStage = 'approved';
-    await cloudant.saveDocument('maia_users', userDoc);
-
     // Check if user already has an agent
     if (userDoc.assignedAgentId) {
       // User already provisioned - return success
-      logProvisioning(userId, `ℹ️  User ${userId} already has agent: ${userDoc.assignedAgentId}`, 'info');
+      if (!provisioningLogs.has(userId)) {
+        provisioningLogs.set(userId, []);
+      }
+      logProvisioning(userId, `ℹ️  Provision link opened but user ${userId} already has agent: ${userDoc.assignedAgentId}`, 'info');
       return res.send(`
         <html>
           <head><title>User Already Provisioned</title></head>
@@ -1724,21 +2001,162 @@ app.get('/api/admin/provision', async (req, res) => {
       `);
     }
 
-    // Initialize provisioning status
+    const existingStatus = provisioningStatus.get(userId);
+    if (existingStatus && existingStatus.status === 'in_progress') {
+      return res.send(getProvisionPage(userId));
+    }
+
+    if (!provisioningLogs.has(userId)) {
+      provisioningLogs.set(userId, []);
+    }
+    logProvisioning(userId, `👀 Provisioning confirmation page viewed for user: ${userId}`, 'info');
+
+    const confirmationPage = `
+      <html>
+        <head><title>Confirm Provisioning</title></head>
+        <body style="font-family: Arial, sans-serif; max-width: 600px; margin: 50px auto; padding: 20px;">
+          <h2 style="color: #1976d2;">Confirm Provisioning</h2>
+          <p>This will create a new DigitalOcean agent, configure storage, and update onboarding records for <strong>${userId}</strong>.</p>
+          <p>Please confirm that you intend to provision this user.</p>
+          <div style="margin-top: 30px;">
+            <form method="post" action="/api/admin/provision/confirm" style="display: inline-block; margin-right: 10px;">
+              <input type="hidden" name="userId" value="${userId}">
+              <input type="hidden" name="token" value="${token}">
+              <button type="submit" name="action" value="accept" style="padding: 10px 20px; background-color: #388e3c; color: white; border: none; border-radius: 4px; cursor: pointer;">Accept</button>
+            </form>
+            <form method="post" action="/api/admin/provision/confirm" style="display: inline-block;">
+              <input type="hidden" name="userId" value="${userId}">
+              <input type="hidden" name="token" value="${token}">
+              <button type="submit" name="action" value="reject" style="padding: 10px 20px; background-color: #d32f2f; color: white; border: none; border-radius: 4px; cursor: pointer;">Reject</button>
+            </form>
+          </div>
+        </body>
+      </html>
+    `;
+
+    res.send(confirmationPage);
+  } catch (error) {
+    console.error('❌ Provision error:', error);
+    res.status(500).send(`
+      <html>
+        <head><title>Provision Error</title></head>
+        <body style="font-family: Arial, sans-serif; max-width: 600px; margin: 50px auto; padding: 20px;">
+          <h2 style="color: #d32f2f;">❌ Provisioning Failed</h2>
+          <p>An error occurred while starting provisioning:</p>
+          <pre style="background-color: #f5f5f5; padding: 15px; border-radius: 4px; overflow-x: auto;">${error.message}</pre>
+        </body>
+      </html>
+    `);
+  }
+});
+
+app.post('/api/admin/provision/confirm', async (req, res) => {
+  try {
+    const { token, userId, action } = req.body || {};
+
+    if (!token || !userId || !action) {
+      return res.status(400).send(`
+        <html>
+          <head><title>Provision Error</title></head>
+          <body style="font-family: Arial, sans-serif; max-width: 600px; margin: 50px auto; padding: 20px;">
+            <h2 style="color: #d32f2f;">❌ Provisioning Failed</h2>
+            <p>Missing required parameters (token, userId, or action).</p>
+          </body>
+        </html>
+      `);
+    }
+
+    let userDoc;
+    try {
+      userDoc = await cloudant.getDocument('maia_users', userId);
+    } catch (error) {
+      return res.status(404).send(`
+        <html>
+          <head><title>Provision Error</title></head>
+          <body style="font-family: Arial, sans-serif; max-width: 600px; margin: 50px auto; padding: 20px;">
+            <h2 style="color: #d32f2f;">❌ Provisioning Failed</h2>
+            <p>User not found: ${userId}</p>
+          </body>
+        </html>
+      `);
+    }
+
+    if (!userDoc.provisionToken || userDoc.provisionToken !== token) {
+      return res.status(401).send(`
+        <html>
+          <head><title>Provision Error</title></head>
+          <body style="font-family: Arial, sans-serif; max-width: 600px; margin: 50px auto; padding: 20px;">
+            <h2 style="color: #d32f2f;">❌ Invalid Token</h2>
+            <p>The provisioning token is invalid or has expired.</p>
+          </body>
+        </html>
+      `);
+    }
+
+    if (!provisioningLogs.has(userId)) {
+      provisioningLogs.set(userId, []);
+    }
+
+    if (action === 'reject') {
+      logProvisioning(userId, `⛔️ Provisioning rejected for user ${userId}`, 'warning');
+      return res.send(`
+        <html>
+          <head><title>Provisioning Cancelled</title></head>
+          <body style="font-family: Arial, sans-serif; max-width: 600px; margin: 50px auto; padding: 20px;">
+            <h2 style="color: #d32f2f;">Provisioning Cancelled</h2>
+            <p>The provisioning request for <strong>${userId}</strong> has been cancelled. No changes were made.</p>
+          </body>
+        </html>
+      `);
+    }
+
+    if (action !== 'accept') {
+      return res.status(400).send(`
+        <html>
+          <head><title>Provision Error</title></head>
+          <body style="font-family: Arial, sans-serif; max-width: 600px; margin: 50px auto; padding: 20px;">
+            <h2 style="color: #d32f2f;">❌ Provisioning Failed</h2>
+            <p>Unsupported action: ${action}</p>
+          </body>
+        </html>
+      `);
+    }
+
+    if (userDoc.assignedAgentId) {
+      logProvisioning(userId, `ℹ️  Provision confirmation received but user already has agent: ${userDoc.assignedAgentId}`, 'info');
+      return res.send(`
+        <html>
+          <head><title>User Already Provisioned</title></head>
+          <body style="font-family: Arial, sans-serif; max-width: 600px; margin: 50px auto; padding: 20px;">
+            <h2 style="color: #388e3c;">✅ User Already Provisioned</h2>
+            <p><strong>User:</strong> ${userId}</p>
+            <p><strong>Agent:</strong> ${userDoc.assignedAgentName || userDoc.assignedAgentId}</p>
+            <p>No provisioning actions were performed.</p>
+          </body>
+        </html>
+      `);
+    }
+
+    const existingStatus = provisioningStatus.get(userId);
+    if (existingStatus && existingStatus.status === 'in_progress') {
+      logProvisioning(userId, `ℹ️  Provision confirmation received but provisioning already in progress`, 'info');
+      return res.send(getProvisionPage(userId));
+    }
+
+    logProvisioning(userId, `🔵 Admin confirmed provisioning for user: ${userId}`, 'info');
+    logProvisioning(userId, `📍 Setting workflowStage to 'approved'`, 'info');
+    userDoc.workflowStage = 'approved';
+    await cloudant.saveDocument('maia_users', userDoc);
+
     provisioningStatus.set(userId, {
       status: 'in_progress',
       steps: [],
       startTime: Date.now(),
       currentStep: 'Starting...'
     });
-    
-    // Initialize provisioning logs
-    if (!provisioningLogs.has(userId)) {
-      provisioningLogs.set(userId, []);
-    }
+
     logProvisioning(userId, `🚀 Starting async provisioning for user: ${userId}`, 'info');
 
-    // Start provisioning asynchronously
     provisionUserAsync(userId, token).catch(error => {
       logProvisioning(userId, `❌ Unhandled error in async provisioning: ${error.message}`, 'error');
       const status = provisioningStatus.get(userId);
@@ -1749,16 +2167,15 @@ app.get('/api/admin/provision', async (req, res) => {
       }
     });
 
-    // Return page immediately with polling
     res.send(getProvisionPage(userId));
   } catch (error) {
-    console.error('❌ Provision error:', error);
+    console.error('❌ Provision confirmation error:', error);
     res.status(500).send(`
       <html>
         <head><title>Provision Error</title></head>
         <body style="font-family: Arial, sans-serif; max-width: 600px; margin: 50px auto; padding: 20px;">
           <h2 style="color: #d32f2f;">❌ Provisioning Failed</h2>
-          <p>An error occurred while starting provisioning:</p>
+          <p>An error occurred while processing your request:</p>
           <pre style="background-color: #f5f5f5; padding: 15px; border-radius: 4px; overflow-x: auto;">${error.message}</pre>
         </body>
       </html>
@@ -2318,6 +2735,7 @@ async function provisionUserAsync(userId, token) {
 
     // Step 3: Update Agent (to ensure all config is set)
     updateStatus('Updating agent configuration...');
+    logProvisioning(userId, `📝 Updating agent config: temperature=0, max_tokens=16384, top_p=1`, 'info');
     
     await agentClient.update(newAgent.uuid, {
       instruction: maiaInstruction,
@@ -2327,6 +2745,36 @@ async function provisionUserAsync(userId, token) {
       k: 10,
       retrieval_method: 'RETRIEVAL_METHOD_NONE'
     });
+
+    // Verify temperature was actually set to 0
+    // Note: DigitalOcean API omits temperature field when it's 0, so missing = 0 is correct
+    try {
+      const verifyDetails = await agentClient.get(newAgent.uuid);
+      const actualTemp = verifyDetails.temperature;
+      
+      // If temperature is missing (undefined), DO API omits it when value is 0 - this is correct
+      // If temperature exists and is 0, that's also correct
+      // If temperature exists and is NOT 0, that's a problem
+      if (actualTemp === undefined || actualTemp === 0 || actualTemp === null) {
+        logProvisioning(userId, `✅ Temperature verified as 0${actualTemp === undefined ? ' (omitted by API, which indicates 0)' : ''}`, 'success');
+      } else {
+        logProvisioning(userId, `⚠️  Temperature update may have failed - expected 0, got ${actualTemp}. Retrying update...`, 'warning');
+        // Retry the update with explicit 0
+        await agentClient.update(newAgent.uuid, {
+          temperature: 0
+        });
+        // Verify again
+        const retryDetails = await agentClient.get(newAgent.uuid);
+        const retryTemp = retryDetails.temperature;
+        if (retryTemp === undefined || retryTemp === 0 || retryTemp === null) {
+          logProvisioning(userId, `✅ Temperature corrected to 0 after retry${retryTemp === undefined ? ' (omitted by API)' : ''}`, 'success');
+        } else {
+          logProvisioning(userId, `❌ Temperature still incorrect after retry - expected 0, got ${retryTemp}`, 'error');
+        }
+      }
+    } catch (verifyError) {
+      logProvisioning(userId, `⚠️  Could not verify temperature after update: ${verifyError.message}`, 'warning');
+    }
 
     updateStatus('Agent configuration updated', { updated: true });
 
