@@ -37,45 +37,52 @@
           </template>
 
           <template v-else>
-            <q-card style="min-width: 400px; max-width: 800px">
-              <q-card-section>
-                <div class="text-h6 text-center q-mb-md">
+            <q-card style="width: 95vw; max-width: 95vw; height: 95vh; max-height: 95vh; display: flex; flex-direction: column; overflow: hidden;">
+              <q-card-section style="flex: 1; overflow-y: auto; display: flex; flex-direction: column;">
+                <div class="text-h6 text-center q-mb-sm">
                   Welcome to MAIA
                 </div>
-                <div class="text-center q-mb-lg">
-                  <p>Sign in with your passkey or create a new account</p>
+                <div class="text-center q-mb-md">
+                  <p class="q-ma-none">Sign in with your passkey or create a new account</p>
                 </div>
 
-                <div v-if="!showAuth" class="q-mb-lg">
-                  <!-- YouTube Video Embed -->
-                  <div class="video-container q-mb-md" style="position: relative; padding-bottom: 56.25%; height: 0; overflow: hidden; max-width: 100%; background: #000;">
-                    <iframe
-                      style="position: absolute; top: 0; left: 0; width: 100%; height: 100%;"
-                      src="https://www.youtube-nocookie.com/embed/oSwgTSbIhAw?si=OYtrGu7YgRd0XmsV&cc_load_policy=1"
-                      title="YouTube video player"
-                      frameborder="0"
-                      allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
-                      referrerpolicy="strict-origin-when-cross-origin"
-                      allowfullscreen
-                    ></iframe>
-                  </div>
+                <div v-if="!showAuth">
+                  <!-- Get Started Button - positioned right after title/subtitle -->
+                  <q-btn
+                    label="Get Started"
+                    color="primary"
+                    size="lg"
+                    class="full-width q-mb-lg"
+                    @click="showAuth = true"
+                  />
 
-                  <!-- Caption -->
-                  <div class="text-body2 text-grey-7 q-pa-md" style="background-color: #f5f5f5; border-radius: 4px;">
-                    <p class="q-ma-none">
-                      First, download your records from your patient portal. This can take 48 hours or more. You will then import your records for indexing into a private knowledge base that your private AI agent can access. The other, public AIs like ChatGPT, will not have access to your records except as part of a chat that you see and control. Doctors and other users you invite by sharing a deep link will have access to your records by asking your Private AI questions in the chat. You can disable this option in your My Agent settings.
-                    </p>
+                  <!-- Video and Caption Section - at bottom, side by side -->
+                  <div class="row q-col-gutter-md q-mt-lg">
+                    <!-- Smaller Video -->
+                    <div class="col-12 col-md-5">
+                      <div class="video-container" style="position: relative; padding-bottom: 56.25%; height: 0; overflow: hidden; max-width: 100%; background: #000; border-radius: 4px;">
+                        <iframe
+                          style="position: absolute; top: 0; left: 0; width: 100%; height: 100%;"
+                          src="https://www.youtube-nocookie.com/embed/oSwgTSbIhAw?si=OYtrGu7YgRd0XmsV&cc_load_policy=1"
+                          title="YouTube video player"
+                          frameborder="0"
+                          allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+                          referrerpolicy="strict-origin-when-cross-origin"
+                          allowfullscreen
+                        ></iframe>
+                      </div>
+                    </div>
+
+                    <!-- Caption to the right of video -->
+                    <div class="col-12 col-md-7">
+                      <div class="text-body2 text-grey-7 q-pa-md" style="background-color: #f5f5f5; border-radius: 4px; height: 100%; display: flex; align-items: center;">
+                        <p class="q-ma-none">
+                          First, download your records from your patient portal. This can take 48 hours or more. You will then import your records for indexing into a private knowledge base that your private AI agent can access. The other, public AIs like ChatGPT, will not have access to your records except as part of a chat that you see and control. Doctors and other users you invite by sharing a deep link will have access to your records by asking your Private AI questions in the chat. You can disable this option in your My Agent settings.
+                        </p>
+                      </div>
+                    </div>
                   </div>
                 </div>
-
-                <q-btn
-                  v-if="!showAuth"
-                  label="Get Started"
-                  color="primary"
-                  size="lg"
-                  class="full-width"
-                  @click="showAuth = true"
-                />
 
                 <PasskeyAuth
                   v-if="showAuth"
