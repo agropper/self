@@ -251,11 +251,22 @@
                 icon="settings" 
                 class="text-grey-6 q-mr-xs" 
                 v-if="canAccessMyStuff"
-                @click="showMyStuffDialog = true"
+                @click="() => { myStuffInitialTab = 'files'; showMyStuffDialog = true; }"
               >
                 <q-tooltip>My Stuff: Manage files, knowledge base, agent settings, and patient summary</q-tooltip>
               </q-btn>
-              <span class="text-body2 text-grey-7" :title="contextualTip">{{ contextualTip }}</span>
+              <span class="text-body2 text-grey-7" :title="contextualTip">
+                <template v-for="(part, index) in parsedContextualTip" :key="index">
+                  <span v-if="part.type === 'text'">{{ part.text }}</span>
+                  <a
+                    v-else-if="part.type === 'link'"
+                    href="#"
+                    class="text-primary text-underline"
+                    style="cursor: pointer; text-decoration: underline;"
+                    @click.prevent="openMyStuffTab(part.tab)"
+                  >{{ part.text }}</a>
+                </template>
+              </span>
             </div>
             <div class="col-auto" style="display: flex; align-items: center; justify-content: flex-end; gap: 8px;">
               <span class="text-body2 text-grey-7">User: {{ props.user?.userId || 'Guest' }}</span>
@@ -296,6 +307,7 @@
     <MyStuffDialog
       v-model="showMyStuffDialog"
       :userId="props.user?.userId || ''"
+      :initial-tab="myStuffInitialTab"
       @chat-selected="handleChatSelected"
       @indexing-started="handleIndexingStarted"
       @indexing-status-update="handleIndexingStatusUpdate"
@@ -443,6 +455,7 @@ const pdfInitialPage = ref<number | undefined>(undefined);
 const showSavedChatsModal = ref(false);
 const savedChatCount = ref(0);
 const showMyStuffDialog = ref(false);
+const myStuffInitialTab = ref<string>('files');
 const contextualTip = ref('Loading...');
 const editingMessageIdx = ref<number[]>([]);
 const editingOriginalContent = ref<Record<number, string>>({});
@@ -2741,6 +2754,49 @@ const handleIndexingFinished = (_data: { jobId: string; phase: string; error?: s
   indexingStatus.value = null;
   // Update status tip to show normal status
   updateContextualTip();
+};
+
+// Parse contextual tip to extract clickable links
+const parsedContextualTip = computed(() => {
+  const tip = contextualTip.value;
+  if (!tip) return [{ type: 'text', text: '' }];
+  
+  const parts: Array<{ type: 'text' | 'link'; text: string; tab?: string }> = [];
+  const linkPattern = /\[(Stored Files|Saved Chats)\]/g;
+  let lastIndex = 0;
+  let match;
+  
+  while ((match = linkPattern.exec(tip)) !== null) {
+    // Add text before the link
+    if (match.index > lastIndex) {
+      parts.push({ type: 'text', text: tip.substring(lastIndex, match.index) });
+    }
+    
+    // Add the link
+    const linkText = match[1];
+    const tab = linkText === 'Stored Files' ? 'files' : 'chats';
+    parts.push({ type: 'link', text: match[0], tab });
+    
+    lastIndex = match.index + match[0].length;
+  }
+  
+  // Add remaining text after the last link
+  if (lastIndex < tip.length) {
+    parts.push({ type: 'text', text: tip.substring(lastIndex) });
+  }
+  
+  // If no links found, return the whole text as a single part
+  if (parts.length === 0) {
+    return [{ type: 'text', text: tip }];
+  }
+  
+  return parts;
+});
+
+// Open My Stuff dialog with a specific tab
+const openMyStuffTab = (tab: string) => {
+  myStuffInitialTab.value = tab;
+  showMyStuffDialog.value = true;
 };
 
 // Map workflow stages to user-friendly tips

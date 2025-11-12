@@ -46,11 +46,18 @@
               <q-list>
                 <q-item v-for="file in userFiles" :key="file.bucketKey" class="q-pa-md">
                   <q-item-section avatar>
-                    <q-checkbox
-                      v-model="file.inKnowledgeBase"
-                      @update:model-value="onCheckboxChange(file)"
-                      :disable="updatingFiles.has(file.bucketKey) || indexingKB"
-                    />
+                    <div class="row items-center q-gutter-xs">
+                      <q-checkbox
+                        v-model="file.inKnowledgeBase"
+                        @update:model-value="onCheckboxChange(file)"
+                        :disable="updatingFiles.has(file.bucketKey) || indexingKB"
+                      />
+                      <q-spinner
+                        v-if="updatingFiles.has(file.bucketKey)"
+                        size="20px"
+                        color="primary"
+                      />
+                    </div>
                   </q-item-section>
                   <q-item-section>
                     <q-item-label 
@@ -61,6 +68,9 @@
                     </q-item-label>
                     <q-item-label caption>
                       {{ formatFileSize(file.fileSize) }} • Uploaded {{ formatDate(file.uploadedAt) }}
+                      <span v-if="updatingFiles.has(file.bucketKey)" class="q-ml-sm text-primary">
+                        Moving file...
+                      </span>
                     </q-item-label>
                   </q-item-section>
                   <q-item-section side>
@@ -603,9 +613,12 @@ interface SavedChat {
 interface Props {
   modelValue: boolean;
   userId: string;
+  initialTab?: string;
 }
 
-const props = defineProps<Props>();
+const props = withDefaults(defineProps<Props>(), {
+  initialTab: 'files'
+});
 
 const emit = defineEmits<{
   'update:modelValue': [value: boolean];
@@ -616,7 +629,7 @@ const emit = defineEmits<{
 }>();
 
 const isOpen = ref(props.modelValue);
-const currentTab = ref('files');
+const currentTab = ref(props.initialTab || 'files');
 const loadingFiles = ref(false);
 const filesError = ref('');
 const userFiles = ref<UserFile[]>([]);
@@ -1093,7 +1106,8 @@ const onCheckboxChange = async (file: UserFile) => {
   
   console.log(`[KB Management] Toggling file ${file.fileName}: KB status = ${newStatus}, bucketKey = ${oldBucketKey}`);
   
-  updatingFiles.value.add(file.bucketKey);
+  // Add to updating set to show spinner
+  updatingFiles.value.add(oldBucketKey);
 
   try {
     const response = await fetch('/api/toggle-file-knowledge-base', {
@@ -1110,28 +1124,37 @@ const onCheckboxChange = async (file: UserFile) => {
     });
 
     if (!response.ok) {
-      throw new Error('Failed to update knowledge base status');
+      const errorData = await response.json().catch(() => ({}));
+      throw new Error(errorData.message || 'Failed to update knowledge base status');
     }
 
     const result = await response.json();
     
-    // Update file's bucketKey if it changed
-    if (result.newBucketKey && result.newBucketKey !== oldBucketKey) {
-      file.bucketKey = result.newBucketKey;
-      console.log(`[KB Management] ✅ File bucketKey updated: ${oldBucketKey} -> ${result.newBucketKey}`);
-    }
+    console.log(`[KB Management] ✅ File move completed: ${oldBucketKey} -> ${result.newBucketKey || oldBucketKey}`);
     
-    // Update original files to reflect the change (but don't update indexed files - that happens after indexing)
-    const originalIndex = originalFiles.value.findIndex(f => f.bucketKey === oldBucketKey || f.bucketKey === result.newBucketKey);
-    if (originalIndex >= 0) {
-      originalFiles.value[originalIndex].inKnowledgeBase = newStatus;
-      if (result.newBucketKey) {
-        originalFiles.value[originalIndex].bucketKey = result.newBucketKey;
+    // Reload files list to verify the move completed and matches the display
+    await loadFiles();
+    
+    // Verify the file was moved correctly by checking the new file list
+    const updatedFile = userFiles.value.find(f => 
+      f.bucketKey === result.newBucketKey || 
+      (result.newBucketKey && f.bucketKey === oldBucketKey && f.fileName === file.fileName)
+    );
+    
+    if (updatedFile) {
+      console.log(`[KB Management] ✅ Verified file move: ${updatedFile.fileName} now at ${updatedFile.bucketKey}`);
+      
+      // Show success notification
+      if ($q && typeof $q.notify === 'function') {
+        $q.notify({
+          type: 'positive',
+          message: `File ${newStatus ? 'added to' : 'removed from'} knowledge base`,
+          timeout: 2000
+        });
       }
+    } else {
+      console.warn(`[KB Management] ⚠️ Could not verify file move for ${file.fileName}`);
     }
-    
-    // Note: indexedFiles is NOT updated here - it will be updated when indexing completes
-    // This ensures kbIndexingOutOfSync will detect the mismatch
     
     console.log(`[KB Management] ✅ File ${file.fileName} successfully ${newStatus ? 'added to' : 'removed from'} knowledge base`);
   } catch (err) {
@@ -1139,13 +1162,19 @@ const onCheckboxChange = async (file: UserFile) => {
     // Revert checkbox on error
     file.inKnowledgeBase = !newStatus;
     if ($q && typeof $q.notify === 'function') {
-    $q.notify({
-      type: 'negative',
-      message: err instanceof Error ? err.message : 'Failed to update knowledge base status'
-    });
+      $q.notify({
+        type: 'negative',
+        message: err instanceof Error ? err.message : 'Failed to update knowledge base status',
+        timeout: 5000
+      });
     }
   } finally {
+    // Remove from updating set - use both old and new bucketKey in case it changed
     updatingFiles.value.delete(oldBucketKey);
+    // Also try to remove any potential new bucketKey if the operation partially completed
+    if (file.bucketKey && file.bucketKey !== oldBucketKey) {
+      updatingFiles.value.delete(file.bucketKey);
+    }
   }
 };
 
@@ -2097,6 +2126,10 @@ const closeDialog = async (): Promise<boolean> => {
 watch(() => props.modelValue, (newValue) => {
   isOpen.value = newValue;
   if (newValue) {
+    // Set initial tab if provided
+    if (props.initialTab) {
+      currentTab.value = props.initialTab;
+    }
     // Load data when dialog opens
     if (currentTab.value === 'files') {
       loadFiles();
@@ -2105,6 +2138,12 @@ watch(() => props.modelValue, (newValue) => {
     } else if (currentTab.value === 'chats') {
       loadSharedChats();
     }
+  }
+});
+
+watch(() => props.initialTab, (newTab) => {
+  if (newTab && isOpen.value) {
+    currentTab.value = newTab;
   }
 });
 

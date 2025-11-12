@@ -3783,7 +3783,7 @@ app.post('/api/toggle-file-knowledge-base', async (req, res) => {
     const kbName = getKBNameFromUserDoc(userDoc, userId);
     
     // Import S3 client operations for file moves
-    const { S3Client, CopyObjectCommand, DeleteObjectCommand } = await import('@aws-sdk/client-s3');
+    const { S3Client, CopyObjectCommand, DeleteObjectCommand, HeadObjectCommand } = await import('@aws-sdk/client-s3');
 
     // Setup S3/Spaces client
     const bucketUrl = process.env.DIGITALOCEAN_BUCKET;
@@ -3854,6 +3854,19 @@ app.post('/api/toggle-file-knowledge-base', async (req, res) => {
       });
       await s3Client.send(archiveDelete);
       
+      // Verify the file exists at the intermediate location before proceeding
+      try {
+        const verifyIntermediateCommand = new HeadObjectCommand({
+          Bucket: bucketName,
+          Key: intermediateKey
+        });
+        await s3Client.send(verifyIntermediateCommand);
+        console.log(`[KB Management] ✅ Verified file exists at intermediate location: ${intermediateKey}`);
+      } catch (verifyError) {
+        console.error(`[KB Management] ❌ Intermediate file verification failed for ${intermediateKey}:`, verifyError);
+        throw new Error(`File archive verification failed: File not found at intermediate destination`);
+      }
+      
       // Update sourceKey for next step
       sourceKey = intermediateKey;
       
@@ -3881,6 +3894,19 @@ app.post('/api/toggle-file-knowledge-base', async (req, res) => {
       await s3Client.send(deleteCommand);
 
       console.log(`[KB Management] ✅ File moved successfully: ${sourceKey} -> ${destKey}`);
+
+      // Verify the file exists at the new location before proceeding
+      try {
+        const verifyCommand = new HeadObjectCommand({
+          Bucket: bucketName,
+          Key: destKey
+        });
+        await s3Client.send(verifyCommand);
+        console.log(`[KB Management] ✅ Verified file exists at new location: ${destKey}`);
+      } catch (verifyError) {
+        console.error(`[KB Management] ❌ File verification failed for ${destKey}:`, verifyError);
+        throw new Error(`File move verification failed: File not found at destination`);
+      }
 
       // Update file's bucketKey in user document
       userDoc.files[fileIndex].bucketKey = destKey;

@@ -54,6 +54,35 @@ Tips for each stage can be added below:
 
 ---
 
+## Complete Status Tip Messages Reference
+
+All status tip messages displayed in the application (numbered 1-17, corresponding to workflow stages 1-13 plus additional status messages):
+
+**Workflow Stage Messages (1-13):**
+
+1. Ready to chat (workflowStage: null - Initial state when user account is created)
+2. Support requested. You will be notified when your private AI agent is ready. (workflowStage: request_sent)
+3. Ready to chat (workflowStage: approved - Admin has started provisioning the user)
+4. Ready to chat (workflowStage: agent_named - Agent has been successfully created in DigitalOcean)
+5. Your agent is ready. Use the paperclip to import files for your knowledge base. (workflowStage: agent_deployed)
+6. Ready to chat (workflowStage: files_stored - User has uploaded files to their account)
+7. Ready to chat (workflowStage: unknown - Fallback/default value when workflowStage is not set)
+8. Update your knowledge base using the [Stored Files] tab. (workflowStage: files_archived)
+9. Knowledge base being indexed. This can take up to 30 minutes. (workflowStage: indexing)
+10. Your patient summary is available. Ask your agent for it in the chat anytime. (workflowStage: patient_summary)
+11. Public AIs see only what you see in the chat, including any paperclip documents. (workflowStage: public_llm)
+12. You can save the chat to your computer or save it online. (workflowStage: chat_modified)
+13. Open [Saved Chats] to restore one or share a deep link. (workflowStage: link_stored)
+
+**Additional Status Messages (14-17):**
+
+14. Loading... (Initial state when component mounts)
+15. User not logged in (When user is not authenticated)
+16. Unable to load status / Error loading status (When API call fails or exception occurs)
+17. KB Indexing Complete: ${status.filesIndexed} files indexed / KB Indexing Error / KB Setup: ${status.phase} (Dynamic indexing status messages)
+
+---
+
 ## More
 
 # NEW AGENT SPECIFICATIONS
