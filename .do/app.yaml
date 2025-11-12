@@ -1,0 +1,22 @@
+name: maia-cloud-user-app
+region: tor1
+services:
+  - name: web
+    github:
+      repo: agropper/maia-cloud-user-app
+      branch: main
+      deploy_on_push: true
+    build_command: npm run build
+    run_command: npm start
+    environment_slug: node-js
+    instance_count: 1
+    instance_size_slug: basic-xxs
+    http_port: 3001
+    routes:
+      - path: /
+    envs:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: "3001"
+
