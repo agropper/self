@@ -380,6 +380,9 @@ const messageToDelete = ref<Message | null>(null);
 const precedingUserMessage = ref<Message | null>(null);
 const chatMessagesRef = ref<HTMLElement | null>(null);
 
+// Track owner's deep link Private AI access setting
+const ownerAllowDeepLinkPrivateAI = ref<boolean | null>(null);
+
 // Track initial chat state for change detection
 const currentSavedChatId = ref<string | null>(null);
 const currentSavedChatShareId = ref<string | null>(null);
@@ -560,21 +563,70 @@ const normalizeMessage = (msg: Message): Message => {
   };
 };
 
+// Load owner's deep link Private AI access setting
+const loadOwnerDeepLinkSetting = async () => {
+  if (!isDeepLink.value) {
+    // For regular users, load their own setting
+    if (!props.user?.userId) return;
+    try {
+      const response = await fetch(`/api/user-settings?userId=${encodeURIComponent(props.user.userId)}`, {
+        credentials: 'include'
+      });
+      if (response.ok) {
+        const result = await response.json();
+        ownerAllowDeepLinkPrivateAI.value = result.allowDeepLinkPrivateAI !== undefined ? result.allowDeepLinkPrivateAI : true;
+      } else {
+        ownerAllowDeepLinkPrivateAI.value = true; // Default to enabled
+      }
+    } catch (error) {
+      console.warn('Failed to load deep link setting, defaulting to enabled:', error);
+      ownerAllowDeepLinkPrivateAI.value = true;
+    }
+  } else {
+    // For deep link users, load the owner's setting
+    // We need to get the owner ID from the chat or session
+    // For now, we'll try to get it from the deep link info or chat
+    // This will be set when a chat is loaded
+    if (ownerAllowDeepLinkPrivateAI.value === null) {
+      // Default to false for deep link users until we know the owner's setting
+      ownerAllowDeepLinkPrivateAI.value = false;
+    }
+  }
+};
+
 // Fetch available providers
 const loadProviders = async () => {
   try {
     const response = await fetch('/api/chat/providers');
     const data = await response.json();
-    providers.value = data.providers;
+    let availableProviders = data.providers;
+    
+    // Filter out Private AI for deep link users if owner disabled it
+    if (isDeepLink.value && ownerAllowDeepLinkPrivateAI.value === false) {
+      availableProviders = availableProviders.filter((p: string) => p !== 'digitalocean');
+    }
+    
+    providers.value = availableProviders;
+    
     if (providers.value.length > 0) {
       // Set to the first provider's label
-      selectedProvider.value = providerLabels[providers.value[0]] || providers.value[0];
+      const firstProvider = providers.value[0];
+      selectedProvider.value = providerLabels[firstProvider] || firstProvider;
+      
+      // If Private AI was filtered out and it was selected, switch to first available
+      if (getProviderKey(selectedProvider.value) === 'digitalocean' && !providers.value.includes('digitalocean')) {
+        selectedProvider.value = providerLabels[providers.value[0]] || providers.value[0];
+      }
     }
   } catch (error) {
     console.error('Failed to load providers:', error);
     // Fallback for development
-    providers.value = ['digitalocean', 'anthropic'];
-    selectedProvider.value = providerLabels['digitalocean'] || 'Private AI';
+    let fallbackProviders = ['digitalocean', 'anthropic'];
+    if (isDeepLink.value && ownerAllowDeepLinkPrivateAI.value === false) {
+      fallbackProviders = fallbackProviders.filter(p => p !== 'digitalocean');
+    }
+    providers.value = fallbackProviders;
+    selectedProvider.value = providerLabels[fallbackProviders[0]] || fallbackProviders[0];
   }
 };
 
@@ -2087,7 +2139,7 @@ const handleChatDeleted = (chatId: string) => {
   loadSavedChatCount();
 };
 
-const handleChatSelected = (chat: any) => {
+const handleChatSelected = async (chat: any) => {
   currentSavedChatId.value = chat._id || null;
   currentSavedChatShareId.value = chat.shareId || null;
   if (deepLinkShareId.value) {
@@ -2097,6 +2149,28 @@ const handleChatSelected = (chat: any) => {
       chatId: chat._id || null
     };
     emit('update:deepLinkInfo', deepLinkInfoLocal.value);
+  }
+
+  // For deep link users, load the owner's deep link Private AI setting
+  if (isDeepLink.value && chat.patientOwner) {
+    try {
+      const response = await fetch(`/api/user-settings?userId=${encodeURIComponent(chat.patientOwner)}`, {
+        credentials: 'include'
+      });
+      if (response.ok) {
+        const result = await response.json();
+        ownerAllowDeepLinkPrivateAI.value = result.allowDeepLinkPrivateAI !== undefined ? result.allowDeepLinkPrivateAI : true;
+        // Reload providers to apply the filter
+        await loadProviders();
+      } else {
+        ownerAllowDeepLinkPrivateAI.value = true; // Default to enabled
+        await loadProviders();
+      }
+    } catch (error) {
+      console.warn('Failed to load owner deep link setting, defaulting to enabled:', error);
+      ownerAllowDeepLinkPrivateAI.value = true;
+      await loadProviders();
+    }
   }
 
   // Load the chat history
@@ -2399,8 +2473,10 @@ const updateContextualTip = async () => {
   }
 };
 
-onMounted(() => {
-  loadProviders();
+onMounted(async () => {
+  // Load owner's deep link setting first, then providers
+  await loadOwnerDeepLinkSetting();
+  await loadProviders();
   loadSavedChatCount();
   if (!isDeepLink.value) {
   syncAgent();

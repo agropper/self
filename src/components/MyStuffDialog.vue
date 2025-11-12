@@ -208,6 +208,17 @@
               />
             </div>
 
+            <!-- Deep link Private AI access switch -->
+            <div class="row items-center justify-center q-mb-md">
+              <q-toggle
+                v-model="allowDeepLinkPrivateAI"
+                label="Deep link users can chat with your Private AI"
+                color="primary"
+                :loading="savingDeepLinkSetting"
+                @update:model-value="saveDeepLinkPrivateAISetting"
+              />
+            </div>
+
             <div v-if="loadingAgent" class="text-center q-pa-md">
               <q-spinner size="2em" />
               <div class="q-mt-sm">Loading agent...</div>
@@ -617,6 +628,10 @@ const editMode = ref(false);
 const editedInstructions = ref('');
 const savingInstructions = ref(false);
 
+// Deep link Private AI access setting
+const allowDeepLinkPrivateAI = ref(true); // Default to enabled
+const savingDeepLinkSetting = ref(false);
+
 // KB info for agent tab
 const kbInfo = ref<{
   name: string;
@@ -817,10 +832,75 @@ const loadAgent = async () => {
     agentInstructions.value = result.instructions || '';
     editedInstructions.value = result.instructions || '';
     kbInfo.value = result.kbInfo || null;
+    
+    // Load deep link Private AI access setting
+    await loadDeepLinkPrivateAISetting();
   } catch (err) {
     agentError.value = err instanceof Error ? err.message : 'Failed to load agent';
   } finally {
     loadingAgent.value = false;
+  }
+};
+
+const loadDeepLinkPrivateAISetting = async () => {
+  try {
+    const response = await fetch(`/api/user-settings?userId=${encodeURIComponent(props.userId)}`, {
+      credentials: 'include'
+    });
+    if (response.ok) {
+      const result = await response.json();
+      // Default to true if not set (backward compatibility)
+      allowDeepLinkPrivateAI.value = result.allowDeepLinkPrivateAI !== undefined ? result.allowDeepLinkPrivateAI : true;
+    }
+  } catch (err) {
+    // If endpoint doesn't exist yet or fails, default to true
+    console.warn('Failed to load deep link setting, defaulting to enabled:', err);
+    allowDeepLinkPrivateAI.value = true;
+  }
+};
+
+const saveDeepLinkPrivateAISetting = async () => {
+  savingDeepLinkSetting.value = true;
+  try {
+    const response = await fetch('/api/user-settings', {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      credentials: 'include',
+      body: JSON.stringify({
+        userId: props.userId,
+        allowDeepLinkPrivateAI: allowDeepLinkPrivateAI.value
+      })
+    });
+
+    if (!response.ok) {
+      throw new Error('Failed to save setting');
+    }
+
+    // Show notification
+    if ($q && typeof $q.notify === 'function') {
+      $q.notify({
+        type: 'positive',
+        message: allowDeepLinkPrivateAI.value 
+          ? 'Deep link users can now access your Private AI' 
+          : 'Deep link users can no longer access your Private AI',
+        timeout: 3000
+      });
+    }
+  } catch (err) {
+    const errorMsg = err instanceof Error ? err.message : 'Failed to save setting';
+    if ($q && typeof $q.notify === 'function') {
+      $q.notify({
+        type: 'negative',
+        message: errorMsg,
+        timeout: 3000
+      });
+    }
+    // Revert on error
+    allowDeepLinkPrivateAI.value = !allowDeepLinkPrivateAI.value;
+  } finally {
+    savingDeepLinkSetting.value = false;
   }
 };
 

@@ -4053,6 +4053,110 @@ app.put('/api/agent-instructions', async (req, res) => {
   }
 });
 
+// Get user settings
+app.get('/api/user-settings', async (req, res) => {
+  try {
+    const { userId } = req.query;
+    
+    if (!userId) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'User ID is required',
+        error: 'MISSING_USER_ID'
+      });
+    }
+
+    // Get the user document
+    const userDoc = await cloudant.getDocument('maia_users', userId);
+    
+    if (!userDoc) {
+      return res.status(404).json({ 
+        success: false, 
+        message: 'User not found',
+        error: 'USER_NOT_FOUND'
+      });
+    }
+
+    // Return settings (default to true for backward compatibility)
+    res.json({
+      success: true,
+      allowDeepLinkPrivateAI: userDoc.allowDeepLinkPrivateAI !== undefined ? userDoc.allowDeepLinkPrivateAI : true
+    });
+  } catch (error) {
+    console.error('❌ Error fetching user settings:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: `Failed to fetch user settings: ${error.message}`,
+      error: 'FETCH_FAILED'
+    });
+  }
+});
+
+// Update user settings
+app.put('/api/user-settings', async (req, res) => {
+  try {
+    const { userId, allowDeepLinkPrivateAI } = req.body;
+    
+    if (!userId || typeof allowDeepLinkPrivateAI !== 'boolean') {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'User ID and allowDeepLinkPrivateAI (boolean) are required',
+        error: 'MISSING_REQUIRED_FIELDS'
+      });
+    }
+
+    // Get the user document
+    let userDoc = await cloudant.getDocument('maia_users', userId);
+    
+    if (!userDoc) {
+      return res.status(404).json({ 
+        success: false, 
+        message: 'User not found',
+        error: 'USER_NOT_FOUND'
+      });
+    }
+
+    // Update the setting
+    userDoc.allowDeepLinkPrivateAI = allowDeepLinkPrivateAI;
+    userDoc.updatedAt = new Date().toISOString();
+
+    // Save with retry logic for conflicts
+    let retries = 3;
+    let saved = false;
+    
+    while (retries > 0 && !saved) {
+      try {
+        await cloudant.saveDocument('maia_users', userDoc);
+        saved = true;
+      } catch (error) {
+        if (error.statusCode === 409 && retries > 1) {
+          // Conflict - re-read and retry
+          userDoc = await cloudant.getDocument('maia_users', userId);
+          userDoc.allowDeepLinkPrivateAI = allowDeepLinkPrivateAI;
+          userDoc.updatedAt = new Date().toISOString();
+          retries--;
+          await new Promise(resolve => setTimeout(resolve, 100));
+        } else {
+          throw error;
+        }
+      }
+    }
+    
+    res.json({
+      success: true,
+      message: 'User settings updated',
+      allowDeepLinkPrivateAI: allowDeepLinkPrivateAI
+    });
+  } catch (error) {
+    console.error('❌ Error updating user settings:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: `Failed to update user settings: ${error.message}`,
+      error: 'UPDATE_FAILED'
+    });
+  }
+});
+
 // Delete file from Spaces and user document
 app.delete('/api/delete-file', async (req, res) => {
   try {
