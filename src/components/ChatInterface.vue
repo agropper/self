@@ -366,7 +366,7 @@
         </q-card-section>
 
         <q-card-actions align="right">
-          <q-btn flat label="Cancel" color="primary" @click="showDocumentChooser = false; pendingPageLink = null; availableUserFiles.value = []" />
+          <q-btn flat label="Cancel" color="primary" @click="closeDocumentChooser" />
         </q-card-actions>
       </q-card>
     </q-dialog>
@@ -380,7 +380,6 @@ import SavedChatsModal from './SavedChatsModal.vue';
 import MyStuffDialog from './MyStuffDialog.vue';
 import { jsPDF } from 'jspdf';
 import MarkdownIt from 'markdown-it';
-import VueMarkdown from 'vue-markdown-render';
 
 interface Message {
   role: 'user' | 'assistant';
@@ -1182,15 +1181,6 @@ const viewFile = (file: UploadedFile, page?: number) => {
 const processPageReferences = (content: string): string => {
   const pdfFiles = uploadedFiles.value.filter(f => f.type === 'pdf');
   
-  // Debug: Find any instance of "page" or "Page" and show next 12 characters
-  const pageWordPattern = /(Page|page)/gi;
-  let debugMatch;
-  pageWordPattern.lastIndex = 0;
-  while ((debugMatch = pageWordPattern.exec(content)) !== null) {
-    const nextChars = content.substring(debugMatch.index, debugMatch.index + debugMatch[0].length + 12);
-    console.log(`[PDF LINK] Found "${debugMatch[0]}" at index ${debugMatch.index}, next 12 chars: "${nextChars}"`);
-  }
-  
   // Find all occurrences of "page" or "Page" followed by a number
   // Pattern matches: "Page 24", "page 24", "Page: 24", "page:24", "Page:** 24", etc.
   // Match "Page" or "page" followed by any characters (including markdown) then digits
@@ -1240,7 +1230,6 @@ const processPageReferences = (content: string): string => {
     const filenameBefore = pdfFilenames.filter(f => f.index < index);
     if (filenameBefore.length > 0) {
       matchedFilename = filenameBefore[filenameBefore.length - 1].filename;
-      console.log(`[PDF LINK] Found page link "${fullMatch}" (page ${pageNum}), filename in bubble: "${matchedFilename}"`);
       matchedFile = pdfFiles.find(f => {
         const nameUpper = f.name?.toUpperCase();
         const filenameUpper = matchedFilename!.toUpperCase();
@@ -1270,12 +1259,6 @@ const processPageReferences = (content: string): string => {
                  fileUpper?.includes(filenameUpper.replace(/\.(PDF|pdf)$/, '')) ||
                  filenameUpper.includes(fileUpper?.replace(/\.(PDF|pdf)$/, '') || '');
         }) || null;
-        
-        if (matchedUserFile) {
-          console.log(`[PDF LINK] Filename "${matchedFilename}" matches user file "${matchedUserFile.fileName}", skipping chooser`);
-        } else {
-          console.log(`[PDF LINK] Filename "${matchedFilename}" does not match any user file, will show chooser`);
-        }
       }
       
       if (matchedUserFile && matchedFilename) {
@@ -1340,7 +1323,6 @@ const handlePageLinkClick = (event: Event) => {
       });
       
       if (matchedUserFile) {
-        console.log(`[PDF LINK] Filename "${filename}" matches user file "${matchedUserFile.fileName}", skipping chooser`);
         const userFile: UploadedFile = {
           id: `user-file-${matchedUserFile.bucketKey}`,
           name: matchedUserFile.fileName,
@@ -1353,8 +1335,6 @@ const handlePageLinkClick = (event: Event) => {
         };
         viewFile(userFile, pageNumber);
         return;
-      } else {
-        console.log(`[PDF LINK] Filename "${filename}" does not match any user file, will show chooser`);
       }
     }
     
@@ -1437,6 +1417,13 @@ const loadUserFilesForChooser = async (showChooser = true) => {
       showDocumentChooser.value = true;
     }
   }
+};
+
+// Close document chooser and clear state
+const closeDocumentChooser = () => {
+  showDocumentChooser.value = false;
+  pendingPageLink.value = null;
+  availableUserFiles.value = [];
 };
 
 // Handle document selection from chooser

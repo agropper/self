@@ -125,6 +125,7 @@
                   :loading="indexingKB"
                 />
                   <q-btn
+                    v-if="isDevelopment"
                     label="RESET KB"
                     color="negative"
                     outline
@@ -690,6 +691,12 @@ const indexingStatus = ref({
   filesIndexed: 0,
   progress: 0,
   error: ''
+});
+
+// Check if we're in development/localhost (show RESET KB button only in dev)
+const isDevelopment = computed(() => {
+  if (typeof window === 'undefined') return false;
+  return import.meta.env.DEV || window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
 });
 const currentIndexingJobId = ref<string | null>(null);
 const pollingInterval = ref<ReturnType<typeof setInterval> | null>(null);

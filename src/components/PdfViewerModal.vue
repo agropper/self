@@ -232,13 +232,14 @@ watch(() => props.file, (newFile) => {
 
 // Watch for modal opening and initialPage changes
 watch(() => [props.modelValue, props.initialPage], ([isOpen, initialPage]) => {
-  if (isOpen && props.file && initialPage && initialPage > 0) {
+  if (isOpen && props.file && initialPage !== undefined && typeof initialPage === 'number' && initialPage > 0) {
     // Wait for PDF to load, then set the page
     const checkAndSetPage = () => {
       if (totalPages.value > 0) {
-        if (initialPage <= totalPages.value) {
-          currentPage.value = initialPage;
-          pageInput.value = String(initialPage);
+        const pageNum = Number(initialPage);
+        if (pageNum <= totalPages.value) {
+          currentPage.value = pageNum;
+          pageInput.value = String(pageNum);
         }
       } else {
         // PDF not loaded yet, try again
