@@ -65,7 +65,7 @@ All status tip messages displayed in the application (numbered 1-17, correspondi
 3. Ready to chat (workflowStage: approved - Admin has started provisioning the user)
 4. Ready to chat (workflowStage: agent_named - Agent has been successfully created in DigitalOcean)
 5. Your agent is ready. Use the paperclip to import files for your knowledge base. (workflowStage: agent_deployed)
-6. Ready to chat (workflowStage: files_stored - User has uploaded files to their account)
+6. Update your knowledge base using the [Stored Files] tab. (workflowStage: files_stored - User has uploaded files to their account, no KB yet) / Ready to chat (if KB exists)
 7. Ready to chat (workflowStage: unknown - Fallback/default value when workflowStage is not set)
 8. Update your knowledge base using the [Stored Files] tab. (workflowStage: files_archived)
 9. Knowledge base being indexed. This can take up to 30 minutes. (workflowStage: indexing)

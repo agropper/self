@@ -312,6 +312,7 @@
       @indexing-started="handleIndexingStarted"
       @indexing-status-update="handleIndexingStatusUpdate"
       @indexing-finished="handleIndexingFinished"
+      @files-archived="handleFilesArchived"
       v-if="canAccessMyStuff"
     />
 
@@ -2756,6 +2757,17 @@ const handleIndexingFinished = (_data: { jobId: string; phase: string; error?: s
   updateContextualTip();
 };
 
+const handleFilesArchived = (archivedBucketKeys: string[]) => {
+  // Remove files from uploadedFiles that match archived bucketKeys
+  // Files are archived when SAVED FILES dialog opens, so they're now saved and accessible
+  uploadedFiles.value = uploadedFiles.value.filter(file => {
+    if (!file.bucketKey) return true; // Keep files without bucketKey (text files)
+    // Remove files whose bucketKey matches any archived key
+    return !archivedBucketKeys.includes(file.bucketKey);
+  });
+  console.log(`[Files] Cleared ${archivedBucketKeys.length} archived file badge(s) from chat`);
+};
+
 // Parse contextual tip to extract clickable links
 const parsedContextualTip = computed(() => {
   const tip = contextualTip.value;
@@ -2800,10 +2812,11 @@ const openMyStuffTab = (tab: string) => {
 };
 
 // Map workflow stages to user-friendly tips
-const getWorkflowTip = (workflowStage: string | null): string => {
+const getWorkflowTip = (workflowStage: string | null, hasKB: boolean = false): string => {
   const tips: Record<string, string> = {
     'request_sent': 'Support requested. You will be notified when your private AI agent is ready.',
     'agent_deployed': 'Your agent is ready. Use the paperclip to import files for your knowledge base.',
+    'files_stored': hasKB ? 'Ready to chat' : 'Update your knowledge base using the [Stored Files] tab.',
     'files_archived': 'Update your knowledge base using the [Stored Files] tab.',
     'indexing': 'Knowledge base being indexed. This can take up to 30 minutes.',
     'patient_summary': 'Your patient summary is available. Ask your agent for it in the chat anytime.',
@@ -2858,10 +2871,11 @@ const updateContextualTip = async () => {
 
     const userData = await userResponse.json();
     const workflowStage = userData.workflowStage || null;
+    const hasKB = !!userData.hasKB;
     userResourceStatus.value = {
       hasAgent: !!userData.hasAgent,
       kbStatus: userData.kbStatus || 'none',
-      hasKB: !!userData.hasKB
+      hasKB: hasKB
     };
     
     // Check if workflowStage is 'indexing' (even if frontend polling isn't active)
@@ -2883,7 +2897,7 @@ const updateContextualTip = async () => {
     }
 
     // Priority 4: Get tip for workflow stage
-    const tip = getWorkflowTip(workflowStage);
+    const tip = getWorkflowTip(workflowStage, hasKB);
     if (tip) {
       contextualTip.value = tip;
     } else {
@@ -2898,6 +2912,25 @@ const updateContextualTip = async () => {
 };
 
 onMounted(async () => {
+  // Cleanup imported files on page reload (delete files at root level that weren't explicitly saved)
+  if (props.user?.userId) {
+    try {
+      await fetch('/api/cleanup-imported-files', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        credentials: 'include',
+        body: JSON.stringify({
+          userId: props.user.userId
+        })
+      });
+    } catch (error) {
+      console.warn('Failed to cleanup imported files on page reload:', error);
+      // Don't fail if cleanup fails - just log warning
+    }
+  }
+
   // Load owner's deep link setting first, then providers
   await loadOwnerDeepLinkSetting();
   await loadProviders();

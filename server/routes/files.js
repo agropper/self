@@ -23,6 +23,12 @@ export default function setupFileRoutes(app) {
    */
   app.post('/api/files/parse-pdf', upload.single('pdfFile'), async (req, res) => {
     try {
+      // Require authentication (regular user or deep-link user)
+      const userId = req.session?.userId || req.session?.deepLinkUserId;
+      if (!userId) {
+        return res.status(401).json({ error: 'Authentication required' });
+      }
+
       if (!req.file) {
         return res.status(400).json({ error: 'No PDF file provided' });
       }
@@ -62,13 +68,18 @@ export default function setupFileRoutes(app) {
    */
   app.post('/api/files/upload', upload.single('file'), async (req, res) => {
     try {
+      // Require authentication (regular user or deep-link user)
+      const userId = req.session?.userId || req.session?.deepLinkUserId;
+      if (!userId) {
+        return res.status(401).json({ error: 'Authentication required' });
+      }
+
       if (!req.file) {
         return res.status(400).json({ error: 'No file provided' });
       }
 
-      const userId = req.session?.userId || 'public';
       // New imports go to root userId level (not archived yet)
-      const userFolder = userId !== 'public' ? `${userId}/` : 'public/';
+      const userFolder = `${userId}/`;
       const fileName = req.file.originalname;
       
       // Generate a unique key for the file

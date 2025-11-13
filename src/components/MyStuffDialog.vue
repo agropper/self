@@ -88,7 +88,7 @@
                       </q-chip>
                       <!-- In KB but not indexed - show warning "Needs Indexing" -->
                       <q-chip
-                        v-else-if="file.inKnowledgeBase && !indexedFiles.includes(file.bucketKey)"
+                        v-else-if="file.inKnowledgeBase && !isFileIndexed(file.bucketKey)"
                         color="orange"
                         text-color="white"
                         size="sm"
@@ -122,13 +122,16 @@
                 </q-item>
               </q-list>
               
-              <div v-if="hasCheckboxChanges || kbIndexingOutOfSync" class="q-mt-md q-pt-md" style="border-top: 1px solid #e0e0e0;">
-                <div v-if="kbIndexingOutOfSync && !hasCheckboxChanges" class="q-mb-md text-body2 text-amber-9">
+              <div v-if="kbNeedsUpdate || hasCheckboxChanges || kbIndexingOutOfSync" class="q-mt-md q-pt-md" style="border-top: 1px solid #e0e0e0;">
+                <div v-if="kbNeedsUpdate || hasCheckboxChanges" class="q-mb-md text-body2 text-amber-9">
+                  You have changed the files to be indexed into your knowledge base. Click "Update and Index KB" when ready.
+                </div>
+                <div v-else-if="kbIndexingOutOfSync && !hasCheckboxChanges" class="q-mb-md text-body2 text-amber-9">
                   You have changed the files to be indexed into your knowledge base. Click to index when ready.
                 </div>
                 <div class="row q-gutter-sm">
                 <q-btn
-                  label="Update and index knowledge base"
+                  label="Update and Index KB"
                   color="primary"
                   @click="updateAndIndexKB"
                     :disable="indexingKB || resettingKB"
@@ -177,11 +180,12 @@
                 <div class="text-body2">Indexing in progress...</div>
                 <div class="text-caption text-grey-7 q-mt-xs">
                   <span v-if="indexingStatus.kb">KB: {{ indexingStatus.kb }} • </span>
-                  Tokens: {{ indexingStatus.tokens || 'Calculating...' }} • 
-                  Files: {{ indexingStatus.filesIndexed || 0 }}
+                  <span v-if="indexingElapsedTime">Time: {{ indexingElapsedTime }} • </span>
+                  Files: {{ indexingStatus.filesIndexed || 0 }} • 
+                  Tokens: {{ indexingStatus.tokens || 'Calculating...' }}
                 </div>
                 <div class="text-caption text-grey-6 q-mt-xs">
-                  Indexing can take about 200 pages per minute.
+                  Indexing can take about 200 pages per minute. This may take up to 30 minutes.
                 </div>
               </div>
 
@@ -626,6 +630,7 @@ const emit = defineEmits<{
   'indexing-started': [data: { jobId: string; phase: string }];
   'indexing-status-update': [data: { jobId: string; phase: string; tokens: string; filesIndexed: number; progress: number }];
   'indexing-finished': [data: { jobId: string; phase: string; error?: string }];
+  'files-archived': [archivedFiles: string[]]; // Emit bucketKeys of archived files
 }>();
 
 const isOpen = ref(props.modelValue);
@@ -671,13 +676,23 @@ const viewingFile = ref<any>(null);
 
 // KB management
 const originalFiles = ref<UserFile[]>([]);
+const originalIndexedFiles = ref<string[]>([]); // Track original indexed files state
 const indexedFiles = ref<string[]>([]); // Track which files are actually indexed
+const kbNeedsUpdate = ref(false); // Track if KB needs to be updated (files moved)
+
 const hasCheckboxChanges = computed(() => {
   if (originalFiles.value.length !== userFiles.value.length) return true;
   return userFiles.value.some((file, index) => {
     const original = originalFiles.value[index];
     return !original || file.inKnowledgeBase !== original.inKnowledgeBase;
   });
+});
+
+// Mark KB as dirty when files are moved
+watch(hasCheckboxChanges, (hasChanges) => {
+  if (hasChanges && !indexingKB.value) {
+    kbNeedsUpdate.value = true;
+  }
 });
 // Check if KB folder contents match indexed files
 const kbIndexingOutOfSync = computed(() => {
@@ -693,6 +708,16 @@ const kbIndexingOutOfSync = computed(() => {
   // Compare arrays
   if (currentSorted.length !== indexedSorted.length) return true;
   return currentSorted.some((key, index) => key !== indexedSorted[index]);
+});
+
+// Computed property that returns a function to check if a file is indexed (ensures reactivity)
+const isFileIndexed = computed(() => {
+  // Create a Set for O(1) lookup
+  const indexedSet = new Set(indexedFiles.value);
+  // Return a function that checks if a bucketKey is in the set
+  return (bucketKey: string): boolean => {
+    return indexedSet.has(bucketKey);
+  };
 });
 const indexingKB = ref(false);
 const resettingKB = ref(false);
@@ -713,8 +738,21 @@ const isDevelopment = computed(() => {
 });
 const currentIndexingJobId = ref<string | null>(null);
 const pollingInterval = ref<ReturnType<typeof setInterval> | null>(null);
+const elapsedTimeInterval = ref<ReturnType<typeof setInterval> | null>(null);
 const indexingStartTime = ref<number | null>(null);
 const INDEXING_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes
+const elapsedTimeUpdate = ref(0); // Force updates for elapsed time display
+
+// Computed property for elapsed time display
+const indexingElapsedTime = computed(() => {
+  if (!indexingStartTime.value) return null;
+  // Use elapsedTimeUpdate to force reactivity
+  const _ = elapsedTimeUpdate.value;
+  const elapsed = Date.now() - indexingStartTime.value;
+  const minutes = Math.floor(elapsed / 60000);
+  const seconds = Math.floor((elapsed % 60000) / 1000);
+  return `${minutes}m ${seconds}s`;
+});
 
 // Patient summary modal state
 const showSummaryAvailableModal = ref(false);
@@ -758,7 +796,7 @@ const loadFiles = async () => {
     // First, auto-archive any files at root level (userId/)
     // This ensures files imported via paper clip are moved to archived when opening SAVED FILES tab
     try {
-      await fetch('/api/archive-user-files', {
+      const archiveResponse = await fetch('/api/archive-user-files', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json'
@@ -768,6 +806,17 @@ const loadFiles = async () => {
           userId: props.userId
         })
       });
+      
+      if (archiveResponse.ok) {
+        const archiveResult = await archiveResponse.json();
+        // Emit event with archived file bucketKeys so chat interface can clear badges
+        // The archive endpoint returns archivedFiles array with filenames
+        // Original bucketKeys would have been userId/filename before archiving
+        if (archiveResult.archivedFiles && Array.isArray(archiveResult.archivedFiles) && archiveResult.archivedFiles.length > 0) {
+          const originalRootKeys = archiveResult.archivedFiles.map((fileName: string) => `${props.userId}/${fileName}`);
+          emit('files-archived', originalRootKeys);
+        }
+      }
       // Don't fail if archiving fails - just continue to load files
     } catch (archiveErr) {
       console.warn('Failed to auto-archive files:', archiveErr);
@@ -781,23 +830,43 @@ const loadFiles = async () => {
       throw new Error(`Failed to fetch files: ${response.statusText}`);
     }
     const result = await response.json();
-    userFiles.value = (result.files || []).map((file: any) => ({
-      ...file,
-      inKnowledgeBase: file.knowledgeBases && file.knowledgeBases.length > 0
-    }));
+    
+    // Determine KB folder pattern: userId/kbName/ (kbName contains -kb-)
+    // Files in KB folder have bucketKey matching: userId/kbName/filename
+    // Files NOT in KB folder are: userId/filename (root) or userId/archived/filename
+    userFiles.value = (result.files || []).map((file: any) => {
+      const bucketKey = file.bucketKey || '';
+      const parts = bucketKey.split('/');
+      // File is in KB folder if:
+      // 1. Has at least 3 parts (userId/kbName/filename)
+      // 2. Second part (kbName) contains '-kb-'
+      // 3. Not in archived folder
+      const isInKB = parts.length >= 3 && 
+                     parts[0] === props.userId && 
+                     parts[1]?.includes('-kb-') && 
+                     parts[1] !== 'archived';
+      
+      return {
+        ...file,
+        inKnowledgeBase: isInKB
+      };
+    });
     originalFiles.value = JSON.parse(JSON.stringify(userFiles.value));
     
     // Load indexed files from user document (single source of truth)
     // Do NOT derive from userFiles - that creates a mismatch with server state
     if (result.indexedFiles && Array.isArray(result.indexedFiles)) {
       indexedFiles.value = result.indexedFiles;
-      console.log('[KB Files] Loaded indexedFiles from server:', indexedFiles.value);
+      originalIndexedFiles.value = [...result.indexedFiles]; // Save original state
     } else {
       // If server doesn't provide indexedFiles, initialize as empty array
       // This indicates files haven't been indexed yet, not that they should match userFiles
       indexedFiles.value = [];
-      console.log('[KB Files] No indexedFiles from server - initializing as empty (files not indexed yet)');
+      originalIndexedFiles.value = [];
     }
+    
+    // Reset dirty flag when files are loaded (dialog opened or refreshed)
+    kbNeedsUpdate.value = false;
   } catch (err) {
     filesError.value = err instanceof Error ? err.message : 'Failed to load files';
   } finally {
@@ -1104,8 +1173,6 @@ const onCheckboxChange = async (file: UserFile) => {
   const oldBucketKey = file.bucketKey;
   const newStatus = file.inKnowledgeBase;
   
-  console.log(`[KB Management] Toggling file ${file.fileName}: KB status = ${newStatus}, bucketKey = ${oldBucketKey}`);
-  
   // Add to updating set to show spinner
   updatingFiles.value.add(oldBucketKey);
 
@@ -1130,8 +1197,6 @@ const onCheckboxChange = async (file: UserFile) => {
 
     const result = await response.json();
     
-    console.log(`[KB Management] ✅ File move completed: ${oldBucketKey} -> ${result.newBucketKey || oldBucketKey}`);
-    
     // Reload files list to verify the move completed and matches the display
     await loadFiles();
     
@@ -1142,8 +1207,6 @@ const onCheckboxChange = async (file: UserFile) => {
     );
     
     if (updatedFile) {
-      console.log(`[KB Management] ✅ Verified file move: ${updatedFile.fileName} now at ${updatedFile.bucketKey}`);
-      
       // Show success notification
       if ($q && typeof $q.notify === 'function') {
         $q.notify({
@@ -1152,13 +1215,16 @@ const onCheckboxChange = async (file: UserFile) => {
           timeout: 2000
         });
       }
-    } else {
-      console.warn(`[KB Management] ⚠️ Could not verify file move for ${file.fileName}`);
     }
     
-    console.log(`[KB Management] ✅ File ${file.fileName} successfully ${newStatus ? 'added to' : 'removed from'} knowledge base`);
+    // Mark KB as dirty since a file was moved in/out of KB
+    // loadFiles() resets kbNeedsUpdate, but we need to restore it after a file change
+    if (!indexingKB.value) {
+      kbNeedsUpdate.value = true;
+    }
+    
   } catch (err) {
-    console.error(`[KB Management] ❌ Error toggling file ${file.fileName}:`, err);
+    console.error(`Error toggling file ${file.fileName}:`, err);
     // Revert checkbox on error
     file.inKnowledgeBase = !newStatus;
     if ($q && typeof $q.notify === 'function') {
@@ -1286,6 +1352,9 @@ const updateAndIndexKB = async () => {
     
     // Update original files
     originalFiles.value = JSON.parse(JSON.stringify(userFiles.value));
+    
+    // Clear dirty flag since we're now indexing
+    kbNeedsUpdate.value = false;
     
     // If jobId is returned, start polling
     if (result.jobId) {
@@ -1456,6 +1525,85 @@ const resetKB = async () => {
   }
 };
 
+const cancelIndexingAndRestore = async () => {
+  if (!currentIndexingJobId.value) {
+    console.warn('[KB Cancel] No active indexing job to cancel');
+    return;
+  }
+
+  const jobId = currentIndexingJobId.value;
+  console.log(`[KB Cancel] Cancelling indexing job ${jobId} and restoring files...`);
+
+  try {
+    // Stop polling
+    if (pollingInterval.value) {
+      clearInterval(pollingInterval.value);
+      pollingInterval.value = null;
+    }
+
+    // Call cancel endpoint
+    const response = await fetch('/api/cancel-kb-indexing', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      credentials: 'include',
+      body: JSON.stringify({
+        userId: props.userId,
+        jobId: jobId
+      })
+    });
+
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({}));
+      throw new Error(errorData.message || 'Failed to cancel indexing');
+    }
+
+    const result = await response.json();
+    console.log('[KB Cancel] ✅ Cancel result:', result);
+
+    // Reset indexing state
+    indexingKB.value = false;
+    currentIndexingJobId.value = null;
+    if (elapsedTimeInterval.value) {
+      clearInterval(elapsedTimeInterval.value);
+      elapsedTimeInterval.value = null;
+    }
+    indexingStartTime.value = null;
+    elapsedTimeUpdate.value = 0;
+    indexingStatus.value = {
+      phase: 'moving',
+      message: '',
+      kb: '',
+      tokens: '',
+      filesIndexed: 0,
+      progress: 0,
+      error: ''
+    };
+
+    // Reload files to get restored state
+    await loadFiles();
+
+    // Show notification
+    if ($q && typeof $q.notify === 'function') {
+      $q.notify({
+        type: 'positive',
+        message: 'Indexing cancelled and files restored to original state',
+        timeout: 3000
+      });
+    }
+  } catch (err) {
+    console.error('[KB Cancel] ❌ Error cancelling indexing:', err);
+    if ($q && typeof $q.notify === 'function') {
+      $q.notify({
+        type: 'negative',
+        message: err instanceof Error ? err.message : 'Failed to cancel indexing',
+        timeout: 5000
+      });
+    }
+  }
+};
+
 const pollIndexingProgress = async (jobId: string) => {
   // Clear any existing polling interval
   if (pollingInterval.value) {
@@ -1464,6 +1612,22 @@ const pollIndexingProgress = async (jobId: string) => {
   
   // Set start time for timeout tracking
   indexingStartTime.value = Date.now();
+  elapsedTimeUpdate.value = 0;
+  
+  // Start interval to update elapsed time display every second
+  if (elapsedTimeInterval.value) {
+    clearInterval(elapsedTimeInterval.value);
+  }
+  elapsedTimeInterval.value = setInterval(() => {
+    if (indexingStartTime.value) {
+      elapsedTimeUpdate.value = Date.now();
+    } else {
+      if (elapsedTimeInterval.value) {
+        clearInterval(elapsedTimeInterval.value);
+        elapsedTimeInterval.value = null;
+      }
+    }
+  }, 1000);
   
   // Emit event to parent to update status tip
   emit('indexing-started', { jobId, phase: 'indexing_started' });
@@ -1474,6 +1638,12 @@ const pollIndexingProgress = async (jobId: string) => {
       if (indexingStartTime.value && (Date.now() - indexingStartTime.value) > INDEXING_TIMEOUT_MS) {
         clearInterval(pollingInterval.value!);
         pollingInterval.value = null;
+        if (elapsedTimeInterval.value) {
+          clearInterval(elapsedTimeInterval.value);
+          elapsedTimeInterval.value = null;
+        }
+        indexingStartTime.value = null;
+        elapsedTimeUpdate.value = 0;
         indexingKB.value = false;
         indexingStatus.value.phase = 'error';
         indexingStatus.value.error = 'Indexing timed out after 30 minutes';
@@ -1532,6 +1702,7 @@ const pollIndexingProgress = async (jobId: string) => {
           clearInterval(pollingInterval.value);
         }
         pollingInterval.value = null;
+        // Note: Keep indexingStartTime and elapsedTimeUpdate for final display
         
         if (result.phase === 'complete') {
           indexingStatus.value.phase = 'complete';
@@ -1541,12 +1712,14 @@ const pollIndexingProgress = async (jobId: string) => {
           // Do NOT derive from userFiles - that creates a mismatch
           if (result.kbIndexedFiles && Array.isArray(result.kbIndexedFiles)) {
             indexedFiles.value = result.kbIndexedFiles;
-            console.log('[KB Polling] ✅ Using kbIndexedFiles from server response:', result.kbIndexedFiles);
           } else {
             // Fallback: reload from server if not in response
-            console.warn('[KB Polling] ⚠️ kbIndexedFiles not in response, reloading from server...');
-        await loadFiles();
+            await loadFiles();
           }
+          
+          // Always reload files to ensure UI is in sync with server state
+          // This ensures chips show correct status even if dialog was open during indexing
+          await loadFiles();
           
           emit('indexing-finished', { jobId, phase: 'complete' });
           
@@ -1558,6 +1731,15 @@ const pollIndexingProgress = async (jobId: string) => {
           // Attach KB to agent and generate patient summary
           await attachKBAndGenerateSummary();
           
+          // Clear dirty flag since indexing completed successfully
+          kbNeedsUpdate.value = false;
+          
+          // Clean up elapsed time interval
+          if (elapsedTimeInterval.value) {
+            clearInterval(elapsedTimeInterval.value);
+            elapsedTimeInterval.value = null;
+          }
+          
           // Auto-hide after 5 seconds
           setTimeout(() => {
             indexingKB.value = false;
@@ -1566,15 +1748,26 @@ const pollIndexingProgress = async (jobId: string) => {
           indexingStatus.value.phase = 'error';
           indexingStatus.value.error = result.error || 'Indexing failed';
           emit('indexing-finished', { jobId, phase: 'error', error: indexingStatus.value.error });
-        $q.notify({
+          
+          // Clean up elapsed time interval
+          if (elapsedTimeInterval.value) {
+            clearInterval(elapsedTimeInterval.value);
+            elapsedTimeInterval.value = null;
+          }
+          
+          $q.notify({
             type: 'negative',
             message: `Indexing failed: ${indexingStatus.value.error}`
-        });
+          });
         }
       }
     } catch (err) {
       clearInterval(pollingInterval.value!);
       pollingInterval.value = null;
+      if (elapsedTimeInterval.value) {
+        clearInterval(elapsedTimeInterval.value);
+        elapsedTimeInterval.value = null;
+      }
       indexingKB.value = false;
       indexingStatus.value.phase = 'error';
       indexingStatus.value.error = err instanceof Error ? err.message : 'Failed to get indexing status';
@@ -2085,6 +2278,43 @@ const sortedSharedChats = computed(() => {
 });
 
 const closeDialog = async (): Promise<boolean> => {
+  // Check if indexing is in progress
+  if (indexingKB.value && currentIndexingJobId.value) {
+    const result = await new Promise<'ok' | 'cancel' | 'dismiss'>((resolve) => {
+      if ($q && typeof $q.dialog === 'function') {
+        $q.dialog({
+          title: 'Indexing in progress',
+          message: 'Knowledge base indexing is still in progress and could take up to 30 minutes. What would you like to do?',
+          persistent: true,
+          ok: {
+            label: 'OK',
+            color: 'primary',
+            flat: false
+          },
+          cancel: {
+            label: 'Cancel Indexing',
+            color: 'negative',
+            flat: true
+          }
+        }).onOk(() => resolve('ok'))
+          .onCancel(() => resolve('cancel'))
+          .onDismiss(() => resolve('dismiss'));
+      } else {
+        const action = window.confirm('Indexing is in progress. Click OK to continue watching, or Cancel to cancel indexing.');
+        resolve(action ? 'ok' : 'cancel');
+      }
+    });
+
+    if (result === 'cancel') {
+      // Cancel indexing and restore files
+      await cancelIndexingAndRestore();
+      // After cancel, allow closing
+    } else if (result === 'ok' || result === 'dismiss') {
+      // User wants to stay and watch - don't close
+      return false;
+    }
+  }
+
   if (hasUnsavedChanges.value) {
     const confirmClose = await new Promise<boolean>((resolve) => {
       if ($q && typeof $q.dialog === 'function') {
@@ -2123,13 +2353,56 @@ const closeDialog = async (): Promise<boolean> => {
   return true;
 };
 
-watch(() => props.modelValue, (newValue) => {
+watch(() => props.modelValue, async (newValue) => {
   isOpen.value = newValue;
   if (newValue) {
     // Set initial tab if provided
     if (props.initialTab) {
       currentTab.value = props.initialTab;
     }
+    
+    // Check for active indexing job and restore polling if needed
+    try {
+      const statusResponse = await fetch(`/api/user-status?userId=${encodeURIComponent(props.userId)}`, {
+        credentials: 'include'
+      });
+      if (statusResponse.ok) {
+        const statusData = await statusResponse.json();
+        if (statusData.kbLastIndexingJobId && !currentIndexingJobId.value) {
+          // Check if indexing is still active by querying job status
+          try {
+            const jobStatusResponse = await fetch(`/api/kb-indexing-status/${statusData.kbLastIndexingJobId}?userId=${encodeURIComponent(props.userId)}`, {
+              credentials: 'include'
+            });
+            if (jobStatusResponse.ok) {
+              const jobStatusData = await jobStatusResponse.json();
+              // Only restore if job is still in progress (not completed or failed)
+              if (jobStatusData.phase && jobStatusData.phase !== 'complete' && jobStatusData.phase !== 'error') {
+                console.log('[KB] Restoring indexing state for job:', statusData.kbLastIndexingJobId);
+                currentIndexingJobId.value = statusData.kbLastIndexingJobId;
+                indexingKB.value = true;
+                indexingStatus.value = {
+                  phase: jobStatusData.phase || 'indexing',
+                  message: jobStatusData.message || 'Indexing in progress...',
+                  kb: jobStatusData.kb || statusData.kbId || '',
+                  tokens: jobStatusData.tokens || '0',
+                  filesIndexed: jobStatusData.filesIndexed || 0,
+                  progress: jobStatusData.progress || 0,
+                  error: jobStatusData.error || ''
+                };
+                // Start polling for progress
+                pollIndexingProgress(statusData.kbLastIndexingJobId);
+              }
+            }
+          } catch (jobStatusError) {
+            console.warn('Failed to check job status on dialog open:', jobStatusError);
+          }
+        }
+      }
+    } catch (statusError) {
+      console.warn('Failed to check indexing status on dialog open:', statusError);
+    }
+    
     // Load data when dialog opens
     if (currentTab.value === 'files') {
       loadFiles();
@@ -2170,6 +2443,10 @@ onUnmounted(() => {
   if (pollingInterval.value) {
     clearInterval(pollingInterval.value);
     pollingInterval.value = null;
+  }
+  if (elapsedTimeInterval.value) {
+    clearInterval(elapsedTimeInterval.value);
+    elapsedTimeInterval.value = null;
   }
 });
 </script>

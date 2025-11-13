@@ -3502,15 +3502,6 @@ app.post('/api/user-file-metadata', async (req, res) => {
       });
     }
 
-    // SPECIAL CASE: Public User files are session-only (not saved to database)
-    if (userId === 'Public User') {
-      return res.json({
-        success: true,
-        message: 'File uploaded successfully (session-only for Public User)',
-        sessionOnly: true
-      });
-    }
-
     // Initialize files array if it doesn't exist
     if (!userDoc.files) {
       userDoc.files = [];
@@ -3561,7 +3552,138 @@ app.post('/api/user-file-metadata', async (req, res) => {
   }
 });
 
+// Cleanup imported files at root level (delete them, don't archive)
+// Called on page reload to remove files that were imported but not explicitly saved
+app.post('/api/cleanup-imported-files', async (req, res) => {
+  try {
+    const { userId } = req.body;
+    
+    if (!userId) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'User ID is required',
+        error: 'MISSING_USER_ID'
+      });
+    }
+
+    // Get the user document
+    const userDoc = await cloudant.getDocument('maia_users', userId);
+    
+    if (!userDoc) {
+      return res.status(404).json({ 
+        success: false, 
+        message: 'User not found',
+        error: 'USER_NOT_FOUND'
+      });
+    }
+
+    // Import S3 client operations
+    const { S3Client, ListObjectsV2Command, DeleteObjectCommand } = await import('@aws-sdk/client-s3');
+
+    // Setup S3/Spaces client
+    const bucketUrl = process.env.DIGITALOCEAN_BUCKET;
+    if (!bucketUrl) {
+      return res.status(500).json({
+        success: false,
+        error: 'BUCKET_NOT_CONFIGURED',
+        message: 'DigitalOcean bucket not configured'
+      });
+    }
+
+    const bucketName = bucketUrl.split('//')[1]?.split('.')[0] || 'maia';
+
+    const s3Client = new S3Client({
+      endpoint: process.env.DIGITALOCEAN_ENDPOINT_URL || 'https://tor1.digitaloceanspaces.com',
+      region: 'us-east-1',
+      forcePathStyle: false,
+      credentials: {
+        accessKeyId: process.env.DIGITALOCEAN_AWS_ACCESS_KEY_ID || '',
+        secretAccessKey: process.env.DIGITALOCEAN_AWS_SECRET_ACCESS_KEY || ''
+      }
+    });
+
+    // List all files at root level (userId/ but not in subfolders)
+    const listCommand = new ListObjectsV2Command({
+      Bucket: bucketName,
+      Prefix: `${userId}/`
+    });
+
+    const listResult = await s3Client.send(listCommand);
+    
+    // Find files at root level (exactly userId/filename, not in subfolders)
+    const rootFiles = (listResult.Contents || []).filter(file => {
+      const key = file.Key || '';
+      const parts = key.split('/').filter(p => p !== '');
+      return parts.length === 2 && 
+             parts[0] === userId && 
+             !key.endsWith('.keep') &&
+             parts[1] !== '.keep';
+    });
+
+    let deletedCount = 0;
+    const deletedFiles = [];
+
+    // Delete each root-level file
+    for (const file of rootFiles) {
+      const fileName = file.Key?.split('/').pop() || '';
+      if (!fileName || fileName === '.keep') continue;
+
+      const sourceKey = file.Key;
+
+      try {
+        // Delete from bucket
+        const deleteCommand = new DeleteObjectCommand({
+          Bucket: bucketName,
+          Key: sourceKey
+        });
+        await s3Client.send(deleteCommand);
+
+        // Remove file metadata from user document
+        if (userDoc.files) {
+          const fileIndex = userDoc.files.findIndex(f => f.bucketKey === sourceKey);
+          if (fileIndex >= 0) {
+            userDoc.files.splice(fileIndex, 1);
+            deletedFiles.push(fileName);
+          }
+        }
+
+        deletedCount++;
+        console.log(`[Cleanup] ✅ Deleted imported file: ${sourceKey}`);
+      } catch (err) {
+        console.error(`[Cleanup] ❌ Error deleting file ${fileName}:`, err);
+      }
+    }
+
+    // Save updated user document if files were deleted
+    if (deletedCount > 0 && userDoc.files) {
+      // Reset workflowStage if no files remain
+      if (userDoc.files.length === 0) {
+        // Revert to agent_deployed if agent exists, otherwise keep current stage
+        if (userDoc.assignedAgentId) {
+          userDoc.workflowStage = 'agent_deployed';
+        }
+      }
+      await cloudant.saveDocument('maia_users', userDoc);
+    }
+
+    res.json({
+      success: true,
+      message: `Cleaned up ${deletedCount} imported file(s)`,
+      deletedCount,
+      deletedFiles
+    });
+  } catch (error) {
+    console.error('❌ Error cleaning up imported files:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: `Failed to cleanup imported files: ${error.message}`,
+      error: 'CLEANUP_FAILED'
+    });
+  }
+});
+
 // Auto-archive files at root level (move from userId/ to userId/archived/)
+// Only called when user explicitly opens Saved Files tab
 app.post('/api/archive-user-files', async (req, res) => {
   try {
     const { userId } = req.body;
@@ -3837,8 +3959,6 @@ app.post('/api/toggle-file-knowledge-base', async (req, res) => {
 
     // Handle intermediate step (root -> archived) if needed
     if (intermediateKey && sourceKey !== intermediateKey) {
-      console.log(`[KB Management] Archiving file first: ${sourceKey} -> ${intermediateKey}`);
-      
       // Copy from root to archived
       const archiveCopy = new CopyObjectCommand({
         Bucket: bucketName,
@@ -3861,9 +3981,7 @@ app.post('/api/toggle-file-knowledge-base', async (req, res) => {
           Key: intermediateKey
         });
         await s3Client.send(verifyIntermediateCommand);
-        console.log(`[KB Management] ✅ Verified file exists at intermediate location: ${intermediateKey}`);
       } catch (verifyError) {
-        console.error(`[KB Management] ❌ Intermediate file verification failed for ${intermediateKey}:`, verifyError);
         throw new Error(`File archive verification failed: File not found at intermediate destination`);
       }
       
@@ -3876,8 +3994,6 @@ app.post('/api/toggle-file-knowledge-base', async (req, res) => {
 
     // Move file to final destination if different from source
     if (sourceKey !== destKey) {
-      console.log(`[KB Management] Moving file: ${sourceKey} -> ${destKey} (KB: ${inKnowledgeBase ? 'ADD' : 'REMOVE'})`);
-      
       // Copy file to new location
       const copyCommand = new CopyObjectCommand({
         Bucket: bucketName,
@@ -3893,8 +4009,6 @@ app.post('/api/toggle-file-knowledge-base', async (req, res) => {
       });
       await s3Client.send(deleteCommand);
 
-      console.log(`[KB Management] ✅ File moved successfully: ${sourceKey} -> ${destKey}`);
-
       // Verify the file exists at the new location before proceeding
       try {
         const verifyCommand = new HeadObjectCommand({
@@ -3902,9 +4016,7 @@ app.post('/api/toggle-file-knowledge-base', async (req, res) => {
           Key: destKey
         });
         await s3Client.send(verifyCommand);
-        console.log(`[KB Management] ✅ Verified file exists at new location: ${destKey}`);
       } catch (verifyError) {
-        console.error(`[KB Management] ❌ File verification failed for ${destKey}:`, verifyError);
         throw new Error(`File move verification failed: File not found at destination`);
       }
 
@@ -4443,7 +4555,8 @@ app.post('/api/update-knowledge-base', async (req, res) => {
       });
     }
     
-    const { kbId, kbDetails } = kbSetupResult;
+    const { kbId } = kbSetupResult;
+    let kbDetails = kbSetupResult.kbDetails;
     
     const persistKbState = async () => {
       let retries = 3;
@@ -4496,70 +4609,229 @@ app.post('/api/update-knowledge-base', async (req, res) => {
 
     userDoc = await persistKbState();
     
+    // Check if files have changed and need re-indexing
+    // Compare current files in KB folder with what was previously indexed
+    const currentIndexedFiles = userDoc.kbIndexedFiles || [];
+    const filesChanged = JSON.stringify([...filesInKB].sort()) !== JSON.stringify([...currentIndexedFiles].sort());
     
-    // Return success immediately - polling happens in background
-    res.json({
-      success: true,
-      message: 'Knowledge base created successfully',
-      kbId: kbId,
-      filesInKB: filesInKB,
-      phase: 'kb_created'
-    });
+    // Also check if user explicitly requested indexing (kbIndexingNeeded flag)
+    const indexingRequested = userDoc.kbIndexingNeeded === true;
     
-    // Start polling for indexing jobs in background (non-blocking)
-    // Poll every 10 seconds for max 30 minutes (180 polls)
-    const startTime = Date.now();
-    const pollDelayMs = 30000; // 30 seconds
-    const maxPolls = Math.ceil((30 * 60 * 1000) / pollDelayMs);
-    let pollCount = 0;
-    let activeJobId = null;
-    let finished = false;
-    let pollTimer = null;
-
-    const clearPollTimer = () => {
-      if (pollTimer) {
-        clearTimeout(pollTimer);
-        pollTimer = null;
+    let jobId = null;
+    let indexingStarted = false;
+    
+    // If files changed OR indexing was explicitly requested, start a new indexing job
+    if (filesChanged || indexingRequested) {
+      if (!filesChanged && indexingRequested) {
+        console.log(`[KB Update] Indexing requested by user (kbIndexingNeeded=true), files in KB: ${filesInKB.length}`);
       }
-    };
-
-    const scheduleNextPoll = () => {
-      if (finished) return;
-      pollTimer = setTimeout(runPoll, pollDelayMs);
-    };
-
-    const completeIndexing = async (job, fileCount, tokenValue, indexedFiles) => {
-      if (finished) return;
-      finished = true;
-      clearPollTimer();
-
-      const elapsedTime = Math.round((Date.now() - startTime) / 1000); // seconds
-      const elapsedMinutes = Math.floor(elapsedTime / 60);
-      const elapsedSeconds = elapsedTime % 60;
-
-      const finalTokens = String(job.tokens || job.total_tokens || tokenValue || 0);
-      const finalFileCount = job.data_source_jobs?.[0]?.indexed_file_count || fileCount;
-
-      console.log(`[KB AUTO] ✅ Indexing completed! Files: ${finalFileCount}, Tokens: ${finalTokens}, Elapsed: ${elapsedMinutes}m ${elapsedSeconds}s`);
-
       try {
-        const finalUserDoc = await cloudant.getDocument('maia_users', userId);
-        if (finalUserDoc) {
-          finalUserDoc.kbIndexedFiles = indexedFiles;
-          finalUserDoc.kbPendingFiles = undefined;
-          finalUserDoc.kbIndexingNeeded = false;
-          finalUserDoc.kbLastIndexedAt = new Date().toISOString();
-          finalUserDoc.kbLastIndexingJobId = activeJobId;
-          if (finalUserDoc.workflowStage === 'indexing') {
-            if (finalUserDoc.files && finalUserDoc.files.length > 0) {
-              finalUserDoc.workflowStage = 'files_archived';
-            } else {
-              finalUserDoc.workflowStage = 'agent_deployed';
+        // Check if there's already an active indexing job
+        if (userDoc.kbLastIndexingJobId) {
+          try {
+            const existingJobStatus = await doClient.indexing.getStatus(userDoc.kbLastIndexingJobId);
+            const existingStatus = existingJobStatus.status || existingJobStatus.job_status || existingJobStatus.state;
+            const isActive = existingStatus === 'INDEX_JOB_STATUS_PENDING' || 
+                           existingStatus === 'INDEX_JOB_STATUS_RUNNING' ||
+                           existingStatus === 'INDEX_JOB_STATUS_IN_PROGRESS' ||
+                           existingStatus === 'pending' ||
+                           existingStatus === 'running' ||
+                           existingStatus === 'in_progress';
+            
+            if (isActive) {
+              console.log(`[KB Update] ⚠️ Indexing job ${userDoc.kbLastIndexingJobId} is already running - using existing job`);
+              jobId = userDoc.kbLastIndexingJobId;
+              indexingStarted = true;
+            }
+          } catch (statusError) {
+            // Job doesn't exist or failed - proceed to start new one
+            console.log(`[KB Update] Existing job ${userDoc.kbLastIndexingJobId} not found or failed - starting new job`);
+          }
+        }
+        
+        // Start new indexing job if no active job found
+        if (!jobId) {
+          // Get data source UUID from KB details
+          let datasources = kbDetails?.datasources || kbDetails?.data_sources || kbDetails?.knowledge_base_data_sources || [];
+          
+          // If no datasources, add one pointing to the KB folder
+          if (datasources.length === 0) {
+            console.log(`[KB Update] KB ${kbId} has no datasources - adding datasource for path: ${userId}/${kbName}/`);
+            try {
+              const newDataSource = await doClient.kb.addDataSource(kbId, {
+                bucketName: bucketName,
+                itemPath: `${userId}/${kbName}/`,
+                region: process.env.DO_REGION || 'tor1'
+              });
+              
+              const dataSourceUuid = newDataSource.uuid || newDataSource.id || newDataSource.knowledge_base_data_source?.uuid;
+              if (dataSourceUuid) {
+                console.log(`[KB Update] ✅ Added datasource: ${dataSourceUuid}`);
+                // Refresh KB details to get updated datasources
+                kbDetails = await doClient.kb.get(kbId);
+                datasources = kbDetails?.datasources || kbDetails?.data_sources || kbDetails?.knowledge_base_data_sources || [];
+                // If datasources array is still empty after refresh, create a synthetic entry from the response
+                if (datasources.length === 0 && dataSourceUuid) {
+                  datasources = [{ uuid: dataSourceUuid, id: dataSourceUuid }];
+                  console.log(`[KB Update] Using datasource UUID from add response: ${dataSourceUuid}`);
+                }
+              } else {
+                console.warn(`[KB Update] ⚠️ Added datasource but UUID not found in response`);
+                // Try to get UUID from refreshed KB details
+                kbDetails = await doClient.kb.get(kbId);
+                datasources = kbDetails?.datasources || kbDetails?.data_sources || kbDetails?.knowledge_base_data_sources || [];
+              }
+            } catch (addError) {
+              console.error(`[KB Update] ❌ Error adding datasource:`, addError.message);
+              throw addError;
             }
           }
-          await cloudant.saveDocument('maia_users', finalUserDoc);
-          invalidateResourceCache(userId);
+          
+          if (datasources.length > 0) {
+            const dataSourceUuid = datasources[0].uuid || datasources[0].id;
+            if (!dataSourceUuid) {
+              console.warn(`[KB Update] ⚠️ Data source has no UUID - cannot start indexing`);
+            } else {
+              // Log files in source folder before starting indexing
+              console.log(`[KB INDEXING] Starting indexing job for KB ${kbId}, data source ${dataSourceUuid}`);
+              console.log(`[KB INDEXING] Files in source folder (${filesInKB.length}):`, filesInKB.map(key => key.split('/').pop()));
+              
+              try {
+                // Start indexing job using global endpoint
+                const indexingJob = await doClient.indexing.startGlobal(kbId, [dataSourceUuid]);
+                jobId = indexingJob.uuid || indexingJob.id || indexingJob.indexing_job?.uuid || indexingJob.indexing_job?.id || indexingJob.job?.uuid || indexingJob.job?.id;
+                
+                if (jobId) {
+                  console.log(`[KB INDEXING] ✅ Started indexing job: ${jobId}`);
+                  
+                  // Store job ID in user document
+                  const jobUserDoc = await cloudant.getDocument('maia_users', userId);
+                  if (jobUserDoc) {
+                    jobUserDoc.kbLastIndexingJobId = jobId;
+                    jobUserDoc.kbIndexingStartedAt = new Date().toISOString();
+                    jobUserDoc.workflowStage = 'indexing';
+                    await cloudant.saveDocument('maia_users', jobUserDoc);
+                    invalidateResourceCache(userId);
+                  }
+                  
+                  indexingStarted = true;
+                } else {
+                  console.warn(`[KB Update] ⚠️ Indexing job started but no jobId found in response`);
+                }
+              } catch (startError) {
+                // Check if error is "already running"
+                if (startError.message && startError.message.includes('already') && startError.message.includes('running')) {
+                  console.log(`[KB Update] Indexing already running - will poll for job ID`);
+                  // Background polling will find the job
+                } else {
+                  throw startError;
+                }
+              }
+            }
+          } else {
+            console.error(`[KB Update] ❌ Could not add datasource or datasource UUID not found`);
+          }
         }
+      } catch (indexingError) {
+        console.error(`[KB Update] ❌ Error starting indexing job:`, indexingError.message);
+        // Continue - background polling will try to find the job
+      }
+    } else {
+      console.log(`[KB Update] Files unchanged and no indexing requested - no indexing needed`);
+      console.log(`[KB Update] Files in KB folder (${filesInKB.length}):`, filesInKB.map(key => key.split('/').pop()));
+      console.log(`[KB Update] Files indexed in user document (${currentIndexedFiles.length}):`, currentIndexedFiles.map(key => key.split('/').pop()));
+    }
+    
+    // Return response with jobId if available
+    res.json({
+      success: true,
+      message: indexingStarted ? 'Knowledge base updated, indexing started' : 'Knowledge base updated successfully',
+      kbId: kbId,
+      filesInKB: filesInKB,
+      jobId: jobId || null,
+      phase: indexingStarted ? 'indexing_started' : 'kb_created'
+    });
+    
+    // Only start polling if we actually started a new job
+    // Don't poll if we didn't start a job - that would find old completed jobs incorrectly
+    if (jobId && indexingStarted) {
+      // Start polling for indexing jobs in background (non-blocking)
+      // Poll every 30 seconds for max 30 minutes (60 polls)
+      const startTime = Date.now();
+      const pollDelayMs = 30000; // 30 seconds
+      const maxPolls = Math.ceil((30 * 60 * 1000) / pollDelayMs);
+      let pollCount = 0;
+      let activeJobId = jobId; // Track the specific job we started
+      let finished = false;
+      let pollTimer = null;
+
+      const clearPollTimer = () => {
+        if (pollTimer) {
+          clearTimeout(pollTimer);
+          pollTimer = null;
+        }
+      };
+
+      const scheduleNextPoll = () => {
+        if (finished) return;
+        pollTimer = setTimeout(runPoll, pollDelayMs);
+      };
+
+      const completeIndexing = async (job, fileCount, tokenValue, indexedFiles) => {
+        if (finished) return;
+        finished = true;
+        clearPollTimer();
+
+        const elapsedTime = Math.round((Date.now() - startTime) / 1000); // seconds
+        const elapsedMinutes = Math.floor(elapsedTime / 60);
+        const elapsedSeconds = elapsedTime % 60;
+
+        const finalTokens = String(job.tokens || job.total_tokens || tokenValue || 0);
+        const finalFileCount = job.data_source_jobs?.[0]?.indexed_file_count || fileCount;
+
+        try {
+          const finalUserDoc = await cloudant.getDocument('maia_users', userId);
+          if (finalUserDoc) {
+            // Get current files in KB folder (source of truth for what should be indexed)
+            const kbName = getKBNameFromUserDoc(finalUserDoc, userId);
+            const currentFilesInKB = (finalUserDoc.files || [])
+              .filter(file => file.bucketKey && file.bucketKey.startsWith(`${userId}/${kbName}/`))
+              .map(file => file.bucketKey);
+            
+            // Use current files in KB folder as source of truth (they were successfully indexed)
+            const filesToIndex = currentFilesInKB.length > 0 ? currentFilesInKB : (indexedFiles || []);
+            
+            const previousIndexedFiles = finalUserDoc.kbIndexedFiles || [];
+            const previousTokens = finalUserDoc.kbLastIndexedAt ? (await getCachedKB(kbId))?.total_tokens || '0' : '0';
+            
+            finalUserDoc.kbIndexedFiles = filesToIndex;
+            finalUserDoc.kbPendingFiles = undefined;
+            finalUserDoc.kbIndexingNeeded = false;
+            finalUserDoc.kbLastIndexedAt = new Date().toISOString();
+            finalUserDoc.kbLastIndexingJobId = activeJobId;
+            if (finalUserDoc.workflowStage === 'indexing') {
+              if (finalUserDoc.files && finalUserDoc.files.length > 0) {
+                finalUserDoc.workflowStage = 'files_archived';
+              } else {
+                finalUserDoc.workflowStage = 'agent_deployed';
+              }
+            }
+            await cloudant.saveDocument('maia_users', finalUserDoc);
+            
+            // Log indexing success with clear details
+            console.log(`[KB INDEXING] ✅ Indexing completed successfully`);
+            console.log(`[KB INDEXING] Job ID: ${activeJobId}, Elapsed: ${elapsedMinutes}m ${elapsedSeconds}s`);
+            console.log(`[KB INDEXING] Files indexed: ${filesToIndex.length} (${filesToIndex.map(key => key.split('/').pop()).join(', ')})`);
+            console.log(`[KB INDEXING] Tokens: ${previousTokens} → ${finalTokens}`);
+            console.log(`[KB INDEXING] User document updated:`);
+            console.log(`[KB INDEXING]   - kbIndexedFiles: ${previousIndexedFiles.length} → ${filesToIndex.length} files`);
+            console.log(`[KB INDEXING]   - kbPendingFiles: cleared`);
+            console.log(`[KB INDEXING]   - kbIndexingNeeded: false`);
+            console.log(`[KB INDEXING]   - kbLastIndexedAt: ${finalUserDoc.kbLastIndexedAt}`);
+            console.log(`[KB INDEXING]   - kbLastIndexingJobId: ${activeJobId}`);
+            
+            invalidateResourceCache(userId);
+          }
 
         // Attach KB to agent if needed
         try {
@@ -4606,22 +4878,22 @@ app.post('/api/update-knowledge-base', async (req, res) => {
       }
     };
 
-    try {
-      const indexingUserDoc = await cloudant.getDocument('maia_users', userId);
-      if (indexingUserDoc) {
-        indexingUserDoc.workflowStage = 'indexing';
-        await cloudant.saveDocument('maia_users', indexingUserDoc);
-      }
-    } catch (err) {
-      console.error('[KB AUTO] Error setting workflowStage to indexing:', err);
-    }
-
-    const runPoll = async () => {
-      if (finished) return;
-      pollCount += 1;
-
       try {
-        const indexingJobs = await doClient.indexing.listForKB(kbId);
+        const indexingUserDoc = await cloudant.getDocument('maia_users', userId);
+        if (indexingUserDoc) {
+          indexingUserDoc.workflowStage = 'indexing';
+          await cloudant.saveDocument('maia_users', indexingUserDoc);
+        }
+      } catch (err) {
+        console.error('[KB AUTO] Error setting workflowStage to indexing:', err);
+      }
+
+      const runPoll = async () => {
+        if (finished) return;
+        pollCount += 1;
+
+        try {
+          const indexingJobs = await doClient.indexing.listForKB(kbId);
          
          
          // listForKB already returns the jobs array, so indexingJobs should be an array
@@ -4659,26 +4931,26 @@ app.post('/api/update-knowledge-base', async (req, res) => {
            const kbDetails = await getCachedKB(kbId);
            const tokens = String(kbDetails?.total_tokens || kbDetails?.token_count || kbDetails?.tokens || job.tokens || job.total_tokens || 0);
 
-           const updatedUserDoc = await cloudant.getDocument('maia_users', userId);
-           const indexedFiles = updatedUserDoc?.kbPendingFiles || filesInKB;
-           const fileCount = job.data_source_jobs?.[0]?.indexed_file_count || indexedFiles.length;
+          const updatedUserDoc = await cloudant.getDocument('maia_users', userId);
+          const indexedFiles = updatedUserDoc?.kbPendingFiles || filesInKB;
+          const fileCount = job.data_source_jobs?.[0]?.indexed_file_count || indexedFiles.length;
 
-           console.log(`[KB AUTO] Poll ${pollCount}/${maxPolls}, Files: ${fileCount}, Tokens: ${tokens}`);
+          // Only mark as complete if this is the job we're tracking AND it's actually completed
+          // Don't use hasIndexedData check - that will trigger on old completed jobs
+          const currentJobId = job.uuid || job.id || job.indexing_job_id;
+          const isCompleted = (status === 'INDEX_JOB_STATUS_COMPLETED' || 
+                            status === 'completed' ||
+                            status === 'COMPLETED' ||
+                            (job.completed === true) ||
+                            (job.phase === 'BATCH_JOB_PHASE_COMPLETED') ||
+                            (job.phase === 'BATCH_JOB_PHASE_SUCCEEDED')) &&
+                            // Only complete if this is EXACTLY the job we started (activeJobId must match)
+                            activeJobId === currentJobId;
 
-           const isCompleted = status === 'INDEX_JOB_STATUS_COMPLETED' || 
-                             status === 'completed' ||
-                             status === 'COMPLETED' ||
-                             (job.completed === true) ||
-                             (job.phase === 'BATCH_JOB_PHASE_COMPLETED') ||
-                             (job.phase === 'BATCH_JOB_PHASE_SUCCEEDED');
-
-           const numericTokens = parseInt(tokens, 10);
-           const hasIndexedData = Number.isFinite(numericTokens) && numericTokens > 0 && fileCount > 0;
-
-           if (isCompleted || hasIndexedData) {
-             await completeIndexing(job, fileCount, tokens, indexedFiles);
-             return;
-           }
+          if (isCompleted) {
+            await completeIndexing(job, fileCount, tokens, indexedFiles);
+            return;
+          }
          } else {
            const failedJob = jobsArray.find(j => {
              const jobStatus = j.status || j.job_status || j.state;
@@ -4715,6 +4987,7 @@ app.post('/api/update-knowledge-base', async (req, res) => {
      };
 
      runPoll();
+    } // End of polling block - only runs if jobId || indexingStarted || (filesChanged || indexingRequested)
   } catch (error) {
     console.error('❌ Error updating knowledge base:', error);
     res.status(500).json({ 
@@ -4830,7 +5103,29 @@ app.get('/api/kb-indexing-status/:jobId', async (req, res) => {
             // Check if kbPendingFiles exists - this is our source of truth for what was indexed
             if (updatedUserDoc.kbPendingFiles && Array.isArray(updatedUserDoc.kbPendingFiles) && updatedUserDoc.kbPendingFiles.length > 0) {
               // Atomic update: set kbIndexedFiles from kbPendingFiles in one operation
-              updatedUserDoc.kbIndexedFiles = [...updatedUserDoc.kbPendingFiles]; // Create a copy
+              // Get current files in KB folder (source of truth)
+              const kbNameForStatus = getKBNameFromUserDoc(updatedUserDoc, userId);
+              const currentFilesInKB = (updatedUserDoc.files || [])
+                .filter(file => file.bucketKey && file.bucketKey.startsWith(`${userId}/${kbNameForStatus}/`))
+                .map(file => file.bucketKey);
+              
+              // Use current files in KB folder as source of truth, fallback to kbPendingFiles
+              const filesToIndex = currentFilesInKB.length > 0 ? currentFilesInKB : [...updatedUserDoc.kbPendingFiles];
+              
+              const previousIndexedFiles = updatedUserDoc.kbIndexedFiles || [];
+              // Get previous tokens from KB details (if available)
+              let previousTokens = '0';
+              if (updatedUserDoc.kbLastIndexedAt && updatedUserDoc.kbId) {
+                try {
+                  const previousKbDetails = await getCachedKB(updatedUserDoc.kbId);
+                  previousTokens = String(previousKbDetails?.total_tokens || previousKbDetails?.token_count || previousKbDetails?.tokens || 0);
+                } catch (err) {
+                  // If we can't get previous tokens, default to 0
+                  previousTokens = '0';
+                }
+              }
+              
+              updatedUserDoc.kbIndexedFiles = filesToIndex; // Use current files in KB folder
               updatedUserDoc.kbPendingFiles = undefined; // Clear pending
               updatedUserDoc.kbIndexingNeeded = false;
               updatedUserDoc.kbLastIndexedAt = new Date().toISOString();
@@ -4841,7 +5136,18 @@ app.get('/api/kb-indexing-status/:jobId', async (req, res) => {
                 finalIndexedFiles = updatedUserDoc.kbIndexedFiles;
                 filesIndexed = finalIndexedFiles.length;
                 success = true;
-                console.log(`[KB Indexing Status] ✅ Updated kbIndexedFiles with ${finalIndexedFiles.length} files:`, finalIndexedFiles);
+                
+                // Log indexing success with clear details
+                console.log(`[KB INDEXING] ✅ Indexing completed successfully (via /api/kb-indexing-status)`);
+                console.log(`[KB INDEXING] Job ID: ${jobId}`);
+                console.log(`[KB INDEXING] Files indexed: ${filesToIndex.length} (${filesToIndex.map(key => key.split('/').pop()).join(', ')})`);
+                console.log(`[KB INDEXING] Tokens: ${previousTokens} → ${tokens}`);
+                console.log(`[KB INDEXING] User document updated:`);
+                console.log(`[KB INDEXING]   - kbIndexedFiles: ${previousIndexedFiles.length} → ${filesToIndex.length} files`);
+                console.log(`[KB INDEXING]   - kbPendingFiles: cleared`);
+                console.log(`[KB INDEXING]   - kbIndexingNeeded: false`);
+                console.log(`[KB INDEXING]   - kbLastIndexedAt: ${updatedUserDoc.kbLastIndexedAt}`);
+                console.log(`[KB INDEXING]   - kbLastIndexingJobId: ${jobId}`);
               } catch (saveErr) {
                 if (saveErr.statusCode === 409 && retryCount < maxRetries - 1) {
                   // Document conflict - retry
@@ -4922,6 +5228,118 @@ app.get('/api/kb-indexing-status/:jobId', async (req, res) => {
       success: false, 
       message: `Failed to get indexing status: ${error.message}`,
       error: 'STATUS_FAILED'
+    });
+  }
+});
+
+// Cancel KB indexing job
+app.post('/api/cancel-kb-indexing', async (req, res) => {
+  try {
+    const { userId, jobId } = req.body;
+    
+    if (!userId || !jobId) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'User ID and job ID are required',
+        error: 'MISSING_REQUIRED_FIELDS'
+      });
+    }
+
+    // Get user document to restore original state
+    const userDoc = await cloudant.getDocument('maia_users', userId);
+    
+    if (!userDoc) {
+      return res.status(404).json({ 
+        success: false, 
+        message: 'User not found',
+        error: 'USER_NOT_FOUND'
+      });
+    }
+
+    // Cancel the indexing job via DO API
+    try {
+      await doClient.indexing.cancel(jobId);
+      console.log(`[KB Cancel] ✅ Cancelled indexing job ${jobId} for user ${userId}`);
+    } catch (cancelError) {
+      console.error(`[KB Cancel] Error cancelling job ${jobId}:`, cancelError);
+      // Continue with cleanup even if cancel fails (job might already be done)
+    }
+
+    // Restore original file state from kbPendingFiles snapshot
+    // If kbPendingFiles exists, it means files were moved but indexing hasn't completed
+    // We need to restore files to their original locations
+    if (userDoc.kbPendingFiles && Array.isArray(userDoc.kbPendingFiles) && userDoc.kbPendingFiles.length > 0) {
+      const kbName = getKBNameFromUserDoc(userDoc, userId);
+      const { S3Client, CopyObjectCommand, DeleteObjectCommand } = await import('@aws-sdk/client-s3');
+      
+      const bucketUrl = process.env.DIGITALOCEAN_BUCKET;
+      const bucketName = bucketUrl?.split('//')[1]?.split('.')[0] || 'maia';
+      
+      const s3Client = new S3Client({
+        endpoint: process.env.DIGITALOCEAN_ENDPOINT_URL || 'https://tor1.digitaloceanspaces.com',
+        region: 'us-east-1',
+        forcePathStyle: false,
+        credentials: {
+          accessKeyId: process.env.DIGITALOCEAN_AWS_ACCESS_KEY_ID || '',
+          secretAccessKey: process.env.DIGITALOCEAN_AWS_SECRET_ACCESS_KEY || ''
+        }
+      });
+
+      // Restore files: move from KB folder back to archived
+      for (const kbFileKey of userDoc.kbPendingFiles) {
+        // Extract filename from bucketKey
+        const fileName = kbFileKey.split('/').pop();
+        const archivedKey = `${userId}/archived/${fileName}`;
+        
+        // Check if file exists in KB folder
+        try {
+          const copyCommand = new CopyObjectCommand({
+            Bucket: bucketName,
+            CopySource: `${bucketName}/${kbFileKey}`,
+            Key: archivedKey
+          });
+          await s3Client.send(copyCommand);
+          
+          const deleteCommand = new DeleteObjectCommand({
+            Bucket: bucketName,
+            Key: kbFileKey
+          });
+          await s3Client.send(deleteCommand);
+          
+          // Update file metadata in user document
+          const fileIndex = userDoc.files?.findIndex(f => f.bucketKey === kbFileKey);
+          if (fileIndex >= 0 && userDoc.files) {
+            userDoc.files[fileIndex].bucketKey = archivedKey;
+            userDoc.files[fileIndex].knowledgeBases = [];
+          }
+          
+          console.log(`[KB Cancel] ✅ Restored file: ${kbFileKey} -> ${archivedKey}`);
+        } catch (fileError) {
+          console.error(`[KB Cancel] ⚠️ Error restoring file ${kbFileKey}:`, fileError);
+          // Continue with other files
+        }
+      }
+    }
+
+    // Clear indexing state
+    userDoc.kbPendingFiles = undefined;
+    userDoc.kbIndexingNeeded = false;
+    userDoc.kbLastIndexingJobId = undefined;
+    
+    // Don't change kbIndexedFiles - keep it as it was before indexing started
+    
+    await cloudant.saveDocument('maia_users', userDoc);
+    
+    res.json({
+      success: true,
+      message: 'Indexing cancelled and files restored to original state'
+    });
+  } catch (error) {
+    console.error('❌ Error cancelling KB indexing:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: `Failed to cancel indexing: ${error.message}`,
+      error: 'CANCEL_FAILED'
     });
   }
 });
