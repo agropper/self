@@ -5091,6 +5091,7 @@ app.post('/api/update-knowledge-base', async (req, res) => {
 });
 
 // Get KB indexing status
+// This endpoint checks backend state first (single source of truth), then falls back to DO API if needed
 app.get('/api/kb-indexing-status/:jobId', async (req, res) => {
   try {
     const { jobId } = req.params;
@@ -5104,7 +5105,7 @@ app.get('/api/kb-indexing-status/:jobId', async (req, res) => {
       });
     }
     
-    // Get user document to find KB ID
+    // Get user document - this is our single source of truth
     const userDoc = await cloudant.getDocument('maia_users', userId);
     if (!userDoc) {
       return res.status(404).json({
@@ -5114,15 +5115,55 @@ app.get('/api/kb-indexing-status/:jobId', async (req, res) => {
       });
     }
     
-    // Get indexing job status from DO API
+    const kbName = getKBNameFromUserDoc(userDoc, userId);
+    
+    // STEP 1: Check if backend has already completed processing
+    // Backend completion indicators:
+    // - kbPendingFiles is cleared (undefined/empty) - backend cleared it on completion
+    // - kbIndexedFiles is set - backend set it on completion
+    // - kbLastIndexingJobId matches this jobId - confirms this is the completed job
+    const hasBackendCompleted = 
+      (!userDoc.kbPendingFiles || (Array.isArray(userDoc.kbPendingFiles) && userDoc.kbPendingFiles.length === 0)) &&
+      userDoc.kbIndexedFiles && 
+      Array.isArray(userDoc.kbIndexedFiles) && 
+      userDoc.kbIndexedFiles.length > 0 &&
+      userDoc.kbLastIndexingJobId === jobId;
+    
+    if (hasBackendCompleted) {
+      // Backend has completed - return completion status immediately
+      // Get KB details for token count
+      let tokens = userDoc.kbLastIndexingTokens || '0';
+      if (userDoc.kbId && (!tokens || tokens === '0')) {
+        try {
+          const kbDetails = await getCachedKB(userDoc.kbId);
+          tokens = String(kbDetails?.total_tokens || kbDetails?.token_count || kbDetails?.tokens || 0);
+        } catch (kbError) {
+          // Use stored tokens or default
+        }
+      }
+      
+      return res.json({
+        success: true,
+        phase: 'complete',
+        status: 'INDEX_JOB_STATUS_COMPLETED',
+        kb: kbName,
+        tokens: tokens,
+        filesIndexed: userDoc.kbIndexedFiles.length,
+        completed: true,
+        progress: 1.0,
+        kbIndexedFiles: userDoc.kbIndexedFiles,
+        backendCompleted: true // Indicates backend automation (attach KB, generate summary) has finished
+      });
+    }
+    
+    // STEP 2: Backend hasn't completed yet - check DO API for current status
+    // This provides real-time progress while backend is still working
     let jobStatus = null;
-    let kbDetails = null;
     let phase = 'indexing';
     let status = 'INDEX_JOB_STATUS_RUNNING';
     let completed = false;
     let tokens = '0';
     let filesIndexed = 0;
-    let kbName = getKBNameFromUserDoc(userDoc, userId);
     
     try {
       // Get job status from DO API
@@ -5135,8 +5176,8 @@ app.get('/api/kb-indexing-status/:jobId', async (req, res) => {
       } else if (status === 'INDEX_JOB_STATUS_RUNNING') {
         phase = 'indexing';
       } else if (status === 'INDEX_JOB_STATUS_COMPLETED') {
-        phase = 'complete';
-        completed = true;
+        phase = 'indexing'; // Still 'indexing' because backend hasn't finished processing yet
+        completed = false; // Not completed from backend perspective
       } else if (status === 'INDEX_JOB_STATUS_FAILED') {
         phase = 'error';
         completed = true;
@@ -5145,20 +5186,19 @@ app.get('/api/kb-indexing-status/:jobId', async (req, res) => {
       // Get KB details for token count and name
       if (userDoc.kbId) {
         try {
-          kbDetails = await doClient.kb.get(userDoc.kbId);
+          const kbDetails = await doClient.kb.get(userDoc.kbId);
           tokens = String(kbDetails.total_tokens || kbDetails.token_count || kbDetails.tokens || 0);
-          kbName = kbDetails.name || kbName;
         } catch (kbError) {
           console.error('Error getting KB details:', kbError);
           // Continue with defaults
         }
       }
       
-      // Count files - prioritize kbIndexedFiles (actual indexed), then kbPendingFiles (being indexed), then derive from KB folder
-      if (userDoc.kbIndexedFiles && Array.isArray(userDoc.kbIndexedFiles) && userDoc.kbIndexedFiles.length > 0) {
-        filesIndexed = userDoc.kbIndexedFiles.length;
-      } else if (userDoc.kbPendingFiles && Array.isArray(userDoc.kbPendingFiles) && userDoc.kbPendingFiles.length > 0) {
+      // Count files - prioritize kbPendingFiles (being indexed), then kbIndexedFiles, then derive from KB folder
+      if (userDoc.kbPendingFiles && Array.isArray(userDoc.kbPendingFiles) && userDoc.kbPendingFiles.length > 0) {
         filesIndexed = userDoc.kbPendingFiles.length;
+      } else if (userDoc.kbIndexedFiles && Array.isArray(userDoc.kbIndexedFiles) && userDoc.kbIndexedFiles.length > 0) {
+        filesIndexed = userDoc.kbIndexedFiles.length;
       } else if (userDoc.files) {
         const kbNameForCount = getKBNameFromUserDoc(userDoc, userId);
         filesIndexed = userDoc.files.filter(file => 
@@ -5176,83 +5216,7 @@ app.get('/api/kb-indexing-status/:jobId', async (req, res) => {
       });
     }
     
-    // If indexing completed successfully, update indexed files in user document
-    // Use retry logic for atomic state transition (pending -> indexed)
-    let finalIndexedFiles = null;
-    if (completed && status === 'INDEX_JOB_STATUS_COMPLETED' && userId) {
-      const maxRetries = 3;
-      let retryCount = 0;
-      let success = false;
-      
-      while (retryCount < maxRetries && !success) {
-        try {
-          const updatedUserDoc = await cloudant.getDocument('maia_users', userId);
-          if (updatedUserDoc) {
-            // Check if kbPendingFiles exists - this is our source of truth for what was indexed
-            if (updatedUserDoc.kbPendingFiles && Array.isArray(updatedUserDoc.kbPendingFiles) && updatedUserDoc.kbPendingFiles.length > 0) {
-              // Atomic update: set kbIndexedFiles from kbPendingFiles in one operation
-              // Get current files in KB folder (source of truth)
-              const kbNameForStatus = getKBNameFromUserDoc(updatedUserDoc, userId);
-              const currentFilesInKB = (updatedUserDoc.files || [])
-                .filter(file => file.bucketKey && file.bucketKey.startsWith(`${userId}/${kbNameForStatus}/`))
-                .map(file => file.bucketKey);
-              
-              // Use current files in KB folder as source of truth, fallback to kbPendingFiles
-              const filesToIndex = currentFilesInKB.length > 0 ? currentFilesInKB : [...updatedUserDoc.kbPendingFiles];
-              
-              const previousIndexedFiles = updatedUserDoc.kbIndexedFiles || [];
-              // Get previous tokens from KB details (if available)
-              let previousTokens = '0';
-              if (updatedUserDoc.kbLastIndexedAt && updatedUserDoc.kbId) {
-                try {
-                  const previousKbDetails = await getCachedKB(updatedUserDoc.kbId);
-                  previousTokens = String(previousKbDetails?.total_tokens || previousKbDetails?.token_count || previousKbDetails?.tokens || 0);
-                } catch (err) {
-                  // If we can't get previous tokens, default to 0
-                  previousTokens = '0';
-                }
-              }
-              
-              // Don't update user document here - let background polling handle it
-              // This endpoint should only return status, not update state
-              // The background polling will update the document with correct tokens and timing
-              finalIndexedFiles = filesToIndex;
-                filesIndexed = finalIndexedFiles.length;
-                success = true;
-            } else {
-              // No kbPendingFiles - check if kbIndexedFiles already exists (might have been set by another request)
-              if (updatedUserDoc.kbIndexedFiles && Array.isArray(updatedUserDoc.kbIndexedFiles) && updatedUserDoc.kbIndexedFiles.length > 0) {
-                finalIndexedFiles = updatedUserDoc.kbIndexedFiles;
-                filesIndexed = finalIndexedFiles.length;
-                // kbIndexedFiles already set
-                success = true;
-              } else {
-                // This is an error condition - indexing completed but we have no record of what was indexed
-                console.error(`[KB Indexing Status] ❌ ERROR: Indexing completed but kbPendingFiles is empty and kbIndexedFiles is not set for user ${userId}`);
-                console.error(`[KB Indexing Status] This indicates a state synchronization issue. User document:`, {
-                  kbId: updatedUserDoc.kbId,
-                  kbPendingFiles: updatedUserDoc.kbPendingFiles,
-                  kbIndexedFiles: updatedUserDoc.kbIndexedFiles,
-                  kbLastIndexingJobId: updatedUserDoc.kbLastIndexingJobId
-                });
-                success = true; // Don't retry - this is a data issue, not a race condition
-              }
-            }
-          }
-        } catch (err) {
-          if (retryCount < maxRetries - 1) {
-            retryCount++;
-            // Error updating indexed files - retry silently
-            await new Promise(resolve => setTimeout(resolve, 100 * retryCount));
-          } else {
-            console.error('[KB Indexing Status] ❌ Error updating indexed files after retries:', err);
-            throw err;
-          }
-        }
-      }
-    }
-    
-    // If indexing failed, return error info
+    // If indexing failed in DO API, return error
     if (status === 'INDEX_JOB_STATUS_FAILED') {
       return res.json({
         success: false,
@@ -5262,29 +5226,12 @@ app.get('/api/kb-indexing-status/:jobId', async (req, res) => {
         kb: kbName,
         tokens: tokens,
         filesIndexed: filesIndexed,
-        completed: true
+        completed: true,
+        backendCompleted: false
       });
     }
-
-    // Include kbIndexedFiles in response if available (from update or from userDoc)
-    // If completion was detected, refresh userDoc to get latest kbIndexedFiles from background polling
-    let responseIndexedFiles = finalIndexedFiles;
-    if (!responseIndexedFiles && completed) {
-      // Refresh user document to get latest kbIndexedFiles (might have been updated by background polling)
-      try {
-        const refreshedUserDoc = await cloudant.getDocument('maia_users', userId);
-        if (refreshedUserDoc && refreshedUserDoc.kbIndexedFiles && Array.isArray(refreshedUserDoc.kbIndexedFiles)) {
-          responseIndexedFiles = refreshedUserDoc.kbIndexedFiles;
-        }
-      } catch (refreshError) {
-        console.warn('[KB Indexing Status] Failed to refresh user doc for kbIndexedFiles:', refreshError);
-      }
-    }
-    // Fallback to original userDoc if still not set
-    if (!responseIndexedFiles) {
-      responseIndexedFiles = userDoc.kbIndexedFiles && Array.isArray(userDoc.kbIndexedFiles) ? userDoc.kbIndexedFiles : undefined;
-    }
     
+    // Return current status - backend is still processing
     res.json({
       success: true,
       phase: phase,
@@ -5293,9 +5240,9 @@ app.get('/api/kb-indexing-status/:jobId', async (req, res) => {
       tokens: tokens,
       filesIndexed: filesIndexed,
       completed: completed,
-      progress: jobStatus.progress || (completed ? 1.0 : 0.0),
-      // Include kbIndexedFiles in response so frontend can use it directly (single source of truth)
-      kbIndexedFiles: responseIndexedFiles
+      progress: jobStatus.progress || 0.0,
+      kbIndexedFiles: userDoc.kbIndexedFiles || userDoc.kbPendingFiles || undefined,
+      backendCompleted: false // Backend automation (attach KB, generate summary) not finished yet
     });
   } catch (error) {
     console.error('❌ Error getting indexing status:', error);
@@ -5331,13 +5278,36 @@ app.post('/api/cancel-kb-indexing', async (req, res) => {
       });
     }
 
+    // Check if indexing has already completed (backend has finished processing)
+    const hasBackendCompleted = 
+      (!userDoc.kbPendingFiles || (Array.isArray(userDoc.kbPendingFiles) && userDoc.kbPendingFiles.length === 0)) &&
+      userDoc.kbIndexedFiles && 
+      Array.isArray(userDoc.kbIndexedFiles) && 
+      userDoc.kbIndexedFiles.length > 0 &&
+      userDoc.kbLastIndexingJobId === jobId;
+    
+    if (hasBackendCompleted) {
+      // Indexing already completed - cannot cancel
+      return res.json({
+        success: false,
+        message: 'Indexing has already completed. Cannot cancel a completed job.',
+        error: 'ALREADY_COMPLETED',
+        alreadyCompleted: true
+      });
+    }
+
     // Cancel the indexing job via DO API
     try {
       await doClient.indexing.cancel(jobId);
       console.log(`[KB Cancel] ✅ Cancelled indexing job ${jobId} for user ${userId}`);
     } catch (cancelError) {
-      console.error(`[KB Cancel] Error cancelling job ${jobId}:`, cancelError);
-      // Continue with cleanup even if cancel fails (job might already be done)
+      // Check if error is because job is already completed or doesn't exist
+      if (cancelError.message && (cancelError.message.includes('completed') || cancelError.message.includes('not found') || cancelError.message.includes('404'))) {
+        console.log(`[KB Cancel] Job ${jobId} already completed or not found - continuing with cleanup`);
+      } else {
+        console.error(`[KB Cancel] Error cancelling job ${jobId}:`, cancelError);
+        // Continue with cleanup even if cancel fails
+      }
     }
 
     // Restore original file state from kbPendingFiles snapshot

@@ -1609,13 +1609,49 @@ const cancelIndexingAndRestore = async () => {
       })
     });
 
-    if (!response.ok) {
-      const errorData = await response.json().catch(() => ({}));
-      throw new Error(errorData.message || 'Failed to cancel indexing');
+    const result = await response.json();
+    console.log('[KB Cancel] Cancel result:', result);
+
+    // Check if indexing already completed
+    if (result.alreadyCompleted || result.error === 'ALREADY_COMPLETED') {
+      // Indexing already completed - just clear frontend state
+      console.log('[KB Cancel] Indexing already completed - clearing frontend state');
+      
+      // Reset indexing state
+      indexingKB.value = false;
+      currentIndexingJobId.value = null;
+      if (elapsedTimeInterval.value) {
+        clearInterval(elapsedTimeInterval.value);
+        elapsedTimeInterval.value = null;
+      }
+      indexingStartTime.value = null;
+      elapsedTimeUpdate.value = 0;
+      indexingStatus.value = {
+        phase: 'complete',
+        message: 'Indexing already completed',
+        kb: '',
+        tokens: '',
+        filesIndexed: 0,
+        progress: 1.0,
+        error: ''
+      };
+      
+      // Reload files to get current state
+      await loadFiles();
+      
+      if ($q && typeof $q.notify === 'function') {
+        $q.notify({
+          type: 'info',
+          message: 'Indexing has already completed',
+          timeout: 3000
+        });
+      }
+      return;
     }
 
-    const result = await response.json();
-    console.log('[KB Cancel] ✅ Cancel result:', result);
+    if (!response.ok) {
+      throw new Error(result.message || 'Failed to cancel indexing');
+    }
 
     // Reset indexing state
     indexingKB.value = false;
@@ -1744,15 +1780,17 @@ const pollIndexingProgress = async (jobId: string) => {
         progress: indexingStatus.value.progress
       });
 
-      // Handle completion - check both result.completed and result.phase
-      if (result.completed || result.phase === 'complete' || result.status === 'INDEX_JOB_STATUS_COMPLETED') {
+      // Handle completion - check result.backendCompleted (backend has finished all automation),
+      // result.completed, result.phase, or result.status
+      // backendCompleted is the most reliable indicator that everything is done
+      if (result.backendCompleted || result.completed || result.phase === 'complete' || result.status === 'INDEX_JOB_STATUS_COMPLETED') {
         if (pollingInterval.value !== null) {
           clearInterval(pollingInterval.value);
         }
         pollingInterval.value = null;
         // Note: Keep indexingStartTime and elapsedTimeUpdate for final display
         
-        if (result.phase === 'complete') {
+        if (result.phase === 'complete' || result.backendCompleted) {
           indexingStatus.value.phase = 'complete';
           indexingStatus.value.message = 'Knowledge base indexed successfully!';
           
