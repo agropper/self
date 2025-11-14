@@ -4985,8 +4985,17 @@ app.post('/api/update-knowledge-base', async (req, res) => {
       pollCount += 1;
 
       try {
+        // Always get fresh user document to ensure we have current state
+        const currentUserDoc = await cloudant.getDocument('maia_users', userId);
+        if (!currentUserDoc || currentUserDoc.kbLastIndexingJobId !== activeJobId) {
+          // Job ID changed or user doc not found - stop polling
+          console.log(`[KB AUTO] ⚠️ Job ID mismatch or user doc not found. Expected: ${activeJobId}, Found: ${currentUserDoc?.kbLastIndexingJobId || 'none'}. Stopping polling.`);
+          finished = true;
+          clearPollTimer();
+          return;
+        }
+
         const indexingJobs = await doClient.indexing.listForKB(kbId);
-         
          
          // listForKB already returns the jobs array, so indexingJobs should be an array
          // But handle case where it might still be wrapped
@@ -5003,53 +5012,86 @@ app.post('/api/update-knowledge-base', async (req, res) => {
            jobsArray = [];
          }
          
-         // Find active or completed job
-         const job = jobsArray.find(j => {
-           const jobStatus = j.status || j.job_status || j.state;
-           return jobStatus === 'INDEX_JOB_STATUS_PENDING' || 
-                  jobStatus === 'INDEX_JOB_STATUS_RUNNING' ||
-                  jobStatus === 'INDEX_JOB_STATUS_IN_PROGRESS' || // Actual status from API
-                  jobStatus === 'INDEX_JOB_STATUS_COMPLETED' ||
-                  jobStatus === 'pending' ||
-                  jobStatus === 'running' ||
-                  jobStatus === 'in_progress' ||
-                  jobStatus === 'completed';
+         // First, try to find the specific job we're tracking by ID
+         let job = jobsArray.find(j => {
+           const currentJobId = j.uuid || j.id || j.indexing_job_id;
+           return currentJobId === activeJobId;
          });
          
+         // If not found by ID, find any active or completed job (fallback)
+         if (!job) {
+           job = jobsArray.find(j => {
+             const jobStatus = j.status || j.job_status || j.state;
+             return jobStatus === 'INDEX_JOB_STATUS_PENDING' || 
+                    jobStatus === 'INDEX_JOB_STATUS_RUNNING' ||
+                    jobStatus === 'INDEX_JOB_STATUS_IN_PROGRESS' ||
+                    jobStatus === 'INDEX_JOB_STATUS_COMPLETED' ||
+                    jobStatus === 'pending' ||
+                    jobStatus === 'running' ||
+                    jobStatus === 'in_progress' ||
+                    jobStatus === 'completed';
+           });
+         }
+         
          if (job) {
-           activeJobId = job.uuid || job.id || job.indexing_job_id;
+           const currentJobId = job.uuid || job.id || job.indexing_job_id;
            const status = job.status || job.job_status || job.state;
+           
+           // Update activeJobId only if we found a different job (shouldn't happen, but handle it)
+           if (currentJobId && currentJobId !== activeJobId) {
+             console.log(`[KB AUTO] ⚠️ Found different job ID: ${currentJobId} (expected ${activeJobId}). Updating tracking.`);
+             activeJobId = currentJobId;
+           }
 
            const kbDetails = await getCachedKB(kbId);
            const tokens = String(kbDetails?.total_tokens || kbDetails?.token_count || kbDetails?.tokens || job.tokens || job.total_tokens || 0);
 
+           // Get fresh user document for files (don't use closure variable)
            const updatedUserDoc = await cloudant.getDocument('maia_users', userId);
-           const indexedFiles = updatedUserDoc?.kbPendingFiles || filesInKB;
+           const kbNameForFiles = getKBNameFromUserDoc(updatedUserDoc, userId);
+           // Get current files in KB folder from user document (source of truth)
+           const currentFilesInKB = (updatedUserDoc?.files || [])
+             .filter(file => file.bucketKey && file.bucketKey.startsWith(`${userId}/${kbNameForFiles}/`))
+             .map(file => file.bucketKey);
+           const indexedFiles = updatedUserDoc?.kbPendingFiles && updatedUserDoc.kbPendingFiles.length > 0 
+             ? updatedUserDoc.kbPendingFiles 
+             : currentFilesInKB;
            const fileCount = job.data_source_jobs?.[0]?.indexed_file_count || indexedFiles.length;
 
           // Only mark as complete if this is the job we're tracking AND it's actually completed
-          // Don't use hasIndexedData check - that will trigger on old completed jobs
-          const currentJobId = job.uuid || job.id || job.indexing_job_id;
           const isCompleted = (status === 'INDEX_JOB_STATUS_COMPLETED' || 
                              status === 'completed' ||
                              status === 'COMPLETED' ||
                              (job.completed === true) ||
                              (job.phase === 'BATCH_JOB_PHASE_COMPLETED') ||
                             (job.phase === 'BATCH_JOB_PHASE_SUCCEEDED')) &&
-                            // Only complete if this is EXACTLY the job we started (activeJobId must match)
-                            activeJobId === currentJobId;
+                            // Only complete if this is EXACTLY the job we started
+                            currentJobId === activeJobId;
 
           if (isCompleted) {
+             console.log(`[KB AUTO] ✅ Detected completion for job ${activeJobId} (poll ${pollCount})`);
              await completeIndexing(job, fileCount, tokens, indexedFiles);
              return;
+           } else if (pollCount % 6 === 0) {
+             // Log progress every 6 polls (3 minutes)
+             console.log(`[KB AUTO] 📊 Polling job ${activeJobId} (poll ${pollCount}/${maxPolls}): status=${status}, files=${fileCount}, tokens=${tokens}`);
            }
          } else {
+           // No job found - check if it failed or if we should continue
            const failedJob = jobsArray.find(j => {
-             const jobStatus = j.status || j.job_status || j.state;
-             return jobStatus === 'INDEX_JOB_STATUS_FAILED' || 
-                    jobStatus === 'failed' || 
-                    jobStatus === 'FAILED' ||
-                    (j.failed === true);
+             const currentJobId = j.uuid || j.id || j.indexing_job_id;
+             return currentJobId === activeJobId && (
+               j.status === 'INDEX_JOB_STATUS_FAILED' || 
+               j.job_status === 'INDEX_JOB_STATUS_FAILED' ||
+               j.state === 'INDEX_JOB_STATUS_FAILED' ||
+               j.status === 'failed' || 
+               j.job_status === 'failed' ||
+               j.state === 'failed' ||
+               j.status === 'FAILED' ||
+               j.job_status === 'FAILED' ||
+               j.state === 'FAILED' ||
+               (j.failed === true)
+             );
            });
 
            if (failedJob) {
@@ -5058,6 +5100,9 @@ app.post('/api/update-knowledge-base', async (req, res) => {
              const failedJobId = failedJob.uuid || failedJob.id || failedJob.indexing_job_id;
              console.error(`[KB AUTO] ❌ Indexing job ${failedJobId} failed:`, failedJob.error || failedJob.message || 'Unknown error');
              return;
+           } else if (pollCount % 6 === 0) {
+             // Log when job not found (might have completed and been removed from list)
+             console.log(`[KB AUTO] ⚠️ Job ${activeJobId} not found in jobs list (poll ${pollCount}). Jobs found: ${jobsArray.length}`);
            }
          }
        } catch (error) {
@@ -5301,9 +5346,16 @@ app.post('/api/cancel-kb-indexing', async (req, res) => {
       await doClient.indexing.cancel(jobId);
       console.log(`[KB Cancel] ✅ Cancelled indexing job ${jobId} for user ${userId}`);
     } catch (cancelError) {
-      // Check if error is because job is already completed or doesn't exist
-      if (cancelError.message && (cancelError.message.includes('completed') || cancelError.message.includes('not found') || cancelError.message.includes('404'))) {
-        console.log(`[KB Cancel] Job ${jobId} already completed or not found - continuing with cleanup`);
+      // Check if error is because job is already completed, doesn't exist, or can't be cancelled (405)
+      const errorMsg = cancelError.message || '';
+      const statusCode = cancelError.statusCode || cancelError.$metadata?.httpStatusCode;
+      if (statusCode === 405 || statusCode === 404 || 
+          errorMsg.includes('completed') || 
+          errorMsg.includes('not found') || 
+          errorMsg.includes('404') ||
+          errorMsg.includes('405') ||
+          errorMsg.includes('Method Not Allowed')) {
+        console.log(`[KB Cancel] Job ${jobId} cannot be cancelled (status: ${statusCode || 'N/A'}) - likely already completed or in terminal state. Continuing with cleanup.`);
       } else {
         console.error(`[KB Cancel] Error cancelling job ${jobId}:`, cancelError);
         // Continue with cleanup even if cancel fails

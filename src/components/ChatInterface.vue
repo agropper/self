@@ -2765,6 +2765,16 @@ const handleFilesArchived = (archivedBucketKeys: string[]) => {
     // Remove files whose bucketKey matches any archived key
     return !archivedBucketKeys.includes(file.bucketKey);
   });
+  
+  // If PDF viewer is open and showing a file that was archived/moved, close it
+  // Empty array means files were moved (from cancel operation) - close viewer to force refresh
+  if (showPdfViewer.value && (archivedBucketKeys.length === 0 || 
+      (viewingFile.value && viewingFile.value.bucketKey && 
+       archivedBucketKeys.includes(viewingFile.value.bucketKey)))) {
+    showPdfViewer.value = false;
+    viewingFile.value = null;
+  }
+  
   console.log(`[Files] Cleared ${archivedBucketKeys.length} archived file badge(s) from chat`);
 };
 

@@ -1672,8 +1672,14 @@ const cancelIndexingAndRestore = async () => {
       error: ''
     };
 
-    // Reload files to get restored state
+    // Reload files to get restored state (this updates bucketKeys)
     await loadFiles();
+    
+    // Force a small delay to ensure file list is fully updated before any PDF access
+    await new Promise(resolve => setTimeout(resolve, 100));
+    
+    // Emit event to refresh any open PDF viewers with updated bucketKeys
+    emit('files-archived', []); // Empty array signals a refresh without specific files
 
     // Show notification
     if ($q && typeof $q.notify === 'function') {
