@@ -82,6 +82,19 @@
                       </div>
                     </div>
                   </div>
+
+                  <!-- Privacy link at bottom -->
+                  <div class="text-center q-mt-lg q-mb-md">
+                    <a 
+                      href="/Privacy.md" 
+                      target="_blank" 
+                      rel="noopener noreferrer"
+                      style="color: #1976d2; text-decoration: none; font-size: 0.9rem;"
+                      class="text-primary"
+                    >
+                      Privacy, Security, Communities, and Risk
+                    </a>
+                  </div>
                 </div>
 
                 <PasskeyAuth
