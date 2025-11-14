@@ -6223,6 +6223,25 @@ if (isProduction) {
     }
   }
   
+  // Serve Privacy.md specifically (before static middleware and catch-all)
+  app.get('/Privacy.md', (req, res) => {
+    const privacyPath = path.join(distPath, 'Privacy.md');
+    if (existsSync(privacyPath)) {
+      res.setHeader('Content-Type', 'text/markdown; charset=utf-8');
+      res.sendFile(privacyPath, (err) => {
+        if (err) {
+          console.error(`❌ [PRIVACY] Error serving Privacy.md:`, err);
+          res.status(500).send('Error loading privacy policy');
+        } else {
+          console.log(`✅ [PRIVACY] Served Privacy.md from ${privacyPath}`);
+        }
+      });
+    } else {
+      console.log(`⚠️ [PRIVACY] Privacy.md not found at ${privacyPath}`);
+      res.status(404).send('Privacy policy not found');
+    }
+  });
+  
   // Serve static assets (JS, CSS, images, etc.)
   // fallthrough: true allows requests to continue to the catch-all if file not found
   app.use(express.static(distPath, {
@@ -6265,6 +6284,26 @@ if (isProduction) {
   });
 } else {
   console.log(`⚠️ [STATIC] Not in production mode, skipping static file serving`);
+  
+  // In dev mode, serve Privacy.md from public folder
+  const publicPath = path.join(__dirname, '../public');
+  app.get('/Privacy.md', (req, res) => {
+    const privacyPath = path.join(publicPath, 'Privacy.md');
+    if (existsSync(privacyPath)) {
+      res.setHeader('Content-Type', 'text/markdown; charset=utf-8');
+      res.sendFile(privacyPath, (err) => {
+        if (err) {
+          console.error(`❌ [PRIVACY] Error serving Privacy.md:`, err);
+          res.status(500).send('Error loading privacy policy');
+        } else {
+          console.log(`✅ [PRIVACY] Served Privacy.md from ${privacyPath}`);
+        }
+      });
+    } else {
+      console.log(`⚠️ [PRIVACY] Privacy.md not found at ${privacyPath}`);
+      res.status(404).send('Privacy policy not found');
+    }
+  });
 }
 
 // Start server

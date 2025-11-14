@@ -2,12 +2,11 @@
   <q-dialog v-model="isOpen" maximized>
     <q-card>
       <q-card-section class="row items-center q-pb-none">
-        <div class="text-h6">Privacy, Security, Communities, and Risk</div>
         <q-space />
         <q-btn icon="close" flat round dense v-close-popup />
       </q-card-section>
 
-      <q-card-section style="max-height: calc(100vh - 100px); overflow-y: auto;">
+      <q-card-section style="max-height: calc(100vh - 50px); overflow-y: auto;">
         <div v-if="loading" class="text-center q-pa-lg">
           <q-spinner size="2em" />
           <div class="q-mt-sm">Loading privacy policy...</div>
@@ -19,16 +18,12 @@
           <vue-markdown :source="privacyContent" />
         </div>
       </q-card-section>
-
-      <q-card-actions align="right">
-        <q-btn flat label="Close" color="primary" v-close-popup />
-      </q-card-actions>
     </q-card>
   </q-dialog>
 </template>
 
 <script setup lang="ts">
-import { ref, watch, computed } from 'vue';
+import { ref, watch, computed, onMounted } from 'vue';
 import VueMarkdown from 'vue-markdown-render';
 
 interface Props {
@@ -60,7 +55,11 @@ const loadPrivacyContent = async () => {
     if (!response.ok) {
       throw new Error(`Failed to load: ${response.statusText}`);
     }
-    privacyContent.value = await response.text();
+    let text = await response.text();
+    // Remove the first H1 line (redundant with dialog title)
+    // Match "# Title" at the start of the file
+    text = text.replace(/^#\s+[^\n]+\n\n?/, '');
+    privacyContent.value = text;
   } catch (err) {
     error.value = err instanceof Error ? err.message : 'Unknown error';
     console.error('Error loading privacy policy:', err);
@@ -70,7 +69,14 @@ const loadPrivacyContent = async () => {
 };
 
 watch(() => props.modelValue, (newVal) => {
-  if (newVal && !privacyContent.value) {
+  if (newVal) {
+    loadPrivacyContent();
+  }
+});
+
+// Also load on mount if dialog is already open
+onMounted(() => {
+  if (props.modelValue) {
     loadPrivacyContent();
   }
 });
