@@ -6224,10 +6224,14 @@ if (isProduction) {
   }
   
   // Serve Privacy.md specifically (before static middleware and catch-all)
-  app.get('/Privacy.md', (req, res) => {
+  // This route must come BEFORE express.static to ensure it's handled correctly
+  app.get('/Privacy.md', (req, res, next) => {
     const privacyPath = path.join(distPath, 'Privacy.md');
+    console.log(`📄 [PRIVACY] Request for Privacy.md, checking: ${privacyPath}`);
+    
     if (existsSync(privacyPath)) {
       res.setHeader('Content-Type', 'text/markdown; charset=utf-8');
+      res.setHeader('Cache-Control', 'public, max-age=3600'); // Cache for 1 hour
       res.sendFile(privacyPath, (err) => {
         if (err) {
           console.error(`❌ [PRIVACY] Error serving Privacy.md:`, err);
@@ -6238,12 +6242,13 @@ if (isProduction) {
       });
     } else {
       console.log(`⚠️ [PRIVACY] Privacy.md not found at ${privacyPath}`);
-      res.status(404).send('Privacy policy not found');
+      res.status(404).json({ error: 'Privacy policy not found' });
     }
   });
   
   // Serve static assets (JS, CSS, images, etc.)
   // fallthrough: true allows requests to continue to the catch-all if file not found
+  // Note: Privacy.md is handled above, so it won't be served by static middleware
   app.use(express.static(distPath, {
     maxAge: '1y', // Cache static assets for 1 year
     etag: true,

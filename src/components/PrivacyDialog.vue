@@ -51,11 +51,28 @@ const loadPrivacyContent = async () => {
   error.value = null;
   
   try {
-    const response = await fetch('/Privacy.md');
+    const response = await fetch('/Privacy.md', {
+      cache: 'no-cache',
+      headers: {
+        'Accept': 'text/markdown, text/plain, */*'
+      }
+    });
+    
     if (!response.ok) {
-      throw new Error(`Failed to load: ${response.statusText}`);
+      throw new Error(`Failed to load: ${response.status} ${response.statusText}`);
     }
+    
+    const contentType = response.headers.get('content-type') || '';
+    if (!contentType.includes('text') && !contentType.includes('markdown')) {
+      console.warn('Unexpected content type for Privacy.md:', contentType);
+    }
+    
     let text = await response.text();
+    
+    if (!text || text.length === 0) {
+      throw new Error('Privacy policy file is empty');
+    }
+    
     // Remove the first H1 line (redundant with dialog title)
     // Match "# Title" at the start of the file
     text = text.replace(/^#\s+[^\n]+\n\n?/, '');
@@ -63,6 +80,7 @@ const loadPrivacyContent = async () => {
   } catch (err) {
     error.value = err instanceof Error ? err.message : 'Unknown error';
     console.error('Error loading privacy policy:', err);
+    console.error('Response details:', err);
   } finally {
     loading.value = false;
   }
