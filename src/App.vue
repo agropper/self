@@ -61,15 +61,15 @@
                     <!-- Smaller Video -->
                     <div class="col-12 col-md-5">
                       <div class="video-container" style="position: relative; padding-bottom: 56.25%; height: 0; overflow: hidden; max-width: 100%; background: #000; border-radius: 4px;">
-                        <iframe
-                          style="position: absolute; top: 0; left: 0; width: 100%; height: 100%;"
-                          src="https://www.youtube-nocookie.com/embed/oSwgTSbIhAw?si=OYtrGu7YgRd0XmsV&cc_load_policy=1"
-                          title="YouTube video player"
-                          frameborder="0"
-                          allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
-                          referrerpolicy="strict-origin-when-cross-origin"
-                          allowfullscreen
-                        ></iframe>
+                        <video
+                          style="position: absolute; top: 0; left: 0; width: 100%; height: 100%; object-fit: contain;"
+                          controls
+                          preload="metadata"
+                          poster=""
+                        >
+                          <source src="/MAIA.mp4" type="video/mp4">
+                          Your browser does not support the video tag.
+                        </video>
                       </div>
                     </div>
 
