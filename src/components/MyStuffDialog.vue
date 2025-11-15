@@ -1308,17 +1308,24 @@ const viewFileInPdfViewer = (file: UserFile) => {
 };
 
 const confirmDeleteFile = (file: UserFile) => {
-  $q.dialog({
-    title: 'Delete File',
-    message: 'This will delete the file from MAIA, remove it from the knowledge base, and re-index. Make sure you have copies of your valuable files on your computer.',
-    cancel: true,
-    persistent: true
-  }).onOk(() => {
+  if ($q && typeof $q.dialog === 'function') {
+    $q.dialog({
+      title: 'Delete File',
+      message: 'This will delete the file from MAIA, remove it from the knowledge base, and re-index. Make sure you have copies of your valuable files on your computer.',
+      cancel: true,
+      persistent: true
+    }).onOk(() => {
+      deleteFile(file);
+    });
+  } else if (window.confirm('This will delete the file from MAIA, remove it from the knowledge base, and re-index. Make sure you have copies of your valuable files on your computer. Are you sure you want to delete this file?')) {
     deleteFile(file);
-  });
+  }
 };
 
 const deleteFile = async (file: UserFile) => {
+  // Add file to updating set to show loading state
+  updatingFiles.value.add(file.bucketKey);
+  
   try {
     const response = await fetch(`/api/delete-file`, {
       method: 'DELETE',
@@ -1333,24 +1340,36 @@ const deleteFile = async (file: UserFile) => {
     });
 
     if (!response.ok) {
-      throw new Error('Failed to delete file');
+      const errorData = await response.json().catch(() => ({}));
+      throw new Error(errorData.message || 'Failed to delete file');
     }
 
-    // Reload files
+    // Reload files to refresh the list
     await loadFiles();
+    
+    // If file was in KB, mark KB as needing update
+    if (file.inKnowledgeBase) {
+      kbNeedsUpdate.value = true;
+    }
+    
     if ($q && typeof $q.notify === 'function') {
-    $q.notify({
-      type: 'positive',
-      message: 'File deleted successfully'
-    });
+      $q.notify({
+        type: 'positive',
+        message: 'File deleted successfully',
+        timeout: 3000
+      });
     }
   } catch (err) {
+    console.error('Error deleting file:', err);
     if ($q && typeof $q.notify === 'function') {
-    $q.notify({
-      type: 'negative',
-      message: err instanceof Error ? err.message : 'Failed to delete file'
-    });
+      $q.notify({
+        type: 'negative',
+        message: err instanceof Error ? err.message : 'Failed to delete file',
+        timeout: 5000
+      });
     }
+  } finally {
+    updatingFiles.value.delete(file.bucketKey);
   }
 };
 

@@ -81,6 +81,65 @@ export class EmailService {
   }
 
   /**
+   * Send provisioning completion email to user
+   * @param {Object} options
+   * @param {string} options.userId - User ID
+   * @param {string} options.userEmail - User email address
+   * @param {boolean} options.success - Whether provisioning succeeded
+   * @param {string} options.errorDetails - Error details if provisioning failed
+   */
+  async sendProvisioningCompletionEmail({ userId, userEmail, success, errorDetails = null }) {
+    if (!this.apiKey || !this.fromEmail) {
+      console.warn('⚠️  Email service not configured (RESEND_API_KEY, RESEND_FROM_EMAIL)');
+      return { success: false, error: 'Email service not configured' };
+    }
+
+    if (!userEmail) {
+      console.warn('⚠️  No user email provided, skipping provisioning completion email');
+      return { success: false, error: 'No user email provided' };
+    }
+
+    const subject = success 
+      ? `Private MAIA provisioned for ${userId}`
+      : `Private MAIA provisioning failed for ${userId}`;
+
+    const body = success
+      ? `Hi ${userId},\n${userEmail}\n\nYour Private AI agent has been provisioned and is ready to receive your health records.\n\nMAIA, including your Private AI agent, can work with imported files directly but large documents may fail and many privacy features will be unavailable. For large files and best results, use the SAVED FILES tab in My Stuff to choose files for indexing into your knowledge base.\n\nIBM look forward to hearing from you with comments, suggestions and, of course, bugs.\n\n-Adrian`
+      : `Hi ${userId},\n${userEmail}\n\nUnfortunately, provisioning of your Private AI agent failed.\n\nError Details:\n${errorDetails || 'Unknown error occurred during provisioning.'}\n\nPlease contact support for assistance.\n\n-Adrian`;
+
+    const emailData = {
+      from: this.fromEmail,
+      to: userEmail,
+      subject: subject,
+      text: body
+    };
+
+    try {
+      const response = await fetch('https://api.resend.com/emails', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${this.apiKey}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(emailData)
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        console.error('❌ Resend API error:', response.status, errorText);
+        return { success: false, error: `Resend API error: ${response.status}` };
+      }
+
+      const result = await response.json();
+      console.log(`✅ Provisioning ${success ? 'success' : 'failure'} email sent to ${userEmail}`);
+      return { success: true, messageId: result.id };
+    } catch (error) {
+      console.error('❌ Error sending provisioning completion email:', error);
+      return { success: false, error: error.message };
+    }
+  }
+
+  /**
    * Generate a secure provisioning token
    * In production, this should use a proper token generation method
    */

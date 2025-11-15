@@ -192,8 +192,8 @@ const logProvisioning = (userId, message, level = 'info') => {
   if (logs.length > 500) {
     logs.shift();
   }
-  // Also log to console with [NEW USER] prefix
-  console.log(`[NEW USER] ${message}`);
+  // Also log to console
+  console.log(message);
 };
 
 const emailService = new EmailService({
@@ -1704,17 +1704,15 @@ app.get('/api/admin/agent-diagnostic', async (req, res) => {
         matchingAgents.map(async (agent) => {
           try {
             const details = await doClient.agent.get(agent.uuid || agent.id);
-            // Extract temperature - DigitalOcean API omits temperature field when it's 0
+            // Extract temperature - DigitalOcean API may omit temperature field in some cases
             // According to DO API docs, temperature is a top-level field
-            // If missing, it's likely 0 (the value we set), but we should check if it exists with a different value
+            // We set temperature to 0.1, so it should be present in the response
             let extractedTemperature;
             if (details.temperature !== undefined) {
               extractedTemperature = details.temperature;
             } else {
-              // Temperature field is missing - DO API omits it when value is 0
-              // Since we set temperature: 0, missing field likely means 0
-              // But we'll show it as "0 (omitted)" to indicate it's inferred
-              extractedTemperature = '0 (omitted by API)';
+              // Temperature field is missing - show as unknown
+              extractedTemperature = 'unknown (not returned by API)';
             }
             
             return {
@@ -2292,9 +2290,9 @@ async function verifyProvisioningComplete(userId, agentId, agentName, kbName, ex
         
         // Verify agent config matches expected
         // Note: API might return different field names or types, so we need to handle both
-        // Also handle undefined/null values (treat undefined/null as 0 for temperature)
+        // Also handle undefined/null values
         const actualMaxTokens = agentDetails.max_tokens || agentDetails.maxTokens;
-        const actualTemperature = agentDetails.temperature ?? 0; // Treat undefined/null as 0
+        const actualTemperature = agentDetails.temperature ?? null; // Will fail comparison if undefined/null
         const actualTopP = agentDetails.top_p || agentDetails.topP;
         
         // Normalize values for comparison (convert to numbers if needed)
@@ -2585,7 +2583,168 @@ async function provisionUserAsync(userId, token) {
       throw new Error(`Cannot create agent: Invalid modelId or projectId`);
     }
 
-    // Step 1: Create Agent
+    // Step 1: Create bucket folder (KB folder)
+    updateStatus('Creating bucket folders...');
+    logProvisioning(userId, `📁 Creating bucket folders for user: ${userId}`, 'info');
+    
+    const bucketUrl = process.env.DIGITALOCEAN_BUCKET;
+    if (!bucketUrl) {
+      throw new Error('DigitalOcean bucket not configured');
+    }
+    
+    const bucketName = bucketUrl.split('//')[1]?.split('.')[0] || 'maia';
+    const kbName = getKBNameFromUserDoc(userDoc, userId);
+    
+    try {
+      const { S3Client, PutObjectCommand } = await import('@aws-sdk/client-s3');
+      const s3Client = new S3Client({
+        endpoint: process.env.DIGITALOCEAN_ENDPOINT_URL || 'https://tor1.digitaloceanspaces.com',
+        region: 'us-east-1',
+        forcePathStyle: false,
+        credentials: {
+          accessKeyId: process.env.DIGITALOCEAN_AWS_ACCESS_KEY_ID || '',
+          secretAccessKey: process.env.DIGITALOCEAN_AWS_SECRET_ACCESS_KEY || ''
+        }
+      });
+      
+      // Create placeholder files to make folders visible in dashboard
+      const rootPlaceholder = `${userId}/.keep`;
+      const archivedPlaceholder = `${userId}/archived/.keep`;
+      const kbPlaceholder = `${userId}/${kbName}/.keep`;
+      
+      // Create root userId folder placeholder (for new imports)
+      await s3Client.send(new PutObjectCommand({
+        Bucket: bucketName,
+        Key: rootPlaceholder,
+        Body: '',
+        ContentType: 'text/plain',
+        Metadata: {
+          createdBy: 'provisioning',
+          createdAt: new Date().toISOString()
+        }
+      }));
+      
+      // Create archived folder placeholder (for files moved from root)
+      await s3Client.send(new PutObjectCommand({
+        Bucket: bucketName,
+        Key: archivedPlaceholder,
+        Body: '',
+        ContentType: 'text/plain',
+        Metadata: {
+          createdBy: 'provisioning',
+          createdAt: new Date().toISOString()
+        }
+      }));
+      
+      // Create KB folder placeholder
+      await s3Client.send(new PutObjectCommand({
+        Bucket: bucketName,
+        Key: kbPlaceholder,
+        Body: '',
+        ContentType: 'text/plain',
+        Metadata: {
+          createdBy: 'provisioning',
+          createdAt: new Date().toISOString()
+        }
+      }));
+      
+      logProvisioning(userId, `✅ Bucket folders created: ${userId}/ (root), ${userId}/archived/ (archived), and ${userId}/${kbName}/ (KB)`, 'success');
+      
+      // Store the KB name in user document
+      await updateUserDoc({
+        kbName: kbName
+      });
+      
+      updateStatus('Bucket folders created', { 
+        root: `${userId}/`,
+        kb: `${userId}/${kbName}/`
+      });
+    } catch (err) {
+      logProvisioning(userId, `❌ Failed to create bucket folders: ${err.message}`, 'error');
+      throw new Error(`Failed to create bucket folders: ${err.message}`);
+    }
+
+    // Step 2: Create KB with empty datasource
+    updateStatus('Creating knowledge base...');
+    logProvisioning(userId, `📚 Creating knowledge base: ${kbName}`, 'info');
+    
+    const databaseId = process.env.DO_DATABASE_ID;
+    const embeddingModelId = process.env.DO_EMBEDDING_MODEL_ID || null;
+    
+    if (!isValidUUID(databaseId)) {
+      throw new Error('DO_DATABASE_ID environment variable is required and must be a valid UUID');
+    }
+    
+    let kbId = null;
+    let kbDetails = null;
+    
+    try {
+      // Check if KB already exists
+      const allKBs = await doClient.kb.list();
+      const foundKB = allKBs.find(kb => kb.name === kbName);
+      
+      if (foundKB) {
+        kbId = foundKB.uuid || foundKB.id;
+        kbDetails = await doClient.kb.get(kbId);
+        logProvisioning(userId, `✅ Found existing KB: ${kbName} (${kbId})`, 'success');
+        
+        // Check if KB has datasources, add one if missing
+        const datasources = kbDetails?.datasources || kbDetails?.data_sources || kbDetails?.knowledge_base_data_sources || [];
+        if (datasources.length === 0) {
+          logProvisioning(userId, `⚠️  Existing KB has no datasources - adding datasource`, 'warning');
+          try {
+            const newDataSource = await doClient.kb.addDataSource(kbId, {
+              bucketName: bucketName,
+              itemPath: `${userId}/${kbName}/`,
+              region: process.env.DO_REGION || 'tor1'
+            });
+            logProvisioning(userId, `✅ Added datasource to existing KB: ${newDataSource.uuid || newDataSource.id || 'created'}`, 'success');
+            // Refresh KB details
+            kbDetails = await doClient.kb.get(kbId);
+          } catch (dsError) {
+            logProvisioning(userId, `⚠️  Failed to add datasource to existing KB: ${dsError.message}`, 'warning');
+            // Continue - datasource can be added later
+          }
+        }
+      } else {
+        // Create new KB with datasource (KB create automatically includes datasource if itemPath is provided)
+        const kbCreateOptions = {
+          name: kbName,
+          description: `Knowledge base for ${userId}`,
+          projectId: projectId.trim(),
+          databaseId: databaseId.trim(),
+          bucketName: bucketName,
+          itemPath: `${userId}/${kbName}/`,
+          region: process.env.DO_REGION || 'tor1'
+        };
+        
+        if (embeddingModelId && isValidUUID(embeddingModelId)) {
+          kbCreateOptions.embeddingModelId = embeddingModelId;
+        }
+        
+        const kbResult = await doClient.kb.create(kbCreateOptions);
+        kbId = kbResult.uuid || kbResult.id;
+        kbDetails = await doClient.kb.get(kbId);
+        
+        logProvisioning(userId, `✅ Created new KB with datasource: ${kbName} (${kbId})`, 'success');
+      }
+      
+      // Update user document with KB info
+      userDoc = await updateUserDoc({
+        kbId: kbId,
+        kbName: kbName,
+        kbCreatedAt: new Date().toISOString(),
+        connectedKBs: [kbName],
+        connectedKB: kbName
+      });
+      
+      updateStatus('Knowledge base created', { kbId, kbName });
+    } catch (err) {
+      logProvisioning(userId, `❌ Failed to create knowledge base: ${err.message}`, 'error');
+      throw new Error(`Failed to create knowledge base: ${err.message}`);
+    }
+
+    // Step 3: Create Agent
     updateStatus('Creating agent...');
     logProvisioning(userId, `🤖 Creating agent with name: ${agentName}`, 'info');
     
@@ -2597,7 +2756,7 @@ async function provisionUserAsync(userId, token) {
       region: process.env.DO_REGION || 'tor1',
       maxTokens: 16384,
       topP: 1,
-      temperature: 0,
+      temperature: 0.1,
       k: 10,
       retrievalMethod: 'RETRIEVAL_METHOD_NONE'
     });
@@ -2611,7 +2770,26 @@ async function provisionUserAsync(userId, token) {
     // Set workflowStage to agent_named after agent is successfully created
     userDoc = await updateUserDoc({ workflowStage: 'agent_named' });
 
-    // Step 2: Wait for Deployment
+    // Step 4: Attach KB to Agent
+    updateStatus('Attaching knowledge base to agent...');
+    logProvisioning(userId, `🔗 Attaching KB ${kbId} to agent ${newAgent.uuid}`, 'info');
+    
+    try {
+      await doClient.agent.attachKB(newAgent.uuid, kbId);
+      logProvisioning(userId, `✅ Attached KB to agent`, 'success');
+      updateStatus('Knowledge base attached to agent', { kbId });
+    } catch (attachError) {
+      // If already attached, that's fine
+      if (attachError.message && attachError.message.includes('already')) {
+        logProvisioning(userId, `ℹ️  KB already attached to agent`, 'info');
+        updateStatus('Knowledge base already attached', { kbId });
+      } else {
+        logProvisioning(userId, `⚠️  Failed to attach KB to agent: ${attachError.message}`, 'warning');
+        // Continue - attachment can be done later
+      }
+    }
+
+    // Step 5: Wait for Deployment (monitor every 30 seconds for up to 10 minutes)
     updateStatus('Waiting for agent deployment...');
     logProvisioning(userId, `⏳ Waiting for agent deployment (agentId: ${newAgent.uuid})...`, 'info');
     
@@ -2622,7 +2800,8 @@ async function provisionUserAsync(userId, token) {
     const successStatuses = ['STATUS_RUNNING', 'RUNNING', 'STATUS_SUCCEEDED', 'SUCCEEDED', 'STATUS_READY', 'READY'];
     let agentDetails = null;
     let deploymentStatus = 'STATUS_PENDING';
-    const maxAttempts = 60; // 5 minutes max (60 attempts @ 5s interval)
+    const pollIntervalMs = 30000; // 30 seconds
+    const maxAttempts = 20; // 10 minutes max (20 attempts @ 30s interval)
     let attempts = 0;
 
     while (attempts < maxAttempts && !successStatuses.includes(deploymentStatus)) {
@@ -2632,17 +2811,16 @@ async function provisionUserAsync(userId, token) {
         const agentStatus = agentDetails?.status || agentDetails?.state || null;
         deploymentStatus = rawDeploymentStatus || agentStatus || 'STATUS_PENDING';
         
-        if (attempts === 0 || attempts % 6 === 0 || successStatuses.includes(deploymentStatus)) {
+        // Log every attempt (since we're only polling every 30 seconds)
           logProvisioning(userId, `📊 Deployment status check (${attempts}/${maxAttempts}): ${deploymentStatus}`, 'info');
-        }
         
         if (successStatuses.includes(deploymentStatus)) {
           logProvisioning(userId, `✅ Agent deployment reached ${deploymentStatus} after ${attempts} attempts`, 'success');
           break;
         } else if (['STATUS_FAILED', 'FAILED', 'STATUS_ERROR'].includes(deploymentStatus)) {
-          // If STATUS_FAILED occurs within first 2 minutes (first 24 attempts), wait 2 minutes and recheck
+          // If STATUS_FAILED occurs within first 2 minutes (first 4 attempts), wait 2 minutes and recheck
           // DO sometimes reports STATUS_FAILED early but then succeeds
-          const isEarlyFailure = attempts < 24; // First 2 minutes (24 attempts * 5s = 120s)
+          const isEarlyFailure = attempts < 4; // First 2 minutes (4 attempts * 30s = 120s)
           if (isEarlyFailure) {
             logProvisioning(userId, `⚠️ Early STATUS_FAILED detected on attempt ${attempts} (within first 2 minutes). Waiting 2 minutes before rechecking...`, 'warning');
             await new Promise(resolve => setTimeout(resolve, 120000)); // Wait 2 minutes
@@ -2678,7 +2856,7 @@ async function provisionUserAsync(userId, token) {
         
         attempts++;
         if (attempts < maxAttempts) {
-          await new Promise(resolve => setTimeout(resolve, 5000)); // Wait 5 seconds
+          await new Promise(resolve => setTimeout(resolve, pollIntervalMs)); // Wait 30 seconds
         }
       } catch (error) {
         if (attempts === 0) {
@@ -2726,7 +2904,7 @@ async function provisionUserAsync(userId, token) {
       updateStatus('Waiting for deployment endpoint...');
       logProvisioning(userId, '📡 Deployment running but endpoint not yet available. Polling for endpoint...', 'info');
 
-      const endpointAttempts = 10; // 5 minutes max (10 attempts @ 30s interval)
+      const endpointAttempts = 20; // 10 minutes max (20 attempts @ 30s interval)
       const endpointIntervalMs = 30000;
       let endpointReady = false;
 
@@ -2772,41 +2950,38 @@ async function provisionUserAsync(userId, token) {
 
     // Step 3: Update Agent (to ensure all config is set)
     updateStatus('Updating agent configuration...');
-    logProvisioning(userId, `📝 Updating agent config: temperature=0, max_tokens=16384, top_p=1`, 'info');
+    logProvisioning(userId, `📝 Updating agent config: temperature=0.1, max_tokens=16384, top_p=1`, 'info');
     
     await agentClient.update(newAgent.uuid, {
       instruction: maiaInstruction,
       max_tokens: 16384,
       top_p: 1,
-      temperature: 0,
+      temperature: 0.1,
       k: 10,
       retrieval_method: 'RETRIEVAL_METHOD_NONE'
     });
 
-    // Verify temperature was actually set to 0
-    // Note: DigitalOcean API omits temperature field when it's 0, so missing = 0 is correct
+    // Verify temperature was actually set to 0.1
     try {
       const verifyDetails = await agentClient.get(newAgent.uuid);
       const actualTemp = verifyDetails.temperature;
       
-      // If temperature is missing (undefined), DO API omits it when value is 0 - this is correct
-      // If temperature exists and is 0, that's also correct
-      // If temperature exists and is NOT 0, that's a problem
-      if (actualTemp === undefined || actualTemp === 0 || actualTemp === null) {
-        logProvisioning(userId, `✅ Temperature verified as 0${actualTemp === undefined ? ' (omitted by API, which indicates 0)' : ''}`, 'success');
+      // Temperature should be 0.1 as specified in NEW-AGENT.txt
+      if (actualTemp === 0.1) {
+        logProvisioning(userId, `✅ Temperature verified as 0.1`, 'success');
       } else {
-        logProvisioning(userId, `⚠️  Temperature update may have failed - expected 0, got ${actualTemp}. Retrying update...`, 'warning');
-        // Retry the update with explicit 0
+        logProvisioning(userId, `⚠️  Temperature update may have failed - expected 0.1, got ${actualTemp}. Retrying update...`, 'warning');
+        // Retry the update with explicit 0.1
         await agentClient.update(newAgent.uuid, {
-          temperature: 0
+          temperature: 0.1
         });
         // Verify again
         const retryDetails = await agentClient.get(newAgent.uuid);
         const retryTemp = retryDetails.temperature;
-        if (retryTemp === undefined || retryTemp === 0 || retryTemp === null) {
-          logProvisioning(userId, `✅ Temperature corrected to 0 after retry${retryTemp === undefined ? ' (omitted by API)' : ''}`, 'success');
+        if (retryTemp === 0.1) {
+          logProvisioning(userId, `✅ Temperature corrected to 0.1 after retry`, 'success');
         } else {
-          logProvisioning(userId, `❌ Temperature still incorrect after retry - expected 0, got ${retryTemp}`, 'error');
+          logProvisioning(userId, `❌ Temperature still incorrect after retry - expected 0.1, got ${retryTemp}`, 'error');
         }
       }
     } catch (verifyError) {
@@ -2827,7 +3002,7 @@ async function provisionUserAsync(userId, token) {
         config: {
           maxTokens: 16384,
           topP: 1,
-          temperature: 0,
+          temperature: 0.1,
           k: 10,
           retrievalMethod: 'RETRIEVAL_METHOD_NONE'
         },
@@ -2852,92 +3027,7 @@ async function provisionUserAsync(userId, token) {
       // Non-critical, continue
     }
 
-    // Step 3.5: Create bucket folders
-    updateStatus('Creating bucket folders...');
-    logProvisioning(userId, `📁 Creating bucket folders for user: ${userId}`, 'info');
-    
-    try {
-      const { S3Client, PutObjectCommand } = await import('@aws-sdk/client-s3');
-      const bucketUrl = process.env.DIGITALOCEAN_BUCKET;
-      
-      if (bucketUrl) {
-        const bucketName = bucketUrl.split('//')[1]?.split('.')[0] || 'maia';
-        const s3Client = new S3Client({
-          endpoint: process.env.DIGITALOCEAN_ENDPOINT_URL || 'https://tor1.digitaloceanspaces.com',
-          region: 'us-east-1',
-          forcePathStyle: false,
-          credentials: {
-            accessKeyId: process.env.DIGITALOCEAN_AWS_ACCESS_KEY_ID || '',
-            secretAccessKey: process.env.DIGITALOCEAN_AWS_SECRET_ACCESS_KEY || ''
-          }
-        });
-        
-        // Get KB name from user document
-        const kbName = getKBNameFromUserDoc(userDoc, userId);
-        
-        // Create placeholder files to make folders visible in dashboard
-        // In S3/Spaces, folders are just prefixes, so we need at least one object
-        const rootPlaceholder = `${userId}/.keep`;
-        const archivedPlaceholder = `${userId}/archived/.keep`;
-        const kbPlaceholder = `${userId}/${kbName}/.keep`;
-        
-        // Create root userId folder placeholder (for new imports)
-        await s3Client.send(new PutObjectCommand({
-          Bucket: bucketName,
-          Key: rootPlaceholder,
-          Body: '',
-          ContentType: 'text/plain',
-          Metadata: {
-            createdBy: 'provisioning',
-            createdAt: new Date().toISOString()
-          }
-        }));
-        
-        // Create archived folder placeholder (for files moved from root)
-        await s3Client.send(new PutObjectCommand({
-          Bucket: bucketName,
-          Key: archivedPlaceholder,
-          Body: '',
-          ContentType: 'text/plain',
-          Metadata: {
-            createdBy: 'provisioning',
-            createdAt: new Date().toISOString()
-          }
-        }));
-        
-        // Create KB folder placeholder
-        await s3Client.send(new PutObjectCommand({
-          Bucket: bucketName,
-          Key: kbPlaceholder,
-          Body: '',
-          ContentType: 'text/plain',
-          Metadata: {
-            createdBy: 'provisioning',
-            createdAt: new Date().toISOString()
-          }
-        }));
-        
-        logProvisioning(userId, `✅ Bucket folders created: ${userId}/ (root), ${userId}/archived/ (archived), and ${userId}/${kbName}/ (KB)`, 'success');
-        
-        // Store the intended KB name for workflow/staging purposes (KB doesn't exist yet)
-        // This is different from connectedKB/connectedKBs which indicate an actual connected KB
-        await updateUserDoc({
-          kbName: kbName  // Intended KB name, not an actual connected KB
-        });
-        
-        updateStatus('Bucket folders created', { 
-          root: `${userId}/`,
-          kb: `${userId}/${kbName}/`
-        });
-      } else {
-        logProvisioning(userId, `⚠️  Bucket not configured, skipping folder creation`, 'warning');
-      }
-    } catch (err) {
-      logProvisioning(userId, `⚠️  Failed to create bucket folders: ${err.message}`, 'warning');
-      // Non-critical, continue
-    }
-
-    // Step 4: Create API Key
+    // Step 6: Create API Key
     updateStatus('Creating API key...');
     logProvisioning(userId, `🔑 Creating API key for agent: ${newAgent.uuid}`, 'info');
     
@@ -2951,35 +3041,7 @@ async function provisionUserAsync(userId, token) {
     logProvisioning(userId, `✅ API key created successfully (length: ${apiKey.length} chars)`, 'success');
     updateStatus('API key created', { keyCreated: true });
 
-    // Step 5: Test Agent
-    updateStatus('Testing agent...');
-    
-    let testResult = null;
-    try {
-      const { DigitalOceanProvider } = await import('../lib/chat-client/providers/digitalocean.js');
-      
-      if (agentEndpointUrl) {
-        const testProvider = new DigitalOceanProvider(apiKey, { baseURL: agentEndpointUrl });
-        const modelName = agentDetails?.model?.inference_name || agentDetails?.model?.name || 'unknown';
-        
-        testResult = await testProvider.chat(
-          [{ role: 'user', content: 'What model are you?' }],
-          { model: modelName, stream: false }
-        );
-      }
-    } catch (testError) {
-      testResult = { error: testError.message };
-    }
-
-    updateStatus('Agent test completed', testResult && !testResult.error ? { 
-      query: 'What model are you?',
-      response: testResult.content?.substring(0, 200) || testResult.content
-    } : { 
-      error: testResult?.error || 'Test not performed',
-      note: 'Test failure is non-critical - agent is still provisioned successfully'
-    });
-
-    // Step 6: Update User Document (before verification)
+    // Step 7: Update User Document (before verification)
     updateStatus('Updating user document...');
     
     const agentModelName = agentDetails?.model?.inference_name || agentDetails?.model?.name || null;
@@ -3024,16 +3086,16 @@ async function provisionUserAsync(userId, token) {
       agentName: agentName
     });
 
-    // Step 7: Comprehensive Verification
+    // Step 8: Comprehensive Verification (before declaring success/failure)
     updateStatus('Verifying provisioning complete...');
     logProvisioning(userId, `🔍 Starting comprehensive verification...`, 'info');
     
     // Get KB name from user document
-    const kbName = getKBNameFromUserDoc(userDoc, userId);
+    const kbNameForVerification = getKBNameFromUserDoc(userDoc, userId);
     
     const expectedConfig = {
       maxTokens: 16384,
-      temperature: 0,
+      temperature: 0.1,
       topP: 1
     };
     
@@ -3041,7 +3103,7 @@ async function provisionUserAsync(userId, token) {
       userId, 
       newAgent.uuid, 
       agentName, 
-      kbName, 
+      kbNameForVerification, 
       expectedConfig
     );
     
@@ -3051,18 +3113,64 @@ async function provisionUserAsync(userId, token) {
       status.verification = verification;
     }
     
+    // Step 9: Test Agent (as part of verification)
+    updateStatus('Testing agent...');
+    let testResult = null;
+    try {
+      const { DigitalOceanProvider } = await import('../lib/chat-client/providers/digitalocean.js');
+      
+      if (agentEndpointUrl) {
+        const testProvider = new DigitalOceanProvider(apiKey, { baseURL: agentEndpointUrl });
+        const modelName = agentDetails?.model?.inference_name || agentDetails?.model?.name || 'unknown';
+        
+        testResult = await testProvider.chat(
+          [{ role: 'user', content: 'What model are you?' }],
+          { model: modelName, stream: false }
+        );
+      }
+    } catch (testError) {
+      testResult = { error: testError.message };
+    }
+
+    updateStatus('Agent test completed', testResult && !testResult.error ? { 
+      query: 'What model are you?',
+      response: testResult.content?.substring(0, 200) || testResult.content
+    } : { 
+      error: testResult?.error || 'Test not performed',
+      note: 'Test failure is non-critical - agent is still provisioned successfully'
+    });
+    
+    // Check verification results
     if (!verification.allCriticalPassed) {
       logProvisioning(userId, `❌ Verification failed - critical checks did not pass`, 'error');
       updateStatus('Verification failed', { 
         verification,
         note: 'Some critical checks failed. Review logs for details.'
       });
+      
+      // Get user email for failure notification
+      const userEmail = userDoc.email || null;
+      const errorDetails = `Verification failed: ${JSON.stringify(verification.results)}`;
+      
+      // Send failure email
+      if (userEmail) {
+        try {
+          await emailService.sendProvisioningCompletionEmail({
+            userId,
+            userEmail,
+            success: false,
+            errorDetails
+          });
+        } catch (emailError) {
+          logProvisioning(userId, `⚠️  Failed to send failure email: ${emailError.message}`, 'warning');
+        }
+      }
+      
       // Don't mark as completed if critical checks fail
-      throw new Error(`Provisioning verification failed: ${JSON.stringify(verification.results)}`);
+      throw new Error(`Provisioning verification failed: ${errorDetails}`);
     }
     
     logProvisioning(userId, `✅ All critical verification checks passed`, 'success');
-    // Don't log verbose verification details - status is already tracked internally
     updateStatus('Verification complete', { 
       verification,
       note: 'All critical checks passed successfully'
@@ -3084,6 +3192,24 @@ async function provisionUserAsync(userId, token) {
         testResult
       };
     }
+    
+    // Step 10: Send success email
+    const userEmail = userDoc.email || null;
+    if (userEmail) {
+      try {
+        await emailService.sendProvisioningCompletionEmail({
+          userId,
+          userEmail,
+          success: true,
+          errorDetails: null
+        });
+      } catch (emailError) {
+        logProvisioning(userId, `⚠️  Failed to send success email: ${emailError.message}`, 'warning');
+        // Don't fail provisioning if email fails
+      }
+    } else {
+      logProvisioning(userId, `⚠️  No user email found, skipping success email`, 'warning');
+    }
   } catch (error) {
     logProvisioning(userId, `❌ Provisioning failed for user ${userId}: ${error.message}`, 'error');
     logProvisioning(userId, `❌ Error stack: ${error.stack}`, 'error');
@@ -3098,6 +3224,32 @@ async function provisionUserAsync(userId, token) {
     // Log error details
     if (error.statusCode === 409) {
       logProvisioning(userId, `❌ Document conflict detected - this is a concurrency issue`, 'error');
+    }
+    
+    // Send failure email
+    try {
+      let userDoc = null;
+      try {
+        userDoc = await cloudant.getDocument('maia_users', userId);
+      } catch (docError) {
+        logProvisioning(userId, `⚠️  Could not fetch user document for email: ${docError.message}`, 'warning');
+      }
+      
+      const userEmail = userDoc?.email || null;
+      if (userEmail) {
+        const errorDetails = error.message + (error.stack ? `\n\nStack trace:\n${error.stack}` : '');
+        await emailService.sendProvisioningCompletionEmail({
+          userId,
+          userEmail,
+          success: false,
+          errorDetails
+        });
+      } else {
+        logProvisioning(userId, `⚠️  No user email found, skipping failure email`, 'warning');
+      }
+    } catch (emailError) {
+      logProvisioning(userId, `⚠️  Failed to send failure email: ${emailError.message}`, 'warning');
+      // Don't fail provisioning if email fails
     }
   }
 }
@@ -3745,7 +3897,7 @@ app.post('/api/archive-user-files', async (req, res) => {
     }
 
     // Import S3 client operations
-    const { S3Client, ListObjectsV2Command, CopyObjectCommand, DeleteObjectCommand } = await import('@aws-sdk/client-s3');
+    const { S3Client, ListObjectsV2Command, CopyObjectCommand, DeleteObjectCommand, HeadObjectCommand } = await import('@aws-sdk/client-s3');
 
     // Setup S3/Spaces client
     const bucketUrl = process.env.DIGITALOCEAN_BUCKET;
@@ -3792,6 +3944,11 @@ app.post('/api/archive-user-files', async (req, res) => {
 
     let archivedCount = 0;
     const archivedFiles = [];
+    const failedFiles = [];
+    
+    // Save original state for rollback
+    const originalFiles = JSON.parse(JSON.stringify(userDoc.files || []));
+    const originalWorkflowStage = userDoc.workflowStage;
 
     // Move each root-level file to archived
     for (const file of rootFiles) {
@@ -3817,33 +3974,109 @@ app.post('/api/archive-user-files', async (req, res) => {
         });
         await s3Client.send(deleteCommand);
 
+        // Verify the file exists at the destination with retry
+        let verified = false;
+        for (let attempt = 0; attempt < 3; attempt++) {
+          try {
+            const verifyCommand = new HeadObjectCommand({
+              Bucket: bucketName,
+              Key: destKey
+            });
+            await s3Client.send(verifyCommand);
+            verified = true;
+            break;
+          } catch (verifyError) {
+            if (attempt < 2) {
+              await new Promise(resolve => setTimeout(resolve, 100 * Math.pow(2, attempt)));
+            } else {
+              throw new Error(`File archive verification failed after 3 attempts`);
+            }
+          }
+        }
+
+        if (!verified) {
+          throw new Error(`File archive verification failed`);
+        }
+
         // Update file metadata in user document
         if (userDoc.files) {
           const fileIndex = userDoc.files.findIndex(f => f.bucketKey === sourceKey);
           if (fileIndex >= 0) {
             userDoc.files[fileIndex].bucketKey = destKey;
+            userDoc.files[fileIndex].updatedAt = new Date().toISOString();
             archivedFiles.push(fileName);
+            archivedCount++;
           }
         }
-
-        archivedCount++;
       } catch (err) {
         console.error(`❌ Error archiving file ${fileName}:`, err);
+        failedFiles.push({ fileName, error: err.message });
+        // Rollback this file's metadata change if it was made
+        if (userDoc.files) {
+          const fileIndex = userDoc.files.findIndex(f => f.bucketKey === destKey);
+          if (fileIndex >= 0) {
+            // Restore original bucketKey
+            const originalFile = originalFiles.find(f => f.fileName === fileName || f.bucketKey === sourceKey);
+            if (originalFile) {
+              userDoc.files[fileIndex].bucketKey = originalFile.bucketKey;
+            }
+          }
+        }
       }
     }
 
-    // Save updated user document if files were moved
+    // Save updated user document if files were moved successfully
     if (archivedCount > 0 && userDoc.files) {
       // Set workflowStage to files_archived when files are archived
       userDoc.workflowStage = 'files_archived';
-      await cloudant.saveDocument('maia_users', userDoc);
+      
+      // Save with retry logic for conflicts
+      let saved = false;
+      let retries = 3;
+      while (!saved && retries > 0) {
+        try {
+          await cloudant.saveDocument('maia_users', userDoc);
+          saved = true;
+        } catch (saveError) {
+          if (saveError.statusCode === 409 && retries > 1) {
+            retries--;
+            const freshDoc = await cloudant.getDocument('maia_users', userId);
+            // Re-apply archived file changes
+            for (const fileName of archivedFiles) {
+              const freshFileIndex = freshDoc.files.findIndex(f => 
+                f.fileName === fileName || f.bucketKey === `${userId}/${fileName}`
+              );
+              if (freshFileIndex >= 0) {
+                freshDoc.files[freshFileIndex].bucketKey = `${userId}/archived/${fileName}`;
+                freshDoc.files[freshFileIndex].updatedAt = new Date().toISOString();
+              }
+            }
+            freshDoc.workflowStage = 'files_archived';
+            userDoc = freshDoc;
+            await new Promise(resolve => setTimeout(resolve, 200 * (4 - retries)));
+          } else {
+            // If save fails completely, rollback user document
+            userDoc.files = originalFiles;
+            userDoc.workflowStage = originalWorkflowStage;
+            throw saveError;
+          }
+        }
+      }
+      
+      if (!saved) {
+        // Rollback user document
+        userDoc.files = originalFiles;
+        userDoc.workflowStage = originalWorkflowStage;
+        throw new Error('Failed to save user document after archiving files');
+      }
     }
 
     res.json({
       success: true,
-      message: `Archived ${archivedCount} file(s)`,
+      message: `Archived ${archivedCount} file(s)${failedFiles.length > 0 ? `, ${failedFiles.length} failed` : ''}`,
       archivedCount,
-      archivedFiles
+      archivedFiles,
+      failedFiles: failedFiles.length > 0 ? failedFiles : undefined
     });
   } catch (error) {
     console.error('❌ Error archiving user files:', error);
@@ -3851,6 +4084,131 @@ app.post('/api/archive-user-files', async (req, res) => {
       success: false, 
       message: `Failed to archive files: ${error.message}`,
       error: 'ARCHIVE_FAILED'
+    });
+  }
+});
+
+// Verify file state synchronization between Spaces and user document
+app.get('/api/verify-file-state', async (req, res) => {
+  try {
+    const { userId } = req.query;
+    
+    if (!userId) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'User ID is required',
+        error: 'MISSING_USER_ID'
+      });
+    }
+
+    // Get the user document
+    const userDoc = await cloudant.getDocument('maia_users', userId);
+    
+    if (!userDoc) {
+      return res.status(404).json({ 
+        success: false, 
+        message: 'User not found',
+        error: 'USER_NOT_FOUND'
+      });
+    }
+
+    // Setup S3/Spaces client
+    const bucketUrl = process.env.DIGITALOCEAN_BUCKET;
+    if (!bucketUrl) {
+      return res.status(500).json({
+        success: false,
+        error: 'BUCKET_NOT_CONFIGURED',
+        message: 'DigitalOcean bucket not configured'
+      });
+    }
+
+    const bucketName = bucketUrl.split('//')[1]?.split('.')[0] || 'maia';
+
+    const { S3Client, HeadObjectCommand, ListObjectsV2Command } = await import('@aws-sdk/client-s3');
+    const s3Client = new S3Client({
+      endpoint: process.env.DIGITALOCEAN_ENDPOINT_URL || 'https://tor1.digitaloceanspaces.com',
+      region: 'us-east-1',
+      forcePathStyle: false,
+      credentials: {
+        accessKeyId: process.env.DIGITALOCEAN_AWS_ACCESS_KEY_ID || '',
+        secretAccessKey: process.env.DIGITALOCEAN_AWS_SECRET_ACCESS_KEY || ''
+      }
+    });
+
+    // Get all files from user document
+    const docFiles = userDoc.files || [];
+    const inconsistencies = [];
+    const verified = [];
+
+    // Verify each file in the user document exists in Spaces at the expected location
+    for (const file of docFiles) {
+      const bucketKey = file.bucketKey;
+      if (!bucketKey) {
+        inconsistencies.push({
+          fileName: file.fileName || 'unknown',
+          issue: 'Missing bucketKey in user document',
+          bucketKey: null
+        });
+        continue;
+      }
+
+      try {
+        const headCommand = new HeadObjectCommand({
+          Bucket: bucketName,
+          Key: bucketKey
+        });
+        await s3Client.send(headCommand);
+        verified.push({
+          fileName: file.fileName || bucketKey.split('/').pop(),
+          bucketKey: bucketKey,
+          status: 'verified'
+        });
+      } catch (headError) {
+        // File not found at expected location
+        inconsistencies.push({
+          fileName: file.fileName || bucketKey.split('/').pop(),
+          issue: 'File not found in Spaces at expected location',
+          bucketKey: bucketKey
+        });
+      }
+    }
+
+    // Check for orphaned files in Spaces (files in Spaces but not in user document)
+    const listCommand = new ListObjectsV2Command({
+      Bucket: bucketName,
+      Prefix: `${userId}/`
+    });
+    const listResult = await s3Client.send(listCommand);
+    const spacesFiles = (listResult.Contents || [])
+      .map(file => file.Key)
+      .filter(key => key && !key.endsWith('.keep'));
+
+    const docBucketKeys = new Set(docFiles.map(f => f.bucketKey).filter(Boolean));
+    const orphanedFiles = spacesFiles.filter(key => !docBucketKeys.has(key));
+
+    const isConsistent = inconsistencies.length === 0 && orphanedFiles.length === 0;
+
+    res.json({
+      success: true,
+      isConsistent,
+      verified: verified.length,
+      inconsistencies: inconsistencies.length,
+      orphanedFiles: orphanedFiles.length,
+      details: {
+        verified,
+        inconsistencies,
+        orphanedFiles: orphanedFiles.map(key => ({
+          bucketKey: key,
+          issue: 'File exists in Spaces but not in user document'
+        }))
+      }
+    });
+  } catch (error) {
+    console.error('❌ Error verifying file state:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: `Failed to verify file state: ${error.message}`,
+      error: 'VERIFICATION_FAILED'
     });
   }
 });
@@ -3994,71 +4352,124 @@ app.post('/api/toggle-file-knowledge-base', async (req, res) => {
       destKey = `${userId}/archived/${fileName}`;
     }
 
-    // Handle intermediate step (root -> archived) if needed
-    if (intermediateKey && sourceKey !== intermediateKey) {
-      // Copy from root to archived
-      const archiveCopy = new CopyObjectCommand({
-        Bucket: bucketName,
-        CopySource: `${bucketName}/${sourceKey}`,
-        Key: intermediateKey
-      });
-      await s3Client.send(archiveCopy);
-      
-      // Delete from root
-      const archiveDelete = new DeleteObjectCommand({
-        Bucket: bucketName,
-        Key: sourceKey
-      });
-      await s3Client.send(archiveDelete);
-      
-      // Verify the file exists at the intermediate location before proceeding
-      try {
-        const verifyIntermediateCommand = new HeadObjectCommand({
+    // Save original state for rollback in case of failure
+    const originalBucketKey = userDoc.files[fileIndex].bucketKey;
+    const originalKnowledgeBases = [...(userDoc.files[fileIndex].knowledgeBases || [])];
+    const originalKbIndexedFiles = userDoc.kbIndexedFiles ? [...userDoc.kbIndexedFiles] : [];
+    
+    try {
+      // Handle intermediate step (root -> archived) if needed
+      if (intermediateKey && sourceKey !== intermediateKey) {
+        // Copy from root to archived
+        const archiveCopy = new CopyObjectCommand({
           Bucket: bucketName,
+          CopySource: `${bucketName}/${sourceKey}`,
           Key: intermediateKey
         });
-        await s3Client.send(verifyIntermediateCommand);
-      } catch (verifyError) {
-        throw new Error(`File archive verification failed: File not found at intermediate destination`);
-      }
-      
-      // Update sourceKey for next step
-      sourceKey = intermediateKey;
-      
-      // Update file's bucketKey in user document
-      userDoc.files[fileIndex].bucketKey = intermediateKey;
-    }
-
-    // Move file to final destination if different from source
-    if (sourceKey !== destKey) {
-      // Copy file to new location
-      const copyCommand = new CopyObjectCommand({
-        Bucket: bucketName,
-        CopySource: `${bucketName}/${sourceKey}`,
-        Key: destKey
-      });
-      await s3Client.send(copyCommand);
-
-      // Delete from old location
-      const deleteCommand = new DeleteObjectCommand({
-        Bucket: bucketName,
-        Key: sourceKey
-      });
-      await s3Client.send(deleteCommand);
-
-      // Verify the file exists at the new location before proceeding
-      try {
-        const verifyCommand = new HeadObjectCommand({
+        await s3Client.send(archiveCopy);
+        
+        // Delete from root
+        const archiveDelete = new DeleteObjectCommand({
           Bucket: bucketName,
+          Key: sourceKey
+        });
+        await s3Client.send(archiveDelete);
+        
+        // Verify the file exists at the intermediate location before proceeding
+        // Retry verification up to 3 times with exponential backoff
+        let verified = false;
+        for (let attempt = 0; attempt < 3; attempt++) {
+          try {
+            const verifyIntermediateCommand = new HeadObjectCommand({
+              Bucket: bucketName,
+              Key: intermediateKey
+            });
+            await s3Client.send(verifyIntermediateCommand);
+            verified = true;
+            break;
+          } catch (verifyError) {
+            if (attempt < 2) {
+              // Wait before retry: 100ms, 200ms, 400ms
+              await new Promise(resolve => setTimeout(resolve, 100 * Math.pow(2, attempt)));
+            } else {
+              // Final attempt failed - rollback
+              throw new Error(`File archive verification failed after 3 attempts: File not found at intermediate destination`);
+            }
+          }
+        }
+        
+        if (!verified) {
+          throw new Error(`File archive verification failed: File not found at intermediate destination`);
+        }
+        
+        // Update sourceKey for next step
+        sourceKey = intermediateKey;
+        
+        // Update file's bucketKey in user document (temporary, will be saved after final move)
+        userDoc.files[fileIndex].bucketKey = intermediateKey;
+      }
+
+      // Move file to final destination if different from source
+      if (sourceKey !== destKey) {
+        // Copy file to new location
+        const copyCommand = new CopyObjectCommand({
+          Bucket: bucketName,
+          CopySource: `${bucketName}/${sourceKey}`,
           Key: destKey
         });
-        await s3Client.send(verifyCommand);
-      } catch (verifyError) {
-        throw new Error(`File move verification failed: File not found at destination`);
-      }
+        await s3Client.send(copyCommand);
 
-      // Update file's bucketKey in user document
-      userDoc.files[fileIndex].bucketKey = destKey;
+        // Delete from old location
+        const deleteCommand = new DeleteObjectCommand({
+          Bucket: bucketName,
+          Key: sourceKey
+        });
+        await s3Client.send(deleteCommand);
+
+        // Verify the file exists at the new location before proceeding
+        // Retry verification up to 3 times with exponential backoff
+        let verified = false;
+        for (let attempt = 0; attempt < 3; attempt++) {
+          try {
+            const verifyCommand = new HeadObjectCommand({
+              Bucket: bucketName,
+              Key: destKey
+            });
+            await s3Client.send(verifyCommand);
+            verified = true;
+            break;
+          } catch (verifyError) {
+            if (attempt < 2) {
+              // Wait before retry: 100ms, 200ms, 400ms
+              await new Promise(resolve => setTimeout(resolve, 100 * Math.pow(2, attempt)));
+            } else {
+              // Final attempt failed - rollback
+              throw new Error(`File move verification failed after 3 attempts: File not found at destination`);
+            }
+          }
+        }
+        
+        if (!verified) {
+          throw new Error(`File move verification failed: File not found at destination`);
+        }
+
+        // Update file's bucketKey in user document
+        userDoc.files[fileIndex].bucketKey = destKey;
+      }
+    } catch (moveError) {
+      // Rollback: restore original state in user document
+      userDoc.files[fileIndex].bucketKey = originalBucketKey;
+      userDoc.files[fileIndex].knowledgeBases = originalKnowledgeBases;
+      userDoc.kbIndexedFiles = originalKbIndexedFiles;
+      
+      // Try to save rollback state (non-blocking)
+      try {
+        await cloudant.saveDocument('maia_users', userDoc);
+      } catch (rollbackError) {
+        console.error('❌ Failed to rollback user document after file move failure:', rollbackError);
+      }
+      
+      throw moveError;
     }
 
     // Update knowledge base status
@@ -4103,8 +4514,48 @@ app.post('/api/toggle-file-knowledge-base', async (req, res) => {
     // This ensures the state is persisted even if user closes dialog without clicking "Update and Index KB"
     userDoc.kbIndexingNeeded = filesChanged && currentFilesInKB.length > 0;
 
-    // Save the updated user document
-    await cloudant.saveDocument('maia_users', userDoc);
+    // Save the updated user document with retry logic for conflicts
+    let saved = false;
+    let retries = 3;
+    while (!saved && retries > 0) {
+      try {
+        await cloudant.saveDocument('maia_users', userDoc);
+        saved = true;
+      } catch (saveError) {
+        if (saveError.statusCode === 409 && retries > 1) {
+          // Conflict - re-read document and retry
+          retries--;
+          const freshDoc = await cloudant.getDocument('maia_users', userId);
+          // Re-apply our changes to the fresh document
+          const freshFileIndex = freshDoc.files.findIndex(f => f.bucketKey === originalBucketKey || f.bucketKey === destKey);
+          if (freshFileIndex >= 0) {
+            freshDoc.files[freshFileIndex].bucketKey = destKey;
+            freshDoc.files[freshFileIndex].knowledgeBases = inKnowledgeBase ? [kbName] : [];
+            freshDoc.files[freshFileIndex].updatedAt = new Date().toISOString();
+            // Recalculate kbIndexingNeeded
+            const freshFilesInKB = (freshDoc.files || [])
+              .filter(file => {
+                const fileBucketKey = file.bucketKey || '';
+                return fileBucketKey.startsWith(`${userId}/${kbName}/`);
+              })
+              .map(file => file.bucketKey);
+            const freshIndexedFiles = freshDoc.kbIndexedFiles || [];
+            const freshFilesChanged = JSON.stringify([...freshFilesInKB].sort()) !== JSON.stringify([...freshIndexedFiles].sort());
+            freshDoc.kbIndexingNeeded = freshFilesChanged && freshFilesInKB.length > 0;
+            userDoc = freshDoc;
+            await new Promise(resolve => setTimeout(resolve, 200 * (4 - retries)));
+          } else {
+            throw new Error('File not found in fresh user document during retry');
+          }
+        } else {
+          throw saveError;
+        }
+      }
+    }
+    
+    if (!saved) {
+      throw new Error('Failed to save user document after file move');
+    }
     
     res.json({
       success: true,
@@ -4400,17 +4851,33 @@ app.delete('/api/delete-file', async (req, res) => {
     // Remove file from user document
     const userDoc = await cloudant.getDocument('maia_users', userId);
     
-    if (userDoc && userDoc.files) {
-      userDoc.files = userDoc.files.filter(f => f.bucketKey !== bucketKey);
-      await cloudant.saveDocument('maia_users', userDoc);
-      console.log(`✅ Removed file metadata from user document: ${bucketKey}`);
+    if (!userDoc) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found',
+        error: 'USER_NOT_FOUND'
+      });
     }
-
-    // TODO: Trigger KB re-indexing if file was in KB
-    // This would involve:
-    // 1. Check if file was in knowledge base
-    // 2. Remove from KB data source
-    // 3. Trigger re-indexing
+    
+    // Check if file was in KB before removing
+    const kbName = getKBNameFromUserDoc(userDoc, userId);
+    const wasInKB = bucketKey && bucketKey.startsWith(`${userId}/${kbName}/`);
+    
+    if (userDoc.files) {
+      userDoc.files = userDoc.files.filter(f => f.bucketKey !== bucketKey);
+      
+      // If file was in KB, remove from kbIndexedFiles and mark KB as needing update
+      if (wasInKB) {
+        if (userDoc.kbIndexedFiles && Array.isArray(userDoc.kbIndexedFiles)) {
+          userDoc.kbIndexedFiles = userDoc.kbIndexedFiles.filter(f => f !== bucketKey);
+        }
+        // Mark KB as needing re-indexing since a file was removed
+        userDoc.kbIndexingNeeded = true;
+      }
+      
+      await cloudant.saveDocument('maia_users', userDoc);
+      console.log(`✅ Removed file metadata from user document: ${bucketKey}${wasInKB ? ' (was in KB, re-indexing needed)' : ''}`);
+    }
 
     res.json({
       success: true,
@@ -5021,16 +5488,16 @@ app.post('/api/update-knowledge-base', async (req, res) => {
          // If not found by ID, find any active or completed job (fallback)
          if (!job) {
            job = jobsArray.find(j => {
-             const jobStatus = j.status || j.job_status || j.state;
-             return jobStatus === 'INDEX_JOB_STATUS_PENDING' || 
-                    jobStatus === 'INDEX_JOB_STATUS_RUNNING' ||
+           const jobStatus = j.status || j.job_status || j.state;
+           return jobStatus === 'INDEX_JOB_STATUS_PENDING' || 
+                  jobStatus === 'INDEX_JOB_STATUS_RUNNING' ||
                     jobStatus === 'INDEX_JOB_STATUS_IN_PROGRESS' ||
-                    jobStatus === 'INDEX_JOB_STATUS_COMPLETED' ||
-                    jobStatus === 'pending' ||
-                    jobStatus === 'running' ||
-                    jobStatus === 'in_progress' ||
-                    jobStatus === 'completed';
-           });
+                  jobStatus === 'INDEX_JOB_STATUS_COMPLETED' ||
+                  jobStatus === 'pending' ||
+                  jobStatus === 'running' ||
+                  jobStatus === 'in_progress' ||
+                  jobStatus === 'completed';
+         });
          }
          
          if (job) {
@@ -5275,7 +5742,7 @@ app.get('/api/kb-indexing-status/:jobId', async (req, res) => {
         backendCompleted: false
       });
     }
-    
+
     // Return current status - backend is still processing
     res.json({
       success: true,
@@ -5515,6 +5982,11 @@ app.get('/api/user-status', async (req, res) => {
     
     // Convert kbStatus to hasKB for backward compatibility, but also return kbStatus
     const hasKB = kbStatus === 'attached' || kbStatus === 'not_attached';
+    
+    // Check if KB has indexed files
+    const hasFilesInKB = hasKB && userDoc.kbIndexedFiles && 
+                         Array.isArray(userDoc.kbIndexedFiles) && 
+                         userDoc.kbIndexedFiles.length > 0;
 
     res.json({
       success: true,
@@ -5522,6 +5994,7 @@ app.get('/api/user-status', async (req, res) => {
       hasAgent,
       fileCount,
       hasKB,
+      hasFilesInKB,
       kbStatus // 'none' | 'not_attached' | 'attached'
     });
   } catch (error) {

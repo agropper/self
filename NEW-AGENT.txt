@@ -66,7 +66,7 @@ All status tip messages displayed in the application (numbered 1-17, correspondi
 4. Ready to chat (workflowStage: agent_named - Agent has been successfully created in DigitalOcean)
 5. Your agent is ready. Use the paperclip to import files for your knowledge base. (workflowStage: agent_deployed)
 6. Update your knowledge base using the [Stored Files] tab. (workflowStage: files_stored - User has uploaded files to their account, no KB yet) / Ready to chat (if KB exists)
-7. Ready to chat (workflowStage: unknown - Fallback/default value when workflowStage is not set)
+7. Ready to chat but your knowledge base is still empty. (workflowStage: unknown - Fallback/default value when workflowStage is not set, shown when KB exists but has no indexed files) / Ready to chat (if KB has indexed files)
 8. Update your knowledge base using the [Stored Files] tab. (workflowStage: files_archived)
 9. Knowledge base being indexed. This can take up to 30 minutes. (workflowStage: indexing)
 10. Your patient summary is available. Ask your agent for it in the chat anytime. (workflowStage: patient_summary)
@@ -80,6 +80,24 @@ All status tip messages displayed in the application (numbered 1-17, correspondi
 15. User not logged in (When user is not authenticated)
 16. Unable to load status / Error loading status (When API call fails or exception occurs)
 17. KB Indexing Complete: ${status.filesIndexed} files indexed / KB Indexing Error / KB Setup: ${status.phase} (Dynamic indexing status messages)
+
+---
+
+## Provisioning Email
+
+Subject: "Private MAIA provisioned for <userId>
+
+Body:
+<Hi <userID>,
+<user email>
+
+Your Private AI agent has been provisioned and is ready to receive your health records. 
+
+MAIA, including your Private AI agent, can work with imported files directly but large documents may fail and many privacy features will be unavailable. For large files and best results, use the SAVED FILES tab in My Stuff to choose files for indexing into your knowledge base.
+
+IBM look forward to hearing from you with comments, suggestions and, of course, bugs.
+
+-Adrian
 
 ---
 
@@ -131,7 +149,7 @@ Request Body:
   "region": "tor1",
   "max_tokens": 16384,
   "top_p": 1,
-  "temperature": 0,
+  "temperature": 0.1,
   "k": 10,
   "retrieval_method": "RETRIEVAL_METHOD_NONE"
 }

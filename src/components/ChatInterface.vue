@@ -540,7 +540,7 @@ const currentChatSnapshot = computed(() => JSON.stringify(getComparableChatState
 const canSaveLocally = computed(() => currentChatSnapshot.value !== lastLocalSaveSnapshot.value);
 const canSaveToGroup = computed(() => currentChatSnapshot.value !== lastGroupSaveSnapshot.value);
 
-const userResourceStatus = ref<{ hasAgent: boolean; kbStatus: string; hasKB: boolean } | null>(null);
+const userResourceStatus = ref<{ hasAgent: boolean; kbStatus: string; hasKB: boolean; hasFilesInKB: boolean } | null>(null);
 
 watch(
   () => props.user?.userId,
@@ -1111,7 +1111,8 @@ const uploadPDFFile = async (file: File) => {
 
   if (!uploadResponse.ok) {
     const errorData = await uploadResponse.json();
-    throw new Error(errorData.error || 'Failed to upload file');
+    // Use detailed message if available (e.g., storage limit exceeded)
+    throw new Error(errorData.message || errorData.error || 'Failed to upload file');
   }
 
   const uploadResult = await uploadResponse.json();
@@ -2829,11 +2830,11 @@ const handleLinkClick = (part: { type: 'text' | 'link'; text: string; tab?: stri
 };
 
 // Map workflow stages to user-friendly tips
-const getWorkflowTip = (workflowStage: string | null, hasKB: boolean = false): string => {
+const getWorkflowTip = (workflowStage: string | null, hasKB: boolean = false, hasFilesInKB: boolean = false): string => {
   const tips: Record<string, string> = {
     'request_sent': 'Support requested. You will be notified when your private AI agent is ready.',
     'agent_deployed': 'Your agent is ready. Use the paperclip to import files for your knowledge base.',
-    'files_stored': hasKB ? 'Ready to chat' : 'Update your knowledge base using the [Stored Files] tab.',
+    'files_stored': hasFilesInKB ? 'Ready to chat' : 'Update your knowledge base using the [Stored Files] tab.',
     'files_archived': 'Update your knowledge base using the [Stored Files] tab.',
     'indexing': 'Knowledge base being indexed. This can take up to 30 minutes.',
     'patient_summary': 'Your patient summary is available. Ask your agent for it in the chat anytime.',
@@ -2889,10 +2890,12 @@ const updateContextualTip = async () => {
     const userData = await userResponse.json();
     const workflowStage = userData.workflowStage || null;
     const hasKB = !!userData.hasKB;
+    const hasFilesInKB = !!userData.hasFilesInKB;
     userResourceStatus.value = {
       hasAgent: !!userData.hasAgent,
       kbStatus: userData.kbStatus || 'none',
-      hasKB: hasKB
+      hasKB: hasKB,
+      hasFilesInKB: hasFilesInKB
     };
     
     // Check if workflowStage is 'indexing' (even if frontend polling isn't active)
@@ -2914,12 +2917,13 @@ const updateContextualTip = async () => {
     }
 
     // Priority 4: Get tip for workflow stage
-    const tip = getWorkflowTip(workflowStage, hasKB);
+    const tip = getWorkflowTip(workflowStage, hasKB, hasFilesInKB);
     if (tip) {
       contextualTip.value = tip;
     } else {
       // Fallback to default message if no tip found
-      contextualTip.value = 'Ready to chat';
+      // If no KB files, show Tip 7 message
+      contextualTip.value = hasFilesInKB ? 'Ready to chat' : 'Ready to chat but your knowledge base is still empty.';
     }
   } catch (error) {
     console.error('Failed to update contextual tip:', error);
