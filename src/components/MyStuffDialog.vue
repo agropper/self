@@ -185,7 +185,7 @@
                   Tokens: {{ indexingStatus.tokens || 'Calculating...' }}
                 </div>
                 <div class="text-caption text-grey-6 q-mt-xs">
-                  Indexing can take about 200 pages per minute. This may take up to 30 minutes.
+                  Indexing can take about 200 pages per minute. This may take up to 60 minutes.
                 </div>
               </div>
 
@@ -793,7 +793,7 @@ const currentIndexingJobId = ref<string | null>(null);
 const pollingInterval = ref<ReturnType<typeof setInterval> | null>(null);
 const elapsedTimeInterval = ref<ReturnType<typeof setInterval> | null>(null);
 const indexingStartTime = ref<number | null>(null);
-const INDEXING_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes
+const INDEXING_TIMEOUT_MS = 60 * 60 * 1000; // 60 minutes
 const elapsedTimeUpdate = ref(0); // Force updates for elapsed time display
 
 // Computed property for elapsed time display
@@ -1751,7 +1751,8 @@ const pollIndexingProgress = async (jobId: string) => {
   pollingInterval.value = setInterval(async () => {
     try {
       // Check for timeout
-      if (indexingStartTime.value && (Date.now() - indexingStartTime.value) > INDEXING_TIMEOUT_MS) {
+      const elapsed = indexingStartTime.value ? (Date.now() - indexingStartTime.value) : 0;
+      if (indexingStartTime.value && elapsed > INDEXING_TIMEOUT_MS) {
         clearInterval(pollingInterval.value!);
         pollingInterval.value = null;
         if (elapsedTimeInterval.value) {
@@ -1762,12 +1763,12 @@ const pollIndexingProgress = async (jobId: string) => {
         elapsedTimeUpdate.value = 0;
         indexingKB.value = false;
         indexingStatus.value.phase = 'error';
-        indexingStatus.value.error = 'Indexing timed out after 30 minutes';
+        indexingStatus.value.error = 'Indexing timed out after 60 minutes';
         emit('indexing-finished', { jobId, phase: 'error', error: 'Indexing timed out' });
         if ($q && typeof $q.notify === 'function') {
           $q.notify({
             type: 'negative',
-            message: 'Indexing timed out after 30 minutes. Please check the knowledge base status.'
+            message: 'Indexing timed out after 60 minutes. Please check the knowledge base status.'
           });
         }
         return;
@@ -1808,7 +1809,16 @@ const pollIndexingProgress = async (jobId: string) => {
       // Handle completion - check result.backendCompleted (backend has finished all automation),
       // result.completed, result.phase, or result.status
       // backendCompleted is the most reliable indicator that everything is done
+      // Log completion detection for debugging
       if (result.backendCompleted || result.completed || result.phase === 'complete' || result.status === 'INDEX_JOB_STATUS_COMPLETED') {
+        console.log('[KB] ✅ Detected indexing completion:', {
+          backendCompleted: result.backendCompleted,
+          completed: result.completed,
+          phase: result.phase,
+          status: result.status,
+          filesIndexed: result.filesIndexed,
+          tokens: result.tokens
+        });
         if (pollingInterval.value !== null) {
           clearInterval(pollingInterval.value);
         }
@@ -2608,7 +2618,7 @@ const closeDialog = async (): Promise<boolean> => {
       if ($q && typeof $q.dialog === 'function') {
         $q.dialog({
           title: 'Indexing in progress',
-          message: 'Knowledge base indexing is still in progress and could take up to 30 minutes. What would you like to do?',
+          message: 'Knowledge base indexing is still in progress and could take up to 60 minutes. What would you like to do?',
           persistent: true,
           ok: {
             label: 'OK',

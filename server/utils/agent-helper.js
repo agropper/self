@@ -153,7 +153,8 @@ export async function findUserAgent(doClient, userId) {
       return null;
     }
 
-    console.log(`✅ Found agent ${basicAgent.name} for user ${userId}`);
+    // Don't log - this is called frequently during sync operations
+    // The sync-agent endpoint already logs success/errors
 
     try {
       const detailedAgent = await agentClient.get(basicAgent.uuid || basicAgent.id || basicAgent.agent_id || basicAgent.agentId || basicAgent.agent_uuid);

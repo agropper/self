@@ -3536,7 +3536,10 @@ app.get('/api/user-chats', async (req, res) => {
     const allChats = await cloudant.getAllDocuments('maia_chats');
     const userChats = allChats.filter(chat => chat._id.startsWith(`${effectiveUserId}-`));
 
-    console.log(`✅ Found ${userChats.length} chats for user ${effectiveUserId}`);
+    // Only log if there are chats (0 is the default/expected state)
+    if (userChats.length > 0) {
+      console.log(`✅ Found ${userChats.length} chats for user ${effectiveUserId}`);
+    }
     
     res.json({
       success: true,
@@ -4368,14 +4371,8 @@ app.post('/api/toggle-file-knowledge-base', async (req, res) => {
         });
         await s3Client.send(archiveCopy);
         
-        // Delete from root
-        const archiveDelete = new DeleteObjectCommand({
-          Bucket: bucketName,
-          Key: sourceKey
-        });
-        await s3Client.send(archiveDelete);
-        
-        // Verify the file exists at the intermediate location before proceeding
+        // Verify the file exists at the intermediate location BEFORE deleting from root
+        // This prevents data loss if the copy failed
         // Retry verification up to 3 times with exponential backoff
         let verified = false;
         for (let attempt = 0; attempt < 3; attempt++) {
@@ -4392,15 +4389,22 @@ app.post('/api/toggle-file-knowledge-base', async (req, res) => {
               // Wait before retry: 100ms, 200ms, 400ms
               await new Promise(resolve => setTimeout(resolve, 100 * Math.pow(2, attempt)));
             } else {
-              // Final attempt failed - rollback
-              throw new Error(`File archive verification failed after 3 attempts: File not found at intermediate destination`);
+              // Final attempt failed - don't delete source file
+              throw new Error(`File archive verification failed after 3 attempts: File not found at intermediate destination. Source file preserved.`);
             }
           }
         }
         
         if (!verified) {
-          throw new Error(`File archive verification failed: File not found at intermediate destination`);
+          throw new Error(`File archive verification failed: File not found at intermediate destination. Source file preserved.`);
         }
+        
+        // Only delete from root after verification succeeds
+        const archiveDelete = new DeleteObjectCommand({
+          Bucket: bucketName,
+          Key: sourceKey
+        });
+        await s3Client.send(archiveDelete);
         
         // Update sourceKey for next step
         sourceKey = intermediateKey;
@@ -4419,14 +4423,8 @@ app.post('/api/toggle-file-knowledge-base', async (req, res) => {
         });
         await s3Client.send(copyCommand);
 
-        // Delete from old location
-        const deleteCommand = new DeleteObjectCommand({
-          Bucket: bucketName,
-          Key: sourceKey
-        });
-        await s3Client.send(deleteCommand);
-
-        // Verify the file exists at the new location before proceeding
+        // Verify the file exists at the new location BEFORE deleting from old location
+        // This prevents data loss if the copy failed
         // Retry verification up to 3 times with exponential backoff
         let verified = false;
         for (let attempt = 0; attempt < 3; attempt++) {
@@ -4443,15 +4441,22 @@ app.post('/api/toggle-file-knowledge-base', async (req, res) => {
               // Wait before retry: 100ms, 200ms, 400ms
               await new Promise(resolve => setTimeout(resolve, 100 * Math.pow(2, attempt)));
             } else {
-              // Final attempt failed - rollback
-              throw new Error(`File move verification failed after 3 attempts: File not found at destination`);
+              // Final attempt failed - don't delete source file
+              throw new Error(`File move verification failed after 3 attempts: File not found at destination. Source file preserved.`);
             }
           }
         }
         
         if (!verified) {
-          throw new Error(`File move verification failed: File not found at destination`);
+          throw new Error(`File move verification failed: File not found at destination. Source file preserved.`);
         }
+
+        // Only delete from old location after verification succeeds
+        const deleteCommand = new DeleteObjectCommand({
+          Bucket: bucketName,
+          Key: sourceKey
+        });
+        await s3Client.send(deleteCommand);
 
         // Update file's bucketKey in user document
         userDoc.files[fileIndex].bucketKey = destKey;
@@ -4512,7 +4517,9 @@ app.post('/api/toggle-file-knowledge-base', async (req, res) => {
     
     // Set kbIndexingNeeded flag if files in KB folder don't match indexed files
     // This ensures the state is persisted even if user closes dialog without clicking "Update and Index KB"
-    userDoc.kbIndexingNeeded = filesChanged && currentFilesInKB.length > 0;
+    // Note: We need indexing even if KB is empty (currentFilesInKB.length === 0) because files were removed
+    // and the KB index needs to be updated to reflect the empty state
+    userDoc.kbIndexingNeeded = filesChanged;
 
     // Save the updated user document with retry logic for conflicts
     let saved = false;
@@ -4541,7 +4548,8 @@ app.post('/api/toggle-file-knowledge-base', async (req, res) => {
               .map(file => file.bucketKey);
             const freshIndexedFiles = freshDoc.kbIndexedFiles || [];
             const freshFilesChanged = JSON.stringify([...freshFilesInKB].sort()) !== JSON.stringify([...freshIndexedFiles].sort());
-            freshDoc.kbIndexingNeeded = freshFilesChanged && freshFilesInKB.length > 0;
+            // Note: We need indexing even if KB is empty because files were removed
+            freshDoc.kbIndexingNeeded = freshFilesChanged;
             userDoc = freshDoc;
             await new Promise(resolve => setTimeout(resolve, 200 * (4 - retries)));
           } else {
@@ -5406,6 +5414,7 @@ app.post('/api/update-knowledge-base', async (req, res) => {
         // Generate patient summary after indexing completes
         try {
           if (finalUserDoc && finalUserDoc.assignedAgentId && finalUserDoc.agentEndpoint && finalUserDoc.agentApiKey) {
+            console.log(`[KB AUTO] 📝 Starting patient summary generation for user ${userId}...`);
             const { DigitalOceanProvider } = await import('../lib/chat-client/providers/digitalocean.js');
             const agentProvider = new DigitalOceanProvider(finalUserDoc.agentApiKey, {
               baseURL: finalUserDoc.agentEndpoint
@@ -5420,17 +5429,27 @@ app.post('/api/update-knowledge-base', async (req, res) => {
 
             const summary = summaryResponse.content || summaryResponse.text || '';
 
-            const summaryUserDoc = await cloudant.getDocument('maia_users', userId);
-            if (summaryUserDoc) {
-              // Use helper function to add new summary (default to 'newest' strategy)
-              addNewSummary(summaryUserDoc, summary, 'newest');
-              summaryUserDoc.workflowStage = 'patient_summary';
-              await cloudant.saveDocument('maia_users', summaryUserDoc);
-              invalidateResourceCache(userId);
+            if (!summary || summary.trim().length === 0) {
+              console.error(`[KB AUTO] ❌ Patient summary generation returned empty result for user ${userId}`);
+            } else {
+              const summaryUserDoc = await cloudant.getDocument('maia_users', userId);
+              if (summaryUserDoc) {
+                // Use helper function to add new summary (default to 'newest' strategy)
+                addNewSummary(summaryUserDoc, summary, 'newest');
+                summaryUserDoc.workflowStage = 'patient_summary';
+                await cloudant.saveDocument('maia_users', summaryUserDoc);
+                invalidateResourceCache(userId);
+                console.log(`[KB AUTO] ✅ Patient summary generated and saved successfully for user ${userId}`);
+              } else {
+                console.error(`[KB AUTO] ❌ Could not load user document to save patient summary for user ${userId}`);
+              }
             }
+          } else {
+            console.log(`[KB AUTO] ⚠️ Skipping patient summary generation for user ${userId} - agent not fully configured (assignedAgentId: ${!!finalUserDoc?.assignedAgentId}, agentEndpoint: ${!!finalUserDoc?.agentEndpoint}, agentApiKey: ${!!finalUserDoc?.agentApiKey})`);
           }
         } catch (summaryError) {
-          console.error(`[KB AUTO] ❌ Error generating patient summary:`, summaryError.message);
+          console.error(`[KB AUTO] ❌ Error generating patient summary for user ${userId}:`, summaryError.message);
+          console.error(`[KB AUTO] ❌ Patient summary error stack:`, summaryError.stack);
         }
       } catch (completionError) {
         console.error('[KB AUTO] ❌ Error finalizing indexing completion:', completionError.message);

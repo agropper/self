@@ -207,19 +207,23 @@
                 label="Type your message"
                 outlined
                 dense
+                :disable="isRequestSent"
                 @keyup.enter="sendMessage"
                 @focus="clearPresetPrompt"
               >
-                <q-tooltip>Ask for Patient Summary to add it to the chat context and make it available to public AIs.</q-tooltip>
+                <q-tooltip v-if="isRequestSent">Chat is disabled until your account is approved</q-tooltip>
+                <q-tooltip v-else>Ask for Patient Summary to add it to the chat context and make it available to public AIs.</q-tooltip>
               </q-input>
             </div>
             <div class="col-auto">
               <q-btn 
                 color="primary" 
                 label="Send"
-                :disable="!inputMessage || isStreaming"
+                :disable="!inputMessage || isStreaming || isRequestSent"
                 @click="sendMessage"
-              />
+              >
+                <q-tooltip v-if="isRequestSent">Chat is disabled until your account is approved</q-tooltip>
+              </q-btn>
             </div>
           </div>
           
@@ -232,9 +236,11 @@
                 round 
                 icon="attach_file" 
                 class="text-grey-6" 
+                :disable="isRequestSent"
                 @click="triggerFileInput"
               >
-                <q-tooltip>Attach files to add them to the chat context</q-tooltip>
+                <q-tooltip v-if="isRequestSent">File import is disabled until your account is approved</q-tooltip>
+                <q-tooltip v-else>Attach files to add them to the chat context</q-tooltip>
               </q-btn>
               <input
                 ref="fileInput"
@@ -383,11 +389,28 @@
         </q-card-actions>
       </q-card>
     </q-dialog>
+
+    <!-- Request Sent Modal -->
+    <q-dialog v-model="showRequestSentModal" persistent>
+      <q-card>
+        <q-card-section>
+          <div class="text-h6">Request Sent</div>
+        </q-card-section>
+
+        <q-card-section class="q-pt-none">
+          <p>Request sent. Approval can take hours or days. Reload the app when contacted or if you want to check.</p>
+        </q-card-section>
+
+        <q-card-actions align="right">
+          <q-btn flat label="OK" color="primary" @click="showRequestSentModal = false" />
+        </q-card-actions>
+      </q-card>
+    </q-dialog>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, computed, watch, nextTick } from 'vue';
+import { ref, onMounted, onUnmounted, computed, watch, nextTick } from 'vue';
 import PdfViewerModal from './PdfViewerModal.vue';
 import SavedChatsModal from './SavedChatsModal.vue';
 import MyStuffDialog from './MyStuffDialog.vue';
@@ -540,7 +563,11 @@ const currentChatSnapshot = computed(() => JSON.stringify(getComparableChatState
 const canSaveLocally = computed(() => currentChatSnapshot.value !== lastLocalSaveSnapshot.value);
 const canSaveToGroup = computed(() => currentChatSnapshot.value !== lastGroupSaveSnapshot.value);
 
-const userResourceStatus = ref<{ hasAgent: boolean; kbStatus: string; hasKB: boolean; hasFilesInKB: boolean } | null>(null);
+const userResourceStatus = ref<{ hasAgent: boolean; kbStatus: string; hasKB: boolean; hasFilesInKB: boolean; workflowStage?: string | null } | null>(null);
+const isRequestSent = computed(() => userResourceStatus.value?.workflowStage === 'request_sent');
+const statusPollInterval = ref<ReturnType<typeof setInterval> | null>(null);
+const showRequestSentModal = ref(false);
+const requestSentModalShown = ref(false); // Track if modal has been shown to avoid showing it repeatedly
 
 watch(
   () => props.user?.userId,
@@ -757,7 +784,7 @@ const estimateTokenCount = (text: string) => {
 
 // Send message (streaming)
 const sendMessage = async () => {
-  if (!inputMessage.value || isStreaming.value) return;
+  if (!inputMessage.value || isStreaming.value || isRequestSent.value) return;
 
   const startTime = Date.now();
 
@@ -1030,6 +1057,7 @@ const savePatientSummary = async (summary: string) => {
 };
 
 const triggerFileInput = () => {
+  if (isRequestSent.value) return;
   fileInput.value?.click();
 };
 
@@ -2777,6 +2805,9 @@ const handleFilesArchived = (archivedBucketKeys: string[]) => {
   }
   
   console.log(`[Files] Cleared ${archivedBucketKeys.length} archived file badge(s) from chat`);
+  
+  // Update status tip immediately after files are archived
+  updateContextualTip();
 };
 
 // Parse contextual tip to extract clickable links
@@ -2836,7 +2867,7 @@ const getWorkflowTip = (workflowStage: string | null, hasKB: boolean = false, ha
     'agent_deployed': 'Your agent is ready. Use the paperclip to import files for your knowledge base.',
     'files_stored': hasFilesInKB ? 'Ready to chat' : 'Update your knowledge base using the [Stored Files] tab.',
     'files_archived': 'Update your knowledge base using the [Stored Files] tab.',
-    'indexing': 'Knowledge base being indexed. This can take up to 30 minutes.',
+    'indexing': 'Knowledge base being indexed. This can take up to 60 minutes.',
     'patient_summary': 'Your patient summary is available. Ask your agent for it in the chat anytime.',
     'link_stored': 'Open [Saved Chats] to restore one or share a deep link.'
   };
@@ -2854,7 +2885,7 @@ const updateContextualTip = async () => {
   if (indexingStatus.value && indexingStatus.value.active) {
     const status = indexingStatus.value;
     if (status.phase === 'indexing' || status.phase === 'indexing_started') {
-      contextualTip.value = 'Knowledge base being indexed. This can take up to 30 minutes.';
+      contextualTip.value = 'Knowledge base being indexed. This can take up to 60 minutes.';
     } else if (status.phase === 'complete') {
       contextualTip.value = `KB Indexing Complete: ${status.filesIndexed} files indexed`;
       // Clear after a short delay
@@ -2895,12 +2926,13 @@ const updateContextualTip = async () => {
       hasAgent: !!userData.hasAgent,
       kbStatus: userData.kbStatus || 'none',
       hasKB: hasKB,
-      hasFilesInKB: hasFilesInKB
+      hasFilesInKB: hasFilesInKB,
+      workflowStage: workflowStage
     };
     
     // Check if workflowStage is 'indexing' (even if frontend polling isn't active)
     if (workflowStage === 'indexing') {
-      contextualTip.value = 'Knowledge base being indexed. This can take up to 30 minutes.';
+      contextualTip.value = 'Knowledge base being indexed. This can take up to 60 minutes.';
       return;
     }
     
@@ -2963,14 +2995,14 @@ onMounted(async () => {
   }
   
   if (!isDeepLink.value) {
-  syncAgent();
-  updateContextualTip();
-  
-    // Update tip periodically and when context changes
-  watch(() => savedChatCount.value, () => {
+    syncAgent();
     updateContextualTip();
-  });
-  
+    
+    // Update tip immediately when context changes (no polling needed for these)
+    watch(() => savedChatCount.value, () => {
+      updateContextualTip();
+    });
+    
     watch(() => messages.value.length, () => {
       updateContextualTip();
     });
@@ -2979,9 +3011,38 @@ onMounted(async () => {
       updateContextualTip();
     });
     
-  setInterval(() => {
-    updateContextualTip();
-  }, 30000);
+    // Conditional polling: only poll when workflowStage requires monitoring
+    // Only 'indexing' and 'patient_summary' need polling
+    // 'request_sent' doesn't need polling - approval can take hours/days, user will reload to check
+    const shouldPollStatus = computed(() => {
+      const stage = userResourceStatus.value?.workflowStage;
+      return stage === 'indexing' || 
+             stage === 'patient_summary';
+    });
+    
+    // Watch for 'request_sent' stage to show modal (only once per session)
+    watch(() => userResourceStatus.value?.workflowStage, (newStage) => {
+      if (newStage === 'request_sent' && !requestSentModalShown.value) {
+        showRequestSentModal.value = true;
+        requestSentModalShown.value = true;
+      }
+    });
+    
+    // Start/stop polling based on workflowStage
+    watch(shouldPollStatus, (needsPolling) => {
+      // Clear existing interval
+      if (statusPollInterval.value) {
+        clearInterval(statusPollInterval.value);
+        statusPollInterval.value = null;
+      }
+      
+      // Start polling if needed
+      if (needsPolling) {
+        statusPollInterval.value = setInterval(() => {
+          updateContextualTip();
+        }, 5000); // Poll every 5 seconds when needed (faster than 30s for async operations)
+      }
+    }, { immediate: true });
   } else {
     contextualTip.value = 'Ready to chat';
     loadDeepLinkChat();
@@ -2995,6 +3056,14 @@ onMounted(async () => {
 
   if (deepLinkShareId.value) {
     loadDeepLinkChat(true);
+  }
+});
+
+// Cleanup on unmount (must be at top level, not inside onMounted)
+onUnmounted(() => {
+  if (statusPollInterval.value) {
+    clearInterval(statusPollInterval.value);
+    statusPollInterval.value = null;
   }
 });
 </script>
