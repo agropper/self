@@ -43,7 +43,7 @@
 ### 9. `indexing` - KB creation and indexing in progress
 - **Location:** `server/index.js` - `/api/update-knowledge-base`
 - **When:** When indexing job starts (in the polling interval)
-- **Tip:** "Knowledge base being indexed. This can take up to 30 minutes."
+- **Tip:** "Knowledge base being indexed. This can take up to 60 minutes."
 - **Implementation:** Set `workflowStage = 'indexing'` when indexing starts (line ~2999), clear when complete
 - **Note:** This is temporary - should revert to previous stage when indexing completes
 
@@ -99,7 +99,7 @@ The contextual tip should be computed dynamically based on:
 | `request_sent` | "Support requested. You will be notified when your private AI agent is ready." |
 | `agent_deployed` | "Your agent is ready. Use the paperclip to import files for your knowledge base." |
 | `files_archived` | "Update your knowledge base using the [Stored Files] tab." |
-| `indexing` | "Knowledge base being indexed. This can take up to 30 minutes." |
+| `indexing` | "Knowledge base being indexed. This can take up to 60 minutes." |
 | `patient_summary` | "Your patient summary is available. Ask your agent for it in the chat anytime." |
 | `public_llm` | "Public AIs see only what you see in the chat, including any paperclip documents." |
 | `chat_modified` | "You can save the chat to your computer or save it online." |

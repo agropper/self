@@ -1796,6 +1796,8 @@ const pollIndexingProgress = async (jobId: string) => {
   // Emit event to parent to update status tip
   emit('indexing-started', { jobId, phase: 'indexing_started' });
   
+  // Poll every 10 seconds for indexing status
+  const POLL_INTERVAL_MS = 10000; // 10 seconds
   pollingInterval.value = setInterval(async () => {
     try {
       // Check for timeout
@@ -1954,7 +1956,7 @@ const pollIndexingProgress = async (jobId: string) => {
         });
       }
     }
-  }, 10000); // Poll every 10 seconds (changed from 2 seconds)
+  }, POLL_INTERVAL_MS);
 };
 
 // Chat management methods

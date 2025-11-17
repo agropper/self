@@ -6022,10 +6022,10 @@ app.post('/api/update-knowledge-base', async (req, res) => {
       }
     
     // Start polling for indexing jobs in background (non-blocking)
-      // Poll every 30 seconds for max 30 minutes (60 polls)
+      // Poll every 30 seconds for max 60 minutes (120 polls)
     const startTime = Date.now();
     const pollDelayMs = 30000; // 30 seconds
-    const maxPolls = Math.ceil((30 * 60 * 1000) / pollDelayMs);
+    const maxPolls = Math.ceil((60 * 60 * 1000) / pollDelayMs);
     let pollCount = 0;
       let activeJobId = jobId; // Track the specific job we started
     let finished = false;
