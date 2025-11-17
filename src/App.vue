@@ -106,9 +106,11 @@
           </template>
         </div>
 
-        <!-- Authenticated - show main interface -->
+        <!-- Authenticated - show main interface or admin page -->
         <div v-else class="full-width full-height">
+          <AdminUsers v-if="showAdminPage" />
           <ChatInterface
+            v-else
             :user="user"
             :is-deep-link-user="isDeepLinkUser"
             :deep-link-info="deepLinkInfo"
@@ -130,6 +132,7 @@ import PasskeyAuth from './components/PasskeyAuth.vue';
 import ChatInterface from './components/ChatInterface.vue';
 import DeepLinkAccess from './components/DeepLinkAccess.vue';
 import PrivacyDialog from './components/PrivacyDialog.vue';
+import AdminUsers from './components/AdminUsers.vue';
 
 interface User {
   userId: string;
@@ -155,6 +158,7 @@ const showDeepLinkAccess = ref(false);
 const deepLinkLoading = ref(false);
 const deepLinkError = ref('');
 const showPrivacyDialog = ref(false);
+const showAdminPage = ref(false);
 
 const setAuthenticatedUser = (userData: any, deepLink: DeepLinkInfo | null = null) => {
   if (!userData) return;
@@ -303,8 +307,13 @@ if (typeof document !== 'undefined') {
 }
 
 onMounted(async () => {
-  let share: string | null = null;
+  // Check for admin page parameter
   const params = new URLSearchParams(window.location.search);
+  if (params.get('admin') === 'true') {
+    showAdminPage.value = true;
+  }
+  
+  let share: string | null = null;
   const queryShare = params.get('share');
   if (queryShare) {
     share = queryShare;

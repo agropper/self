@@ -18,7 +18,7 @@ const USER_STORAGE_LIMIT = 1024 * 1024 * 1024; // 1 GB in bytes
  * @param {string} userId - User ID
  * @returns {Promise<number>} Total size in bytes
  */
-async function getUserBucketSize(s3Client, bucketName, userId) {
+export async function getUserBucketSize(s3Client, bucketName, userId) {
   let totalSize = 0;
   let continuationToken = null;
 

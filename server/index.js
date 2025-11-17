@@ -21,6 +21,8 @@ import { findUserAgent } from './utils/agent-helper.js';
 import setupAuthRoutes from './routes/auth.js';
 import setupChatRoutes from './routes/chat.js';
 import setupFileRoutes from './routes/files.js';
+import { getUserBucketSize } from './routes/files.js';
+import { S3Client } from '@aws-sdk/client-s3';
 
 dotenv.config();
 
@@ -6766,6 +6768,137 @@ app.get('/api/admin-email', (req, res) => {
   res.json({
     email: process.env.RESEND_ADMIN_EMAIL || 'admin@yourdomain.com'
   });
+});
+
+// Admin: Get all users with statistics
+app.get('/api/admin/users', async (req, res) => {
+  try {
+    // Get all users from maia_users database
+    const allUsers = await cloudant.getAllDocuments('maia_users');
+    
+    // Filter out design documents and non-user documents
+    const users = allUsers.filter(doc => doc.userId && !doc._id.startsWith('_design'));
+    
+    // Get all sessions to find last activity
+    const allSessions = await cloudant.getAllDocuments('maia_sessions');
+    const sessionsByUserId = new Map();
+    allSessions.forEach(session => {
+      if (session.userId && !session._id.startsWith('_design')) {
+        const existing = sessionsByUserId.get(session.userId);
+        if (!existing || (session.lastActivity && (!existing.lastActivity || session.lastActivity > existing.lastActivity))) {
+          sessionsByUserId.set(session.userId, session);
+        }
+      }
+    });
+    
+    // Get all chats to count saved chats per user
+    const allChats = await cloudant.getAllDocuments('maia_chats');
+    const chatsByUserId = new Map();
+    allChats.forEach(chat => {
+      if (chat.currentUser && !chat._id.startsWith('_design')) {
+        const count = chatsByUserId.get(chat.currentUser) || 0;
+        chatsByUserId.set(chat.currentUser, count + 1);
+      }
+    });
+    
+    // Count deep link users (users with isDeepLink flag)
+    const deepLinkUserIds = new Set();
+    users.forEach(user => {
+      if (user.isDeepLink === true) {
+        deepLinkUserIds.add(user.userId);
+      }
+    });
+    
+    // Calculate statistics for each user
+    const userStats = await Promise.all(users.map(async (userDoc) => {
+      const userId = userDoc.userId;
+      
+      // Get last activity from sessions
+      const session = sessionsByUserId.get(userId);
+      let lastActivity = null;
+      if (session?.lastActivity) {
+        const lastActivityDate = new Date(session.lastActivity);
+        const now = new Date();
+        const diffMs = now - lastActivityDate;
+        const diffMins = Math.floor(diffMs / 60000);
+        const diffHours = Math.floor(diffMs / 3600000);
+        const diffDays = Math.floor(diffMs / 86400000);
+        
+        if (diffMins < 60) {
+          lastActivity = `${diffMins} minute${diffMins !== 1 ? 's' : ''} ago`;
+        } else if (diffHours < 24) {
+          lastActivity = `${diffHours} hour${diffHours !== 1 ? 's' : ''} ago`;
+        } else {
+          lastActivity = `${diffDays} day${diffDays !== 1 ? 's' : ''} ago`;
+        }
+      }
+      
+      // Get provisioned date
+      const provisionedDate = userDoc.createdAt || userDoc.provisionedAt || null;
+      
+      // Get total file storage in MB (using same calculation as file routes)
+      let totalStorageMB = 0;
+      try {
+        const bucketUrl = process.env.DIGITALOCEAN_BUCKET;
+        if (bucketUrl && process.env.DIGITALOCEAN_AWS_ACCESS_KEY_ID && process.env.DIGITALOCEAN_AWS_SECRET_ACCESS_KEY) {
+          const bucketName = bucketUrl.split('//')[1]?.split('.')[0] || 'maia';
+          const s3Client = new S3Client({
+            endpoint: process.env.DIGITALOCEAN_ENDPOINT_URL || 'https://tor1.digitaloceanspaces.com',
+            region: 'us-east-1',
+            forcePathStyle: false,
+            credentials: {
+              accessKeyId: process.env.DIGITALOCEAN_AWS_ACCESS_KEY_ID,
+              secretAccessKey: process.env.DIGITALOCEAN_AWS_SECRET_ACCESS_KEY
+            }
+          });
+          // Use the same getUserBucketSize function as file routes
+          const totalSizeBytes = await getUserBucketSize(s3Client, bucketName, userId);
+          // Convert to MB (same as storage-usage endpoint)
+          totalStorageMB = Math.round((totalSizeBytes / (1024 * 1024)) * 100) / 100;
+        }
+      } catch (error) {
+        // Silently fail - storage calculation is optional for admin view
+        // Errors are already logged by getUserBucketSize if needed
+      }
+      
+      // Get files indexed in KB
+      const filesIndexed = userDoc.kbIndexedFiles ? userDoc.kbIndexedFiles.length : 0;
+      
+      // Get saved chats count
+      const savedChatsCount = chatsByUserId.get(userId) || 0;
+      
+      // Count deep link users (for now, 1 if this user is a deep link user, 0 otherwise)
+      // TODO: Could be enhanced to count deep link users that have accessed this user's chats
+      const deepLinkUsersCount = deepLinkUserIds.has(userId) ? 1 : 0;
+      
+      return {
+        userId: userId,
+        workflowStage: userDoc.workflowStage || 'unknown',
+        lastActivity: lastActivity || 'Never',
+        provisionedDate: provisionedDate,
+        totalStorageMB: totalStorageMB,
+        filesIndexed: filesIndexed,
+        savedChatsCount: savedChatsCount,
+        deepLinkUsersCount: deepLinkUsersCount
+      };
+    }));
+    
+    // Count total deep link users
+    const totalDeepLinkUsers = deepLinkUserIds.size;
+    
+    res.json({
+      success: true,
+      users: userStats,
+      totalUsers: userStats.length,
+      totalDeepLinkUsers: totalDeepLinkUsers
+    });
+  } catch (error) {
+    console.error('Error fetching admin users:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
 });
 
 // Get user status (for contextual tip)
