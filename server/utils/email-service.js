@@ -140,6 +140,86 @@ export class EmailService {
   }
 
   /**
+   * Send user deletion notification to admin
+   * @param {Object} options
+   * @param {string} options.userId - User ID
+   * @param {string} options.userEmail - User email address
+   * @param {string} options.displayName - User display name
+   * @param {Object} options.deletionDetails - Details of what was deleted
+   */
+  async sendUserDeletionNotification({ userId, userEmail, displayName, deletionDetails }) {
+    if (!this.apiKey || !this.fromEmail || !this.adminEmail) {
+      console.warn('⚠️  Email service not configured (RESEND_API_KEY, RESEND_FROM_EMAIL, RESEND_ADMIN_EMAIL)');
+      return { success: false, error: 'Email service not configured' };
+    }
+
+    const emailData = {
+      from: this.fromEmail,
+      to: this.adminEmail,
+      subject: `User Deleted: ${displayName || userId}`,
+      html: `
+        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+          <h2 style="color: #d32f2f;">User Account Deleted</h2>
+          <p>The following user account has been permanently deleted:</p>
+          <ul style="list-style: none; padding: 0;">
+            <li><strong>User ID:</strong> ${userId}</li>
+            <li><strong>Display Name:</strong> ${displayName || userId}</li>
+            <li><strong>Email:</strong> ${userEmail || '(not provided)'}</li>
+            <li><strong>Deleted:</strong> ${new Date().toISOString()}</li>
+          </ul>
+          <h3 style="color: #333; margin-top: 30px;">Deletion Details:</h3>
+          <ul style="list-style: none; padding: 0;">
+            <li><strong>Spaces Folder:</strong> ${deletionDetails.spacesDeleted ? '✅ Deleted' : '❌ Failed'}</li>
+            <li><strong>Files Deleted:</strong> ${deletionDetails.filesDeleted || 0}</li>
+            <li><strong>Knowledge Base:</strong> ${deletionDetails.kbDeleted ? '✅ Deleted' : '❌ Failed or not found'}</li>
+            <li><strong>Agent:</strong> ${deletionDetails.agentDeleted ? '✅ Deleted' : '❌ Failed or not found'}</li>
+            <li><strong>User Document:</strong> ${deletionDetails.userDocDeleted ? '✅ Deleted' : '❌ Failed'}</li>
+            <li><strong>Sessions:</strong> ${deletionDetails.sessionsDeleted || 0} deleted</li>
+            <li><strong>Chats:</strong> ${deletionDetails.chatsDeleted || 0} deleted</li>
+          </ul>
+          ${deletionDetails.errors && deletionDetails.errors.length > 0 ? `
+            <h3 style="color: #d32f2f; margin-top: 30px;">Errors:</h3>
+            <ul>
+              ${deletionDetails.errors.map(err => `<li>${err}</li>`).join('')}
+            </ul>
+          ` : ''}
+          <p style="margin-top: 30px; padding: 15px; background-color: #f5f5f5; border-radius: 4px;">
+            <strong>User Email:</strong> ${userEmail || '(not provided)'}<br>
+            ${userEmail ? 'You may want to send a personal goodbye message to this user.' : 'No email address was provided for this user.'}
+          </p>
+          <p style="color: #666; font-size: 12px; margin-top: 30px;">
+            This is an automated notification from MAIA User App.
+          </p>
+        </div>
+      `
+    };
+
+    try {
+      const response = await fetch('https://api.resend.com/emails', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${this.apiKey}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(emailData)
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        console.error('❌ Resend API error:', response.status, errorText);
+        return { success: false, error: `Resend API error: ${response.status}` };
+      }
+
+      const result = await response.json();
+      console.log('✅ User deletion notification email sent to admin');
+      return { success: true, messageId: result.id };
+    } catch (error) {
+      console.error('❌ Error sending deletion notification email:', error);
+      return { success: false, error: error.message };
+    }
+  }
+
+  /**
    * Generate a secure provisioning token
    * In production, this should use a proper token generation method
    */

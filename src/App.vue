@@ -307,11 +307,20 @@ if (typeof document !== 'undefined') {
 }
 
 onMounted(async () => {
-  // Check for admin page parameter
-  const params = new URLSearchParams(window.location.search);
-  if (params.get('admin') === 'true') {
+  // Check for admin page route
+  const isAdminPage = window.location.pathname === '/admin';
+  const isLocalhost = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
+  
+  if (isAdminPage) {
     showAdminPage.value = true;
+    // If running locally, allow admin page without authentication
+    if (isLocalhost) {
+      authenticated.value = true;
+      return;
+    }
   }
+  
+  const params = new URLSearchParams(window.location.search);
   
   let share: string | null = null;
   const queryShare = params.get('share');

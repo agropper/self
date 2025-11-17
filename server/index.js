@@ -6773,6 +6773,9 @@ app.get('/api/admin-email', (req, res) => {
 // Admin: Get all users with statistics
 app.get('/api/admin/users', async (req, res) => {
   try {
+    // Allow unauthenticated access when running locally
+    const isLocalhost = req.hostname === 'localhost' || req.hostname === '127.0.0.1' || process.env.NODE_ENV !== 'production';
+    
     // Get all users from maia_users database
     const allUsers = await cloudant.getAllDocuments('maia_users');
     
@@ -6894,6 +6897,218 @@ app.get('/api/admin/users', async (req, res) => {
     });
   } catch (error) {
     console.error('Error fetching admin users:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+// Admin: Delete user and all associated resources
+app.delete('/api/admin/users/:userId', async (req, res) => {
+  try {
+    // Allow unauthenticated access when running locally
+    const isLocalhost = req.hostname === 'localhost' || req.hostname === '127.0.0.1' || process.env.NODE_ENV !== 'production';
+    
+    const { userId } = req.params;
+    
+    if (!userId) {
+      return res.status(400).json({
+        success: false,
+        error: 'User ID is required'
+      });
+    }
+
+    // Get user document first to collect information
+    let userDoc;
+    try {
+      userDoc = await cloudant.getDocument('maia_users', userId);
+    } catch (error) {
+      return res.status(404).json({
+        success: false,
+        error: 'User not found'
+      });
+    }
+
+    const deletionDetails = {
+      spacesDeleted: false,
+      filesDeleted: 0,
+      kbDeleted: false,
+      agentDeleted: false,
+      userDocDeleted: false,
+      sessionsDeleted: 0,
+      chatsDeleted: 0,
+      errors: []
+    };
+
+    // 1. Delete all files from Spaces folder
+    try {
+      const bucketUrl = process.env.DIGITALOCEAN_BUCKET;
+      if (bucketUrl) {
+        const bucketName = bucketUrl.split('//')[1]?.split('.')[0] || 'maia';
+        const { S3Client, ListObjectsV2Command, DeleteObjectCommand } = await import('@aws-sdk/client-s3');
+        
+        const s3Client = new S3Client({
+          endpoint: process.env.DIGITALOCEAN_ENDPOINT_URL || 'https://tor1.digitaloceanspaces.com',
+          region: 'us-east-1',
+          forcePathStyle: false,
+          credentials: {
+            accessKeyId: process.env.DIGITALOCEAN_AWS_ACCESS_KEY_ID || '',
+            secretAccessKey: process.env.DIGITALOCEAN_AWS_SECRET_ACCESS_KEY || ''
+          }
+        });
+
+        // List all files with userId prefix
+        let continuationToken = null;
+        do {
+          const listCommand = new ListObjectsV2Command({
+            Bucket: bucketName,
+            Prefix: `${userId}/`,
+            ContinuationToken: continuationToken || undefined
+          });
+
+          const listResult = await s3Client.send(listCommand);
+          
+          if (listResult.Contents && listResult.Contents.length > 0) {
+            // Delete all files
+            for (const file of listResult.Contents) {
+              if (file.Key) {
+                try {
+                  const deleteCommand = new DeleteObjectCommand({
+                    Bucket: bucketName,
+                    Key: file.Key
+                  });
+                  await s3Client.send(deleteCommand);
+                  deletionDetails.filesDeleted++;
+                } catch (err) {
+                  deletionDetails.errors.push(`Failed to delete file ${file.Key}: ${err.message}`);
+                }
+              }
+            }
+          }
+
+          continuationToken = listResult.NextContinuationToken || null;
+        } while (continuationToken);
+
+        deletionDetails.spacesDeleted = true;
+      }
+    } catch (error) {
+      deletionDetails.errors.push(`Failed to delete Spaces folder: ${error.message}`);
+    }
+
+    // 2. Delete Knowledge Base
+    try {
+      const kbId = userDoc.kbId;
+      if (kbId) {
+        // Check if KB exists before trying to delete
+        try {
+          await doClient.kb.get(kbId);
+          await doClient.kb.delete(kbId);
+          deletionDetails.kbDeleted = true;
+        } catch (error) {
+          if (error.statusCode === 404 || error.message?.includes('not found')) {
+            deletionDetails.kbDeleted = true; // Already deleted, consider it success
+          } else {
+            throw error;
+          }
+        }
+      } else {
+        deletionDetails.kbDeleted = true; // No KB to delete
+      }
+    } catch (error) {
+      deletionDetails.errors.push(`Failed to delete Knowledge Base: ${error.message}`);
+    }
+
+    // 3. Delete Agent
+    try {
+      const agentId = userDoc.assignedAgentId;
+      if (agentId) {
+        // Check if agent exists before trying to delete
+        try {
+          await doClient.agent.get(agentId);
+          await doClient.agent.delete(agentId);
+          deletionDetails.agentDeleted = true;
+        } catch (error) {
+          if (error.statusCode === 404 || error.message?.includes('not found')) {
+            deletionDetails.agentDeleted = true; // Already deleted, consider it success
+          } else {
+            throw error;
+          }
+        }
+      } else {
+        deletionDetails.agentDeleted = true; // No agent to delete
+      }
+    } catch (error) {
+      deletionDetails.errors.push(`Failed to delete Agent: ${error.message}`);
+    }
+
+    // 4. Delete user sessions from maia_sessions
+    try {
+      const allSessions = await cloudant.getAllDocuments('maia_sessions');
+      const userSessions = allSessions.filter(session => session.userId === userId && !session._id.startsWith('_design'));
+      
+      for (const session of userSessions) {
+        try {
+          await cloudant.deleteDocument('maia_sessions', session._id);
+          deletionDetails.sessionsDeleted++;
+        } catch (err) {
+          deletionDetails.errors.push(`Failed to delete session ${session._id}: ${err.message}`);
+        }
+      }
+    } catch (error) {
+      deletionDetails.errors.push(`Failed to delete sessions: ${error.message}`);
+    }
+
+    // 5. Delete user chats from maia_chats
+    try {
+      const allChats = await cloudant.getAllDocuments('maia_chats');
+      const userChats = allChats.filter(chat => chat.currentUser === userId && !chat._id.startsWith('_design'));
+      
+      for (const chat of userChats) {
+        try {
+          await cloudant.deleteDocument('maia_chats', chat._id);
+          deletionDetails.chatsDeleted++;
+        } catch (err) {
+          deletionDetails.errors.push(`Failed to delete chat ${chat._id}: ${err.message}`);
+        }
+      }
+    } catch (error) {
+      deletionDetails.errors.push(`Failed to delete chats: ${error.message}`);
+    }
+
+    // 6. Delete user document (do this last)
+    try {
+      await cloudant.deleteDocument('maia_users', userId);
+      deletionDetails.userDocDeleted = true;
+    } catch (error) {
+      deletionDetails.errors.push(`Failed to delete user document: ${error.message}`);
+      return res.status(500).json({
+        success: false,
+        error: 'Failed to delete user document',
+        details: deletionDetails
+      });
+    }
+
+    // 7. Send email notification to admin
+    try {
+      await emailService.sendUserDeletionNotification({
+        userId: userId,
+        userEmail: userDoc.email || null,
+        displayName: userDoc.displayName || userId,
+        deletionDetails: deletionDetails
+      });
+    } catch (error) {
+      console.error('Failed to send deletion notification email:', error);
+      // Don't fail the deletion if email fails
+    }
+
+    res.json({
+      success: true,
+      message: 'User and all associated resources deleted',
+      details: deletionDetails
+    });
+  } catch (error) {
+    console.error('Error deleting user:', error);
     res.status(500).json({
       success: false,
       error: error.message

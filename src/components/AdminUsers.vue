@@ -38,6 +38,20 @@
           {{ props.value }}
         </q-td>
       </template>
+
+      <template v-slot:body-cell-actions="props">
+        <q-td :props="props">
+          <q-btn
+            flat
+            round
+            dense
+            color="negative"
+            icon="delete"
+            @click="confirmDelete(props.row.userId)"
+            :loading="deletingUsers.has(props.row.userId)"
+          />
+        </q-td>
+      </template>
     </q-table>
 
     <q-btn
@@ -71,8 +85,16 @@ const users = ref<User[]>([]);
 const loading = ref(false);
 const totalUsers = ref(0);
 const totalDeepLinkUsers = ref(0);
+const deletingUsers = ref(new Set<string>());
 
 const columns = [
+  {
+    name: 'actions',
+    label: 'Actions',
+    align: 'center',
+    field: 'actions',
+    sortable: false
+  },
   {
     name: 'userId',
     required: true,
@@ -167,19 +189,109 @@ async function loadUsers() {
       totalUsers.value = data.totalUsers;
       totalDeepLinkUsers.value = data.totalDeepLinkUsers;
     } else {
-      $q.notify({
-        type: 'negative',
-        message: `Error loading users: ${data.error || 'Unknown error'}`
-      });
+      if ($q && typeof $q.notify === 'function') {
+        $q.notify({
+          type: 'negative',
+          message: `Error loading users: ${data.error || 'Unknown error'}`
+        });
+      } else {
+        console.error('Error loading users:', data.error || 'Unknown error');
+      }
     }
   } catch (error) {
     console.error('Error loading users:', error);
-    $q.notify({
-      type: 'negative',
-      message: 'Failed to load users. Please try again.'
-    });
+    if ($q && typeof $q.notify === 'function') {
+      $q.notify({
+        type: 'negative',
+        message: 'Failed to load users. Please try again.'
+      });
+    } else {
+      console.error('Failed to load users. Please try again.');
+    }
   } finally {
     loading.value = false;
+  }
+}
+
+function confirmDelete(userId: string) {
+  if ($q && typeof $q.dialog === 'function') {
+    $q.dialog({
+      title: 'Confirm Deletion',
+      message: `Are you sure you want to permanently delete user "${userId}"? This will delete:
+- All files in their Spaces folder
+- Their Knowledge Base
+- Their Agent
+- Their user document
+- All their sessions
+- All their saved chats
+
+This action cannot be undone.`,
+      cancel: {
+        label: 'CANCEL',
+        color: 'grey',
+        flat: true
+      },
+      ok: {
+        label: 'DELETE',
+        color: 'negative'
+      },
+      persistent: true
+    }).onOk(() => {
+      deleteUser(userId);
+    });
+  } else {
+    // Fallback to native confirm if dialog plugin not available
+    if (window.confirm(`Are you sure you want to permanently delete user "${userId}"? This will delete all their files, Knowledge Base, Agent, user document, and sessions. This action cannot be undone.`)) {
+      deleteUser(userId);
+    }
+  }
+}
+
+async function deleteUser(userId: string) {
+  deletingUsers.value.add(userId);
+  try {
+    const response = await fetch(`/api/admin/users/${userId}`, {
+      method: 'DELETE',
+      credentials: 'include'
+    });
+    
+    const data = await response.json();
+    
+    if (data.success) {
+      if ($q && typeof $q.notify === 'function') {
+        $q.notify({
+          type: 'positive',
+          message: `User ${userId} deleted successfully`,
+          timeout: 3000
+        });
+      } else {
+        alert(`User ${userId} deleted successfully`);
+      }
+      // Reload users list
+      await loadUsers();
+    } else {
+      if ($q && typeof $q.notify === 'function') {
+        $q.notify({
+          type: 'negative',
+          message: `Failed to delete user: ${data.error || 'Unknown error'}`,
+          timeout: 5000
+        });
+      } else {
+        alert(`Failed to delete user: ${data.error || 'Unknown error'}`);
+      }
+    }
+  } catch (error) {
+    console.error('Error deleting user:', error);
+    if ($q && typeof $q.notify === 'function') {
+      $q.notify({
+        type: 'negative',
+        message: 'Failed to delete user. Please try again.'
+      });
+    } else {
+      alert('Failed to delete user. Please try again.');
+    }
+  } finally {
+    deletingUsers.value.delete(userId);
   }
 }
 
