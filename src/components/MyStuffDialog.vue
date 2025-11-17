@@ -877,8 +877,8 @@ const loadFiles = async () => {
       console.warn('Failed to auto-archive files:', archiveErr);
     }
 
-    // Then load files as normal
-    const response = await fetch(`/api/user-files?userId=${encodeURIComponent(props.userId)}`, {
+    // Then load files as normal - request verification when loading SAVED FILES tab
+    const response = await fetch(`/api/user-files?userId=${encodeURIComponent(props.userId)}&verify=true`, {
       credentials: 'include'
     });
     if (!response.ok) {
@@ -922,6 +922,43 @@ const loadFiles = async () => {
     
     // Reset dirty flag when files are loaded (dialog opened or refreshed)
     kbNeedsUpdate.value = false;
+    
+    // Display verification result in browser console if available
+    if (result.verificationResult) {
+      const vr = result.verificationResult;
+      console.log('[KB VERIFY] Verification Result:', {
+        inconsistencies: vr.inconsistencies || 'None',
+        cleanupActions: vr.cleanupActions || 'None',
+        userDocUpdates: vr.userDocUpdates || 'None',
+        indexingInProgress: vr.indexingInProgress ? `Yes (jobId: ${vr.indexingJobId})` : 'No',
+        needsIndexing: vr.needsIndexing ? 'Yes' : 'No',
+        verifiedFiles: vr.verifiedFiles,
+        indexedFiles: vr.indexedFiles,
+        filesInS3: vr.filesInS3,
+        filesWithoutDataSources: vr.filesWithoutDataSources
+      });
+      
+      // If indexing is in progress, start polling
+      if (vr.indexingInProgress && vr.indexingJobId) {
+        console.log('[KB VERIFY] Indexing detected in progress, starting polling...');
+        currentIndexingJobId.value = vr.indexingJobId;
+        indexingKB.value = true;
+        indexingStartTime.value = Date.now();
+        indexingStatus.value = {
+          phase: 'indexing',
+          message: 'Indexing in progress...',
+          kb: null,
+          tokens: '0',
+          filesIndexed: 0,
+          progress: 0,
+          error: ''
+        };
+        pollIndexingProgress(vr.indexingJobId);
+      } else if (vr.needsIndexing && !vr.indexingInProgress) {
+        // Indexing is needed but not started - mark KB as needing update
+        kbNeedsUpdate.value = true;
+      }
+    }
   } catch (err) {
     filesError.value = err instanceof Error ? err.message : 'Failed to load files';
   } finally {
@@ -1104,8 +1141,12 @@ const toggleKBConnection = async () => {
   if (!kbInfo.value || togglingKB.value) return;
   
   togglingKB.value = true;
+  
+  // Store the current state for rollback on error
+  const wasConnected = kbInfo.value.connected;
+  
   try {
-    const action = kbInfo.value.connected ? 'detach' : 'attach';
+    const action = wasConnected ? 'detach' : 'attach';
     const response = await fetch('/api/toggle-kb-connection', {
       method: 'POST',
       headers: {
@@ -1124,8 +1165,11 @@ const toggleKBConnection = async () => {
 
     const result = await response.json();
     
-    // Reload agent info to get updated KB connection status and other info
-    await loadAgent();
+    // Use the response directly - it's the source of truth from the backend
+    // No need to call loadAgent() which goes through a cache
+    if (kbInfo.value && typeof result.connected === 'boolean') {
+      kbInfo.value.connected = result.connected;
+    }
     
     // Show notification
     if ($q && typeof $q.notify === 'function') {
@@ -1136,6 +1180,10 @@ const toggleKBConnection = async () => {
       });
     }
   } catch (err) {
+    // Revert on error
+    if (kbInfo.value) {
+      kbInfo.value.connected = wasConnected;
+    }
     const errorMsg = err instanceof Error ? err.message : 'Failed to toggle KB connection';
     if ($q && typeof $q.notify === 'function') {
       $q.notify({
@@ -1810,7 +1858,9 @@ const pollIndexingProgress = async (jobId: string) => {
       // result.completed, result.phase, or result.status
       // backendCompleted is the most reliable indicator that everything is done
       // Log completion detection for debugging
-      if (result.backendCompleted || result.completed || result.phase === 'complete' || result.status === 'INDEX_JOB_STATUS_COMPLETED') {
+      const isCompleted = result.backendCompleted || result.completed || result.phase === 'complete' || result.status === 'INDEX_JOB_STATUS_COMPLETED';
+      
+      if (isCompleted) {
         console.log('[KB] ✅ Detected indexing completion:', {
           backendCompleted: result.backendCompleted,
           completed: result.completed,
@@ -1825,78 +1875,65 @@ const pollIndexingProgress = async (jobId: string) => {
         pollingInterval.value = null;
         // Note: Keep indexingStartTime and elapsedTimeUpdate for final display
         
-        if (result.phase === 'complete' || result.backendCompleted) {
-          indexingStatus.value.phase = 'complete';
-          indexingStatus.value.message = 'Knowledge base indexed successfully!';
-          
-          // Use kbIndexedFiles from server response (single source of truth)
-          // Do NOT derive from userFiles - that creates a mismatch
-          if (result.kbIndexedFiles && Array.isArray(result.kbIndexedFiles) && result.kbIndexedFiles.length > 0) {
-            indexedFiles.value = result.kbIndexedFiles;
-          }
-          
-          // Always reload files to ensure UI is in sync with server state
-          // This ensures chips show correct status even if dialog was open during indexing
-          // Wait a bit to ensure background polling has finished updating the user document
-          await new Promise(resolve => setTimeout(resolve, 500));
-          await loadFiles();
-          
-          // After loadFiles, verify indexedFiles matches what we expect
-          // If result.kbIndexedFiles was provided and loadFiles overwrote it with empty/stale data,
-          // restore the correct value from the completion response
-          if (result.kbIndexedFiles && Array.isArray(result.kbIndexedFiles) && result.kbIndexedFiles.length > 0) {
-            // Check if loadFiles returned different data - if so, use the completion response
-            const loadedIndexedFiles = indexedFiles.value || [];
-            const completionIndexedFiles = result.kbIndexedFiles;
-            if (loadedIndexedFiles.length !== completionIndexedFiles.length || 
-                JSON.stringify([...loadedIndexedFiles].sort()) !== JSON.stringify([...completionIndexedFiles].sort())) {
-              console.log('[KB] loadFiles returned stale indexedFiles, using completion response:', {
-                loaded: loadedIndexedFiles,
-                completion: completionIndexedFiles
-              });
-              indexedFiles.value = completionIndexedFiles;
-            }
-          }
-          
-          emit('indexing-finished', { jobId, phase: 'complete' });
-          
-          // Reload agent info to update KB info (including indexed files and connection status)
-          if (currentTab.value === 'agent') {
-            await loadAgent();
-          }
-          
-          // Attach KB to agent and generate patient summary
-          await attachKBAndGenerateSummary();
-          
-          // Clear dirty flag since indexing completed successfully
-          kbNeedsUpdate.value = false;
-          
-          // Clean up elapsed time interval
-          if (elapsedTimeInterval.value) {
-            clearInterval(elapsedTimeInterval.value);
-            elapsedTimeInterval.value = null;
-          }
-          
-          // Auto-hide after 5 seconds
-          setTimeout(() => {
-            indexingKB.value = false;
-          }, 5000);
-        } else if (result.phase === 'error') {
-          indexingStatus.value.phase = 'error';
-          indexingStatus.value.error = result.error || 'Indexing failed';
-          emit('indexing-finished', { jobId, phase: 'error', error: indexingStatus.value.error });
-          
-          // Clean up elapsed time interval
-          if (elapsedTimeInterval.value) {
-            clearInterval(elapsedTimeInterval.value);
-            elapsedTimeInterval.value = null;
-          }
-          
-          $q.notify({
-            type: 'negative',
-            message: `Indexing failed: ${indexingStatus.value.error}`
-          });
+        // Refresh dialog for any completion status (not just backendCompleted or phase='complete')
+        // This ensures the UI updates when status='INDEX_JOB_STATUS_COMPLETED' even if phase is still 'indexing'
+        indexingStatus.value.phase = 'complete';
+        indexingStatus.value.message = 'Knowledge base indexed successfully!';
+        
+        // Use kbIndexedFiles from server response (single source of truth from DO API)
+        // The server queries DO API directly when completion is detected, ensuring we get the correct state
+        if (result.kbIndexedFiles && Array.isArray(result.kbIndexedFiles)) {
+          indexedFiles.value = result.kbIndexedFiles;
         }
+        
+        // Reload files to refresh the file list (for chips, etc.)
+        // But we've already set indexedFiles from the completion response, so it won't be overwritten
+        await loadFiles();
+        
+        // Ensure indexedFiles from completion response is preserved
+        // loadFiles() may return stale data if userDoc hasn't been updated yet, but we have the correct data from DO API
+        if (result.kbIndexedFiles && Array.isArray(result.kbIndexedFiles)) {
+          indexedFiles.value = result.kbIndexedFiles;
+        }
+        
+        emit('indexing-finished', { jobId, phase: 'complete' });
+        
+        // Reload agent info to update KB info (including indexed files and connection status)
+        if (currentTab.value === 'agent') {
+          await loadAgent();
+        }
+        
+        // Attach KB to agent and generate patient summary
+        await attachKBAndGenerateSummary();
+        
+        // Clear dirty flag since indexing completed successfully
+        kbNeedsUpdate.value = false;
+        
+        // Clean up elapsed time interval
+        if (elapsedTimeInterval.value) {
+          clearInterval(elapsedTimeInterval.value);
+          elapsedTimeInterval.value = null;
+        }
+        
+        // Auto-hide after 5 seconds
+        setTimeout(() => {
+          indexingKB.value = false;
+        }, 5000);
+      } else if (result.phase === 'error') {
+        indexingStatus.value.phase = 'error';
+        indexingStatus.value.error = result.error || 'Indexing failed';
+        emit('indexing-finished', { jobId, phase: 'error', error: indexingStatus.value.error });
+        
+        // Clean up elapsed time interval
+        if (elapsedTimeInterval.value) {
+          clearInterval(elapsedTimeInterval.value);
+          elapsedTimeInterval.value = null;
+        }
+        
+        $q.notify({
+          type: 'negative',
+          message: `Indexing failed: ${indexingStatus.value.error}`
+        });
       }
     } catch (err) {
       clearInterval(pollingInterval.value!);
@@ -1910,10 +1947,12 @@ const pollIndexingProgress = async (jobId: string) => {
       indexingStatus.value.error = err instanceof Error ? err.message : 'Failed to get indexing status';
       emit('indexing-finished', { jobId, phase: 'error', error: indexingStatus.value.error });
       console.error('Error polling indexing status:', err);
-      $q.notify({
-        type: 'negative',
-        message: `Error checking indexing status: ${indexingStatus.value.error}`
-      });
+      if ($q && typeof $q.notify === 'function') {
+        $q.notify({
+          type: 'negative',
+          message: `Error checking indexing status: ${indexingStatus.value.error}`
+        });
+      }
     }
   }, 10000); // Poll every 10 seconds (changed from 2 seconds)
 };

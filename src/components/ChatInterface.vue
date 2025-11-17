@@ -1325,7 +1325,7 @@ const processPageReferences = (content: string): string => {
 };
 
 // Handle click on page link
-const handlePageLinkClick = (event: Event) => {
+const handlePageLinkClick = async (event: Event) => {
   event.preventDefault();
   const target = event.target as HTMLElement;
   const link = target.closest('.page-link') as HTMLElement;
@@ -1356,6 +1356,42 @@ const handlePageLinkClick = (event: Event) => {
     // No PDFs in current chat - check if filename in link matches a user file
     const filename = link.getAttribute('data-filename');
     if (filename) {
+      // Lazy-load user files if not already loaded
+      if (availableUserFiles.value.length === 0 && !loadingUserFiles.value) {
+        // Load files first, then try to match after loading completes
+        pendingPageLink.value = { pageNum: pageNumber };
+        await loadUserFilesForChooser(false);
+        
+        // After loading, try to match the filename
+        const matchedUserFile = availableUserFiles.value.find(f => {
+          const fileUpper = f.fileName?.toUpperCase();
+          const filenameUpper = filename.toUpperCase();
+          return fileUpper === filenameUpper || 
+                 fileUpper?.includes(filenameUpper.replace(/\.(PDF|pdf)$/, '')) ||
+                 filenameUpper.includes(fileUpper?.replace(/\.(PDF|pdf)$/, '') || '');
+        });
+        
+        if (matchedUserFile) {
+          const userFile: UploadedFile = {
+            id: `user-file-${matchedUserFile.bucketKey}`,
+            name: matchedUserFile.fileName,
+            size: 0,
+            type: 'pdf',
+            content: '',
+            originalFile: null as any,
+            bucketKey: matchedUserFile.bucketKey,
+            uploadedAt: new Date()
+          };
+          viewFile(userFile, pageNumber);
+          pendingPageLink.value = null;
+          return;
+        }
+        
+        // No match found after loading - show chooser
+        showDocumentChooser.value = true;
+        return;
+      }
+      
       // Check availableUserFiles if already loaded
       const matchedUserFile = availableUserFiles.value.find(f => {
         const fileUpper = f.fileName?.toUpperCase();
@@ -1422,11 +1458,19 @@ const handlePageLinkClick = (event: Event) => {
   }
 };
 
-// Load user files for the document chooser
+// Load user files for the document chooser (lazy-loaded when needed)
 const loadUserFilesForChooser = async (showChooser = true) => {
   if (!props.user?.userId) {
     if (showChooser) {
       showDocumentChooser.value = true; // Show chooser anyway (might be empty)
+    }
+    return;
+  }
+  
+  // Skip loading if already loading
+  if (loadingUserFiles.value) {
+    if (showChooser) {
+      showDocumentChooser.value = true;
     }
     return;
   }
@@ -2988,11 +3032,6 @@ onMounted(async () => {
   await loadOwnerDeepLinkSetting();
   await loadProviders();
   loadSavedChatCount();
-  
-  // Pre-load user files so they're available for page link matching
-  if (props.user?.userId && !isDeepLink.value) {
-    loadUserFilesForChooser(false); // Load but don't show chooser
-  }
   
   if (!isDeepLink.value) {
     syncAgent();

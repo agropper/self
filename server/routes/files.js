@@ -215,8 +215,6 @@ export default function setupFileRoutes(app) {
     try {
       const { bucketKey } = req.params;
       
-      console.log(`📄 Proxying PDF file with bucket key: ${bucketKey}`);
-      
       const bucketUrl = process.env.DIGITALOCEAN_BUCKET;
       const bucketName = bucketUrl?.split('//')[1]?.split('.')[0] || 'maia';
 
@@ -235,8 +233,6 @@ export default function setupFileRoutes(app) {
         Key: bucketKey
       });
       
-      console.log(`📄 Fetching from S3: ${bucketName}/${bucketKey}`);
-      
       const response = await s3Client.send(getCommand);
       
       // Set appropriate headers
@@ -248,8 +244,6 @@ export default function setupFileRoutes(app) {
       
       // Stream the PDF content
       response.Body.pipe(res);
-      
-      console.log(`✅ Successfully streaming PDF: ${bucketKey}`);
     } catch (error) {
       console.error('❌ Error proxying PDF:', error);
       res.status(500).json({ 

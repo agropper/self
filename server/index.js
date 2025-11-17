@@ -660,7 +660,6 @@ app.use(cors({
   allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With']
 }));
 
-console.log(`🌐 [CORS] Allowed origins: ${allowedOrigins.join(', ')}`);
 app.use(cookieParser());
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true }));
@@ -2688,23 +2687,14 @@ async function provisionUserAsync(userId, token) {
         kbDetails = await doClient.kb.get(kbId);
         logProvisioning(userId, `✅ Found existing KB: ${kbName} (${kbId})`, 'success');
         
-        // Check if KB has datasources, add one if missing
+        // Note: We no longer create folder-level data sources during provisioning
+        // Per-file data sources will be created when files are added to the KB via the UI
+        // This ensures each file has its own data source for granular indexing control
         const datasources = kbDetails?.datasources || kbDetails?.data_sources || kbDetails?.knowledge_base_data_sources || [];
         if (datasources.length === 0) {
-          logProvisioning(userId, `⚠️  Existing KB has no datasources - adding datasource`, 'warning');
-          try {
-            const newDataSource = await doClient.kb.addDataSource(kbId, {
-              bucketName: bucketName,
-              itemPath: `${userId}/${kbName}/`,
-              region: process.env.DO_REGION || 'tor1'
-            });
-            logProvisioning(userId, `✅ Added datasource to existing KB: ${newDataSource.uuid || newDataSource.id || 'created'}`, 'success');
-            // Refresh KB details
-            kbDetails = await doClient.kb.get(kbId);
-          } catch (dsError) {
-            logProvisioning(userId, `⚠️  Failed to add datasource to existing KB: ${dsError.message}`, 'warning');
-            // Continue - datasource can be added later
-          }
+          logProvisioning(userId, `ℹ️  KB has no datasources - per-file datasources will be created when files are added`, 'info');
+        } else {
+          logProvisioning(userId, `✅ KB has ${datasources.length} data source(s)`, 'success');
         }
       } else {
         // Create new KB with datasource (KB create automatically includes datasource if itemPath is provided)
@@ -2726,7 +2716,7 @@ async function provisionUserAsync(userId, token) {
         kbId = kbResult.uuid || kbResult.id;
         kbDetails = await doClient.kb.get(kbId);
         
-        logProvisioning(userId, `✅ Created new KB with datasource: ${kbName} (${kbId})`, 'success');
+        logProvisioning(userId, `✅ Created new KB: ${kbName} (${kbId}) - per-file datasources will be created when files are added`, 'success');
       }
       
       // Update user document with KB info
@@ -3538,7 +3528,7 @@ app.get('/api/user-chats', async (req, res) => {
 
     // Only log if there are chats (0 is the default/expected state)
     if (userChats.length > 0) {
-      console.log(`✅ Found ${userChats.length} chats for user ${effectiveUserId}`);
+    console.log(`✅ Found ${userChats.length} chats for user ${effectiveUserId}`);
     }
     
     res.json({
@@ -4038,7 +4028,7 @@ app.post('/api/archive-user-files', async (req, res) => {
       let retries = 3;
       while (!saved && retries > 0) {
         try {
-          await cloudant.saveDocument('maia_users', userDoc);
+      await cloudant.saveDocument('maia_users', userDoc);
           saved = true;
         } catch (saveError) {
           if (saveError.statusCode === 409 && retries > 1) {
@@ -4216,6 +4206,9 @@ app.get('/api/verify-file-state', async (req, res) => {
   }
 });
 
+// Cache for verification to prevent duplicate calls within short time window
+const verificationCache = new Map(); // userId -> { timestamp, indexedFiles }
+
 // Get user files
 app.get('/api/user-files', async (req, res) => {
   try {
@@ -4230,7 +4223,7 @@ app.get('/api/user-files', async (req, res) => {
     }
 
     // Get the user document
-    const userDoc = await cloudant.getDocument('maia_users', userId);
+    let userDoc = await cloudant.getDocument('maia_users', userId);
     
     if (!userDoc) {
       return res.status(404).json({ 
@@ -4242,14 +4235,365 @@ app.get('/api/user-files', async (req, res) => {
 
     const files = userDoc.files || [];
     
-    // Get indexed files from user document (tracks which files were actually indexed)
-    const indexedFiles = userDoc.kbIndexedFiles || [];
+    // Sync indexed files with DO API state (source of truth)
+    let indexedFiles = userDoc.kbIndexedFiles || [];
     
-    res.json({
+    // Only verify KB state if explicitly requested via query parameter
+    // This prevents verification from running on every page load (e.g., document chooser)
+    const shouldVerify = req.query.verify === 'true';
+    
+    // If user has a KB, verify indexed files against actual state
+    // Use cache to prevent duplicate verification calls within 5 seconds
+    const cacheKey = `verify-${userId}`;
+    const cached = verificationCache.get(cacheKey);
+    const now = Date.now();
+    const CACHE_TTL = 5000; // 5 seconds
+    
+    if (shouldVerify && userDoc.kbId) {
+      if (cached && (now - cached.timestamp) < CACHE_TTL) {
+        console.log(`[KB VERIFY] Using cached result (${Math.round((now - cached.timestamp) / 1000)}s ago)`);
+        indexedFiles = cached.indexedFiles;
+      } else {
+        try {
+          const kbName = getKBNameFromUserDoc(userDoc, userId);
+          const kbFolderPath = `${userId}/${kbName}/`;
+          
+          // Track inconsistencies, cleanup actions, and updates
+          const inconsistencies = [];
+          const cleanupActions = [];
+          const userDocUpdates = [];
+          let indexingInProgress = false;
+          let indexingJobId = null;
+          
+          // Setup S3 client
+          const { S3Client, ListObjectsV2Command, HeadObjectCommand } = await import('@aws-sdk/client-s3');
+          const bucketUrl = process.env.DIGITALOCEAN_BUCKET;
+          const bucketName = bucketUrl?.split('//')[1]?.split('.')[0] || 'maia';
+          
+          const s3Client = new S3Client({
+            endpoint: process.env.DIGITALOCEAN_ENDPOINT_URL || 'https://tor1.digitaloceanspaces.com',
+            region: 'us-east-1',
+            forcePathStyle: false,
+            credentials: {
+              accessKeyId: process.env.DIGITALOCEAN_AWS_ACCESS_KEY_ID || '',
+              secretAccessKey: process.env.DIGITALOCEAN_AWS_SECRET_ACCESS_KEY || ''
+            }
+          });
+          
+          // Step 1: Get data sources from DO API
+          const dataSourceIndexingStatus = new Map(); // filePath -> { indexed: boolean, jobStatus: string, dsUuid: string }
+          let filesFromDataSources = [];
+          
+          try {
+            const datasources = await doClient.kb.listDataSources(userDoc.kbId);
+            for (const ds of datasources) {
+              const dsPath = ds?.item_path || ds?.spaces_data_source?.item_path;
+              const dsUuid = ds?.uuid || ds?.id;
+              
+              if (dsPath && dsPath.startsWith(kbFolderPath)) {
+                filesFromDataSources.push(dsPath);
+                
+                const lastJob = ds?.last_datasource_indexing_job;
+                // A file is indexed if it has a last_datasource_indexing_job (regardless of status)
+                // The presence of last_datasource_indexing_job indicates the data source has been processed
+                const isIndexed = !!lastJob;
+                
+                dataSourceIndexingStatus.set(dsPath, {
+                  indexed: isIndexed,
+                  jobStatus: lastJob?.status || 'no_job',
+                  dsUuid: dsUuid
+                });
+                
+                // Log status for debugging
+                if (!isIndexed) {
+                  console.log(`[KB VERIFY] File ${dsPath.split('/').pop()}: NOT INDEXED (no last_datasource_indexing_job)`);
+                } else {
+                  console.log(`[KB VERIFY] File ${dsPath.split('/').pop()}: INDEXED (status: ${lastJob.status})`);
+                }
+              }
+            }
+          } catch (kbError) {
+            inconsistencies.push(`Failed to list data sources: ${kbError.message}`);
+          }
+          
+          // Step 2: Verify files exist in S3
+          const uniqueFilesFromDataSources = [...new Set(filesFromDataSources)];
+          const verifiedFiles = [];
+          const missingFiles = [];
+          
+          for (const filePath of uniqueFilesFromDataSources) {
+            try {
+              await s3Client.send(new HeadObjectCommand({ Bucket: bucketName, Key: filePath }));
+              verifiedFiles.push(filePath);
+            } catch (error) {
+              if (error.name === 'NotFound' || error.$metadata?.httpStatusCode === 404) {
+                missingFiles.push(filePath);
+              }
+            }
+          }
+          
+          // Get files in S3 KB folder
+          const listCommand = new ListObjectsV2Command({ Bucket: bucketName, Prefix: kbFolderPath });
+          const listResult = await s3Client.send(listCommand);
+          const filesInS3 = (listResult.Contents || [])
+            .filter(file => {
+              const key = file.Key || '';
+              return key.startsWith(kbFolderPath) && !key.endsWith('/') && !key.endsWith('.keep') && key !== kbFolderPath;
+            })
+            .map(file => file.Key || '');
+          
+          const filesWithoutDataSources = filesInS3.filter(filePath => !uniqueFilesFromDataSources.includes(filePath));
+          
+          // Collect inconsistencies
+          if (missingFiles.length > 0) {
+            inconsistencies.push(`${missingFiles.length} orphaned data source(s): ${missingFiles.map(p => p.split('/').pop()).join(', ')}`);
+          }
+          if (filesWithoutDataSources.length > 0) {
+            inconsistencies.push(`${filesWithoutDataSources.length} file(s) in S3 without data sources: ${filesWithoutDataSources.map(p => p.split('/').pop()).join(', ')}`);
+          }
+          
+          const indexedFilesFromDataSources = verifiedFiles.filter(filePath => {
+            const status = dataSourceIndexingStatus.get(filePath);
+            return status && status.indexed;
+          });
+          
+          const userDocIndexedFiles = userDoc.kbIndexedFiles || [];
+          const indexedFilesSorted = [...indexedFilesFromDataSources].sort();
+          const userDocFilesSorted = [...userDocIndexedFiles].sort();
+          
+          if (JSON.stringify(indexedFilesSorted) !== JSON.stringify(userDocFilesSorted)) {
+            inconsistencies.push(`UserDoc kbIndexedFiles mismatch: DO API shows ${indexedFilesFromDataSources.length} indexed, UserDoc shows ${userDocIndexedFiles.length}`);
+          }
+          
+          // Report all inconsistencies in one message
+          if (inconsistencies.length > 0) {
+            console.log(`[KB VERIFY] Inconsistencies: ${inconsistencies.join('; ')}`);
+          } else {
+            console.log(`[KB VERIFY] No inconsistencies - KB API, Spaces API, and UserDoc are in sync`);
+          }
+          
+          // Clean up orphaned data sources
+          let deletedDataSources = 0;
+          let skippedDataSources = 0;
+          
+          // Check for active indexing jobs BEFORE cleanup (to avoid triggering new ones)
+          let hasActiveJobBeforeCleanup = false;
+          try {
+            const activeJobsBefore = await doClient.indexing.listForKB(userDoc.kbId);
+            const jobsArrayBefore = Array.isArray(activeJobsBefore) ? activeJobsBefore : 
+                            (activeJobsBefore?.jobs || activeJobsBefore?.indexing_jobs || activeJobsBefore?.data || []);
+            hasActiveJobBeforeCleanup = jobsArrayBefore.some(j => {
+              const status = j.status || j.job_status || j.state;
+              return status === 'INDEX_JOB_STATUS_PENDING' || 
+                     status === 'INDEX_JOB_STATUS_RUNNING' ||
+                     status === 'INDEX_JOB_STATUS_IN_PROGRESS' ||
+                     status === 'pending' ||
+                     status === 'running' ||
+                     status === 'in_progress';
+            });
+          } catch (jobCheckErr) {
+            // Ignore errors
+          }
+          
+          for (const missingFilePath of missingFiles) {
+            const status = dataSourceIndexingStatus.get(missingFilePath);
+            const orphanedDsUuid = status?.dsUuid;
+            
+            if (orphanedDsUuid) {
+              try {
+                if (hasActiveJobBeforeCleanup) {
+                  skippedDataSources++;
+                } else {
+                  await doClient.kb.deleteDataSource(userDoc.kbId, orphanedDsUuid);
+                  deletedDataSources++;
+                  dataSourceIndexingStatus.delete(missingFilePath);
+                }
+              } catch (deleteErr) {
+                const errorMsg = deleteErr.message || 'Unknown error';
+                if (errorMsg.includes('403') || errorMsg.includes('forbidden')) {
+                  skippedDataSources++;
+                } else {
+                  cleanupActions.push(`Failed to delete orphaned data source ${missingFilePath.split('/').pop()}: ${errorMsg}`);
+                }
+              }
+            }
+          }
+          
+          // Report cleanup actions in one message
+          if (deletedDataSources > 0 || skippedDataSources > 0 || cleanupActions.length > 0) {
+            const actions = [];
+            if (deletedDataSources > 0) actions.push(`Deleted ${deletedDataSources} orphaned data source(s)`);
+            if (skippedDataSources > 0) actions.push(`Skipped ${skippedDataSources} data source(s) (indexing in progress)`);
+            if (cleanupActions.length > 0) actions.push(...cleanupActions);
+            console.log(`[KB VERIFY] KB cleanup: ${actions.join('; ')}`);
+          }
+          
+          // Update user document
+          const allFilesIndexed = indexedFilesFromDataSources.length === verifiedFiles.length && verifiedFiles.length > 0;
+          const someFilesIndexed = indexedFilesFromDataSources.length > 0 && indexedFilesFromDataSources.length < verifiedFiles.length;
+          
+          if (allFilesIndexed) {
+            if (JSON.stringify([...verifiedFiles].sort()) !== JSON.stringify(userDocFilesSorted)) {
+              indexedFiles = verifiedFiles;
+              userDoc.kbIndexedFiles = verifiedFiles;
+              userDocUpdates.push(`Updated kbIndexedFiles to ${verifiedFiles.length} file(s) (all indexed)`);
+            } else {
+              indexedFiles = verifiedFiles;
+            }
+          } else if (someFilesIndexed) {
+            if (JSON.stringify(indexedFilesSorted) !== JSON.stringify(userDocFilesSorted)) {
+              indexedFiles = indexedFilesFromDataSources;
+              userDoc.kbIndexedFiles = indexedFilesFromDataSources;
+              userDocUpdates.push(`Updated kbIndexedFiles to ${indexedFilesFromDataSources.length} of ${verifiedFiles.length} file(s) (partial indexing)`);
+            } else {
+              indexedFiles = indexedFilesFromDataSources;
+            }
+          } else {
+            if (verifiedFiles.length === 0) {
+              if (userDocIndexedFiles.length > 0) {
+                indexedFiles = [];
+                userDoc.kbIndexedFiles = [];
+                userDocUpdates.push(`Cleared kbIndexedFiles (no files in KB)`);
+              } else {
+                indexedFiles = [];
+              }
+            } else {
+              if (userDocIndexedFiles.length > 0) {
+                indexedFiles = [];
+                userDoc.kbIndexedFiles = [];
+                userDocUpdates.push(`Cleared kbIndexedFiles (files exist but none indexed)`);
+              } else {
+                indexedFiles = [];
+              }
+            }
+          }
+          
+          // Save user document if updated (with retry logic for conflicts)
+          if (userDocUpdates.length > 0) {
+            let retries = 3;
+            let saved = false;
+            while (retries > 0 && !saved) {
+              try {
+                await cloudant.saveDocument('maia_users', userDoc);
+                console.log(`[KB VERIFY] UserDoc cleanup: ${userDocUpdates.join('; ')}`);
+                saved = true;
+              } catch (saveError) {
+                if (saveError.statusCode === 409 && retries > 1) {
+                  // Conflict - re-read and retry
+                  retries--;
+                  const freshDoc = await cloudant.getDocument('maia_users', userId);
+                  if (freshDoc) {
+                    // Re-apply the updates
+                    if (allFilesIndexed) {
+                      freshDoc.kbIndexedFiles = verifiedFiles;
+                    } else if (someFilesIndexed) {
+                      freshDoc.kbIndexedFiles = indexedFilesFromDataSources;
+                    } else {
+                      freshDoc.kbIndexedFiles = [];
+                    }
+                    userDoc = freshDoc;
+                    // Update indexedFiles to match what we saved
+                    if (allFilesIndexed) {
+                      indexedFiles = verifiedFiles;
+                    } else if (someFilesIndexed) {
+                      indexedFiles = indexedFilesFromDataSources;
+                    } else {
+                      indexedFiles = [];
+                    }
+                    await new Promise(resolve => setTimeout(resolve, 100 * (4 - retries)));
+                  } else {
+                    throw saveError;
+                  }
+                } else {
+                  console.error(`[KB VERIFY] Failed to save user document: ${saveError.message}`);
+                  throw saveError;
+                }
+              }
+            }
+          }
+          
+          // Check if indexing is in progress AFTER cleanup (cleanup may have triggered it)
+          try {
+            const activeJobs = await doClient.indexing.listForKB(userDoc.kbId);
+            const jobsArray = Array.isArray(activeJobs) ? activeJobs : 
+                            (activeJobs?.jobs || activeJobs?.indexing_jobs || activeJobs?.data || []);
+            const activeJob = jobsArray.find(j => {
+              const status = j.status || j.job_status || j.state;
+              return status === 'INDEX_JOB_STATUS_PENDING' || 
+                     status === 'INDEX_JOB_STATUS_RUNNING' ||
+                     status === 'INDEX_JOB_STATUS_IN_PROGRESS' ||
+                     status === 'pending' ||
+                     status === 'running' ||
+                     status === 'in_progress';
+            });
+            
+            if (activeJob) {
+              indexingInProgress = true;
+              indexingJobId = activeJob.uuid || activeJob.id || activeJob.indexing_job_id;
+              const filesCount = activeJob.files_indexed || activeJob.indexed_file_count || '0';
+              const tokensCount = activeJob.tokens_indexed || activeJob.total_tokens || '0';
+              console.log(`[KB VERIFY] Indexing in progress: jobId=${indexingJobId}, files=${filesCount}, tokens=${tokensCount}`);
+            }
+          } catch (jobCheckErr) {
+            // Ignore errors
+          }
+          
+          // Determine if indexing is required
+          const needsIndexing = verifiedFiles.length > 0 && indexedFilesFromDataSources.length < verifiedFiles.length;
+          
+          // Build verification result for frontend
+          const verificationResult = {
+            inconsistencies: inconsistencies.length > 0 ? inconsistencies : null,
+            cleanupActions: deletedDataSources > 0 || skippedDataSources > 0 ? {
+              deletedDataSources,
+              skippedDataSources,
+              errors: cleanupActions.length > 0 ? cleanupActions : null
+            } : null,
+            userDocUpdates: userDocUpdates.length > 0 ? userDocUpdates : null,
+            indexingInProgress: indexingInProgress,
+            indexingJobId: indexingJobId,
+            needsIndexing: needsIndexing,
+            verifiedFiles: verifiedFiles.length,
+            indexedFiles: indexedFilesFromDataSources.length,
+            filesInS3: filesInS3.length,
+            filesWithoutDataSources: filesWithoutDataSources.length
+          };
+          
+          // Store verification result for response
+          res.locals.verificationResult = verificationResult;
+          
+          // Cache the verification result
+          verificationCache.set(cacheKey, {
+            timestamp: now,
+            indexedFiles: indexedFiles,
+            verificationResult: verificationResult
+          });
+          
+          // Clean up old cache entries (older than 1 minute)
+          for (const [key, value] of verificationCache.entries()) {
+            if (now - value.timestamp > 60000) {
+              verificationCache.delete(key);
+            }
+          }
+        } catch (syncError) {
+          console.error(`[KB VERIFY] Error during verification: ${syncError.message}`);
+          // Continue with userDoc.kbIndexedFiles as fallback
+        }
+      }
+    }
+    
+    const response = {
       success: true,
       files: files,
       indexedFiles: indexedFiles
-    });
+    };
+    
+    // Include verification result if available
+    if (res.locals.verificationResult) {
+      response.verificationResult = res.locals.verificationResult;
+    }
+    
+    res.json(response);
   } catch (error) {
     console.error('❌ Error fetching user files:', error);
     res.status(500).json({ 
@@ -4361,16 +4705,16 @@ app.post('/api/toggle-file-knowledge-base', async (req, res) => {
     const originalKbIndexedFiles = userDoc.kbIndexedFiles ? [...userDoc.kbIndexedFiles] : [];
     
     try {
-      // Handle intermediate step (root -> archived) if needed
-      if (intermediateKey && sourceKey !== intermediateKey) {
-        // Copy from root to archived
-        const archiveCopy = new CopyObjectCommand({
-          Bucket: bucketName,
-          CopySource: `${bucketName}/${sourceKey}`,
-          Key: intermediateKey
-        });
-        await s3Client.send(archiveCopy);
-        
+    // Handle intermediate step (root -> archived) if needed
+    if (intermediateKey && sourceKey !== intermediateKey) {
+      // Copy from root to archived
+      const archiveCopy = new CopyObjectCommand({
+        Bucket: bucketName,
+        CopySource: `${bucketName}/${sourceKey}`,
+        Key: intermediateKey
+      });
+      await s3Client.send(archiveCopy);
+      
         // Verify the file exists at the intermediate location BEFORE deleting from root
         // This prevents data loss if the copy failed
         // Retry verification up to 3 times with exponential backoff
@@ -4400,28 +4744,28 @@ app.post('/api/toggle-file-knowledge-base', async (req, res) => {
         }
         
         // Only delete from root after verification succeeds
-        const archiveDelete = new DeleteObjectCommand({
-          Bucket: bucketName,
-          Key: sourceKey
-        });
-        await s3Client.send(archiveDelete);
-        
-        // Update sourceKey for next step
-        sourceKey = intermediateKey;
-        
+      const archiveDelete = new DeleteObjectCommand({
+        Bucket: bucketName,
+        Key: sourceKey
+      });
+      await s3Client.send(archiveDelete);
+      
+      // Update sourceKey for next step
+      sourceKey = intermediateKey;
+      
         // Update file's bucketKey in user document (temporary, will be saved after final move)
-        userDoc.files[fileIndex].bucketKey = intermediateKey;
-      }
+      userDoc.files[fileIndex].bucketKey = intermediateKey;
+    }
 
-      // Move file to final destination if different from source
-      if (sourceKey !== destKey) {
-        // Copy file to new location
-        const copyCommand = new CopyObjectCommand({
-          Bucket: bucketName,
-          CopySource: `${bucketName}/${sourceKey}`,
-          Key: destKey
-        });
-        await s3Client.send(copyCommand);
+    // Move file to final destination if different from source
+    if (sourceKey !== destKey) {
+      // Copy file to new location
+      const copyCommand = new CopyObjectCommand({
+        Bucket: bucketName,
+        CopySource: `${bucketName}/${sourceKey}`,
+        Key: destKey
+      });
+      await s3Client.send(copyCommand);
 
         // Verify the file exists at the new location BEFORE deleting from old location
         // This prevents data loss if the copy failed
@@ -4452,14 +4796,14 @@ app.post('/api/toggle-file-knowledge-base', async (req, res) => {
         }
 
         // Only delete from old location after verification succeeds
-        const deleteCommand = new DeleteObjectCommand({
-          Bucket: bucketName,
-          Key: sourceKey
-        });
-        await s3Client.send(deleteCommand);
+      const deleteCommand = new DeleteObjectCommand({
+        Bucket: bucketName,
+        Key: sourceKey
+      });
+      await s3Client.send(deleteCommand);
 
-        // Update file's bucketKey in user document
-        userDoc.files[fileIndex].bucketKey = destKey;
+      // Update file's bucketKey in user document
+      userDoc.files[fileIndex].bucketKey = destKey;
       }
     } catch (moveError) {
       // Rollback: restore original state in user document
@@ -4487,6 +4831,41 @@ app.post('/api/toggle-file-knowledge-base', async (req, res) => {
       if (userDoc.files[fileIndex].knowledgeBases.length === 0) {
         userDoc.files[fileIndex].knowledgeBases.push(kbName);
       }
+      // Ensure a per-file data source exists for this KB file
+      try {
+        if (userDoc.kbId) {
+          if (!Array.isArray(userDoc.kbChangedDataSourceUuids)) {
+            userDoc.kbChangedDataSourceUuids = [];
+          }
+          if (!userDoc.files[fileIndex].kbDataSourceUuid) {
+            const added = await doClient.kb.addDataSource(userDoc.kbId, {
+              bucketName,
+              itemPath: `${userId}/${kbName}/${fileName}`,
+              region: process.env.DO_REGION || 'tor1'
+            });
+            const dsUuid = added?.uuid || added?.id || added?.knowledge_base_data_source?.uuid;
+            if (dsUuid) {
+              userDoc.files[fileIndex].kbDataSourceUuid = dsUuid;
+              if (!userDoc.kbChangedDataSourceUuids.includes(dsUuid)) {
+                userDoc.kbChangedDataSourceUuids.push(dsUuid);
+              }
+              userDoc.kbIndexingNeeded = true;
+            }
+          } else {
+            // Existing data source - mark for targeted reindex
+            if (!userDoc.kbChangedDataSourceUuids.includes(userDoc.files[fileIndex].kbDataSourceUuid)) {
+              userDoc.kbChangedDataSourceUuids.push(userDoc.files[fileIndex].kbDataSourceUuid);
+            }
+            userDoc.kbIndexingNeeded = true;
+          }
+        } else {
+          // No KB yet - mark dirty, indexing will reconcile later
+          userDoc.kbIndexingNeeded = true;
+        }
+      } catch (perFileDsErr) {
+        console.error('[KB] Error ensuring per-file data source:', perFileDsErr.message);
+        userDoc.kbIndexingNeeded = true;
+      }
     } else {
       // Remove from knowledge base
       userDoc.files[fileIndex].knowledgeBases = [];
@@ -4496,6 +4875,21 @@ app.post('/api/toggle-file-knowledge-base', async (req, res) => {
         userDoc.kbIndexedFiles = userDoc.kbIndexedFiles.filter(
           indexedKey => indexedKey !== bucketKey && indexedKey !== destKey && indexedKey !== sourceKey
         );
+      }
+      // Delete per-file data source if it exists
+      try {
+        const dsUuid = userDoc.files[fileIndex].kbDataSourceUuid;
+        if (userDoc.kbId && dsUuid) {
+          await doClient.kb.deleteDataSource(userDoc.kbId, dsUuid);
+        }
+        userDoc.files[fileIndex].kbDataSourceUuid = undefined;
+        // After removal, re-index remaining data sources to reflect deletion
+        userDoc.kbReindexAll = true;
+        userDoc.kbIndexingNeeded = true;
+      } catch (perFileDsDelErr) {
+        console.error('[KB] Error deleting per-file data source:', perFileDsDelErr.message);
+        userDoc.kbReindexAll = true;
+        userDoc.kbIndexingNeeded = true;
       }
     }
 
@@ -4526,7 +4920,7 @@ app.post('/api/toggle-file-knowledge-base', async (req, res) => {
     let retries = 3;
     while (!saved && retries > 0) {
       try {
-        await cloudant.saveDocument('maia_users', userDoc);
+    await cloudant.saveDocument('maia_users', userDoc);
         saved = true;
       } catch (saveError) {
         if (saveError.statusCode === 409 && retries > 1) {
@@ -4847,16 +5241,9 @@ app.delete('/api/delete-file', async (req, res) => {
       }
     });
 
-    // Delete file from Spaces
-    const deleteCommand = new DeleteObjectCommand({
-      Bucket: bucketName,
-      Key: bucketKey
-    });
-
-    await s3Client.send(deleteCommand);
-    console.log(`✅ Deleted file from Spaces: ${bucketKey}`);
-
-    // Remove file from user document
+    // Get user document FIRST to check if file is in KB and has a data source
+    // CRITICAL: Delete data source BEFORE deleting file from S3
+    // If data source deletion fails, we should keep the file and report error
     const userDoc = await cloudant.getDocument('maia_users', userId);
     
     if (!userDoc) {
@@ -4871,7 +5258,101 @@ app.delete('/api/delete-file', async (req, res) => {
     const kbName = getKBNameFromUserDoc(userDoc, userId);
     const wasInKB = bucketKey && bucketKey.startsWith(`${userId}/${kbName}/`);
     
+    // CRITICAL: Delete data source FIRST (most important operation)
+    // Only proceed with file deletion if data source deletion succeeds
+    let dataSourceDeleted = false;
+    let dataSourceDeletionError = null;
+    
+    if (userDoc.files && wasInKB) {
+      const fileIndex = userDoc.files.findIndex(f => f.bucketKey === bucketKey);
+      const dsUuid = fileIndex >= 0 ? userDoc.files[fileIndex].kbDataSourceUuid : undefined;
+      
+      if (userDoc.kbId && dsUuid) {
+        try {
+          // Check if there's an active indexing job before trying to delete
+          // DigitalOcean may not allow deleting data sources while indexing is in progress
+          let canDelete = true;
+          try {
+            const activeJobs = await doClient.indexing.listForKB(userDoc.kbId);
+            const jobsArray = Array.isArray(activeJobs) ? activeJobs : 
+                            (activeJobs?.jobs || activeJobs?.indexing_jobs || activeJobs?.data || []);
+            const hasActiveJob = jobsArray.some(j => {
+              const status = j.status || j.job_status || j.state;
+              return status === 'INDEX_JOB_STATUS_PENDING' || 
+                     status === 'INDEX_JOB_STATUS_RUNNING' ||
+                     status === 'INDEX_JOB_STATUS_IN_PROGRESS' ||
+                     status === 'pending' ||
+                     status === 'running' ||
+                     status === 'in_progress';
+            });
+            if (hasActiveJob) {
+              console.log(`[KB] ⚠️ Active indexing job detected - cannot delete data source ${dsUuid} now. File deletion aborted.`);
+              canDelete = false;
+              dataSourceDeletionError = new Error('Cannot delete data source while indexing is in progress');
+            }
+          } catch (jobCheckErr) {
+            console.warn(`[KB] Could not check for active indexing jobs: ${jobCheckErr.message}`);
+            // Continue with deletion attempt anyway
+          }
+          
+          if (canDelete) {
+            await doClient.kb.deleteDataSource(userDoc.kbId, dsUuid);
+            console.log(`[KB] ✅ Deleted data source ${dsUuid} for file in KB`);
+            dataSourceDeleted = true;
+          }
+        } catch (dsErr) {
+          // Data source deletion failed - this is critical
+          const errorMsg = dsErr.message || 'Unknown error';
+          const isForbidden = errorMsg.includes('403') || errorMsg.includes('forbidden');
+          dataSourceDeletionError = dsErr;
+          
+          if (isForbidden) {
+            console.error(`[KB] ❌ CRITICAL: Cannot delete data source ${dsUuid} (403 Forbidden) - aborting file deletion`);
+          } else {
+            console.error(`[KB] ❌ CRITICAL: Failed to delete data source ${dsUuid}: ${errorMsg} - aborting file deletion`);
+          }
+          
+          // DO NOT proceed with file deletion if data source deletion failed
+          return res.status(500).json({
+            success: false,
+            message: `Failed to delete data source from knowledge base: ${errorMsg}. File was not deleted.`,
+            error: 'DATA_SOURCE_DELETION_FAILED'
+          });
+        }
+      } else if (wasInKB && !dsUuid) {
+        // File is in KB folder but has no data source UUID - this is unusual but not critical
+        console.warn(`[KB] ⚠️ File ${bucketKey} is in KB folder but has no kbDataSourceUuid - proceeding with file deletion`);
+        dataSourceDeleted = true; // Allow deletion to proceed
+      } else {
+        // File is not in KB - no data source to delete
+        dataSourceDeleted = true; // Allow deletion to proceed
+      }
+    } else {
+      // File is not in KB - no data source to delete
+      dataSourceDeleted = true; // Allow deletion to proceed
+    }
+    
+    // Only delete file from S3 if data source deletion succeeded (or file was not in KB)
+    if (!dataSourceDeleted) {
+      return res.status(500).json({
+        success: false,
+        message: dataSourceDeletionError?.message || 'Cannot delete file: data source deletion failed',
+        error: 'DATA_SOURCE_DELETION_FAILED'
+      });
+    }
+    
+    // Delete file from Spaces (only after data source is deleted)
+    const deleteCommand = new DeleteObjectCommand({
+      Bucket: bucketName,
+      Key: bucketKey
+    });
+
+    await s3Client.send(deleteCommand);
+    console.log(`✅ Deleted file from Spaces: ${bucketKey}`);
+
+    // Update user document
     if (userDoc.files) {
+      // Remove file from userDoc.files
       userDoc.files = userDoc.files.filter(f => f.bucketKey !== bucketKey);
       
       // If file was in KB, remove from kbIndexedFiles and mark KB as needing update
@@ -4881,6 +5362,7 @@ app.delete('/api/delete-file', async (req, res) => {
         }
         // Mark KB as needing re-indexing since a file was removed
         userDoc.kbIndexingNeeded = true;
+        userDoc.kbReindexAll = true;
       }
       
       await cloudant.saveDocument('maia_users', userDoc);
@@ -5178,52 +5660,293 @@ app.post('/api/update-knowledge-base', async (req, res) => {
           }
         }
         
+        // Before starting a new job, check if there are any active jobs via listForKB
+        // This prevents getting stuck waiting for a job that doesn't exist
+        if (!jobId) {
+          try {
+            const existingJobs = await doClient.indexing.listForKB(kbId);
+            const jobsArray = Array.isArray(existingJobs) ? existingJobs : 
+                            (existingJobs?.jobs || existingJobs?.indexing_jobs || existingJobs?.data || []);
+            
+            // Find any active indexing job
+            const activeJob = jobsArray.find(j => {
+              const jobStatus = j.status || j.job_status || j.state;
+              return jobStatus === 'INDEX_JOB_STATUS_PENDING' || 
+                     jobStatus === 'INDEX_JOB_STATUS_RUNNING' ||
+                     jobStatus === 'INDEX_JOB_STATUS_IN_PROGRESS' ||
+                     jobStatus === 'pending' ||
+                     jobStatus === 'running' ||
+                     jobStatus === 'in_progress';
+            });
+            
+            if (activeJob) {
+              const foundJobId = activeJob.uuid || activeJob.id || activeJob.indexing_job_id;
+              console.log(`[KB Update] ⚠️ Found active indexing job ${foundJobId} via listForKB - using existing job`);
+              jobId = foundJobId;
+              indexingStarted = true;
+              
+              // Update userDoc with the found job ID
+              try {
+                const freshDoc = await cloudant.getDocument('maia_users', userId);
+                if (freshDoc && freshDoc.kbLastIndexingJobId !== foundJobId) {
+                  freshDoc.kbLastIndexingJobId = foundJobId;
+                  await cloudant.saveDocument('maia_users', freshDoc);
+                }
+              } catch (updateErr) {
+                console.warn(`[KB Update] ⚠️ Could not update userDoc with found job ID:`, updateErr.message);
+              }
+            }
+          } catch (listError) {
+            console.error(`[KB Update] ❌ Error listing indexing jobs:`, listError.message);
+            // Continue to start new job if listing fails
+          }
+        }
+        
         // Start new indexing job if no active job found
         if (!jobId) {
-          // Get data source UUID from KB details
+          // Get current datasources from KB
           let datasources = kbDetails?.datasources || kbDetails?.data_sources || kbDetails?.knowledge_base_data_sources || [];
           
-          // If no datasources, add one pointing to the KB folder
-          if (datasources.length === 0) {
-            console.log(`[KB Update] KB ${kbId} has no datasources - adding datasource for path: ${userId}/${kbName}/`);
-            try {
-              const newDataSource = await doClient.kb.addDataSource(kbId, {
-                bucketName: bucketName,
-                itemPath: `${userId}/${kbName}/`,
-                region: process.env.DO_REGION || 'tor1'
-              });
-              
-              const dataSourceUuid = newDataSource.uuid || newDataSource.id || newDataSource.knowledge_base_data_source?.uuid;
-              if (dataSourceUuid) {
-                console.log(`[KB Update] ✅ Added datasource: ${dataSourceUuid}`);
-                // Refresh KB details to get updated datasources
-                kbDetails = await doClient.kb.get(kbId);
-                datasources = kbDetails?.datasources || kbDetails?.data_sources || kbDetails?.knowledge_base_data_sources || [];
-                // If datasources array is still empty after refresh, create a synthetic entry from the response
-                if (datasources.length === 0 && dataSourceUuid) {
-                  datasources = [{ uuid: dataSourceUuid, id: dataSourceUuid }];
-                  console.log(`[KB Update] Using datasource UUID from add response: ${dataSourceUuid}`);
-                }
-              } else {
-                console.warn(`[KB Update] ⚠️ Added datasource but UUID not found in response`);
-                // Try to get UUID from refreshed KB details
-                kbDetails = await doClient.kb.get(kbId);
-                datasources = kbDetails?.datasources || kbDetails?.data_sources || kbDetails?.knowledge_base_data_sources || [];
-              }
-            } catch (addError) {
-              console.error(`[KB Update] ❌ Error adding datasource:`, addError.message);
-              throw addError;
+          // Query S3/Spaces directly to get actual files in KB folder (source of truth)
+          const { S3Client, ListObjectsV2Command } = await import('@aws-sdk/client-s3');
+          const s3Client = new S3Client({
+            endpoint: process.env.DIGITALOCEAN_ENDPOINT_URL || 'https://tor1.digitaloceanspaces.com',
+            region: 'us-east-1',
+            forcePathStyle: false,
+            credentials: {
+              accessKeyId: process.env.DIGITALOCEAN_AWS_ACCESS_KEY_ID || '',
+              secretAccessKey: process.env.DIGITALOCEAN_AWS_SECRET_ACCESS_KEY || ''
+            }
+          });
+          
+          const kbFolderPath = `${userId}/${kbName}/`;
+          const listCommand = new ListObjectsV2Command({
+            Bucket: bucketName,
+            Prefix: kbFolderPath
+          });
+          
+          let actualFilesInKB = [];
+          try {
+            const listResult = await s3Client.send(listCommand);
+            actualFilesInKB = (listResult.Contents || [])
+              .filter(file => {
+                const key = file.Key || '';
+                // Only include actual files (not folders), exclude .keep files
+                return key.startsWith(kbFolderPath) && 
+                       !key.endsWith('/') && 
+                       !key.endsWith('.keep') &&
+                       key !== kbFolderPath;
+              })
+              .map(file => file.Key || '');
+            
+            console.log(`[KB Update] Found ${actualFilesInKB.length} actual file(s) in KB folder: ${actualFilesInKB.map(k => k.split('/').pop()).join(', ')}`);
+          } catch (s3Error) {
+            console.error(`[KB Update] ⚠️ Error querying S3 for KB folder files:`, s3Error.message);
+            // Fallback to userDoc.files if S3 query fails
+            actualFilesInKB = userDoc.files
+              .filter(file => file.bucketKey && file.bucketKey.startsWith(kbFolderPath))
+              .map(file => file.bucketKey);
+          }
+          
+          // Build map of existing data sources by file path
+          const existingDsByPath = new Map();
+          for (const ds of datasources) {
+            const dsPath = ds.item_path || ds.path || ds.spaces_data_source?.item_path;
+            if (dsPath) {
+              existingDsByPath.set(dsPath, ds.uuid || ds.id);
             }
           }
           
-          if (datasources.length > 0) {
-            const dataSourceUuid = datasources[0].uuid || datasources[0].id;
-            if (!dataSourceUuid) {
-              console.warn(`[KB Update] ⚠️ Data source has no UUID - cannot start indexing`);
+          // Build map of file data source UUIDs from userDoc
+          const fileDsMap = new Map();
+          for (const file of userDoc.files || []) {
+            if (file.bucketKey && file.kbDataSourceUuid) {
+              fileDsMap.set(file.bucketKey, file.kbDataSourceUuid);
+            }
+          }
+          
+          // Find files that need data sources created
+          const newlyCreatedDsUuids = [];
+          for (const filePath of actualFilesInKB) {
+            const fileName = filePath.split('/').pop();
+            const expectedPath = `${userId}/${kbName}/${fileName}`;
+            
+            // Check if data source already exists (by path or by file's kbDataSourceUuid)
+            const existingDsUuid = existingDsByPath.get(expectedPath) || fileDsMap.get(filePath);
+            
+            if (!existingDsUuid) {
+              // Need to create a data source for this file
+              try {
+                console.log(`[KB Update] Creating per-file data source for: ${expectedPath}`);
+                const newDataSource = await doClient.kb.addDataSource(kbId, {
+                  bucketName: bucketName,
+                  itemPath: expectedPath,
+                  region: process.env.DO_REGION || 'tor1'
+                });
+                
+                const dsUuid = newDataSource.uuid || newDataSource.id || newDataSource.knowledge_base_data_source?.uuid;
+                if (dsUuid) {
+                  // Store the data source UUID on the file in userDoc
+                  const fileIndex = userDoc.files.findIndex(f => f.bucketKey === filePath);
+                  if (fileIndex >= 0) {
+                    userDoc.files[fileIndex].kbDataSourceUuid = dsUuid;
+                  } else {
+                    // File not in userDoc yet - add it (shouldn't happen, but handle it)
+                    console.warn(`[KB Update] ⚠️ File ${filePath} found in S3 but not in userDoc.files`);
+                  }
+                  newlyCreatedDsUuids.push(dsUuid);
+                  existingDsByPath.set(expectedPath, dsUuid); // Add to map for next iteration
+                  console.log(`[KB Update] ✅ Created per-file data source ${dsUuid} for ${fileName}`);
+                }
+              } catch (dsError) {
+                console.error(`[KB Update] ❌ Error creating per-file data source for ${expectedPath}:`, dsError.message);
+                // Continue with other files
+              }
             } else {
+              // Data source exists - ensure it's stored on the file
+              const fileIndex = userDoc.files.findIndex(f => f.bucketKey === filePath);
+              if (fileIndex >= 0 && !userDoc.files[fileIndex].kbDataSourceUuid) {
+                userDoc.files[fileIndex].kbDataSourceUuid = existingDsUuid;
+              }
+            }
+          }
+          
+          // Save file updates if any data sources were created or updated
+          if (newlyCreatedDsUuids.length > 0) {
+            try {
+              await cloudant.saveDocument('maia_users', userDoc);
+            } catch (saveErr) {
+              console.warn(`[KB Update] ⚠️ Failed to save file data source UUIDs:`, saveErr.message);
+            }
+            
+            // Refresh KB details to get all datasources
+            kbDetails = await doClient.kb.get(kbId);
+            datasources = kbDetails?.datasources || kbDetails?.data_sources || kbDetails?.knowledge_base_data_sources || [];
+          }
+          
+          // Determine which data sources to index:
+          // First, check actual indexing status from DO API to see which data sources need indexing
+          // - If kbReindexAll: index all current data sources
+          // - Else if kbChangedDataSourceUuids present: index only those
+          // - Else if files were just added (newlyCreatedDsUuids): index those
+          // - Else: check DO API for which data sources are not indexed and index those
+          
+          // Get fresh data sources from DO API to check indexing status (this is the source of truth)
+          let dataSourcesWithStatus = [];
+          try {
+            dataSourcesWithStatus = await doClient.kb.listDataSources(kbId);
+            console.log(`[KB Update] Retrieved ${dataSourcesWithStatus.length} data source(s) with status from DO API`);
+          } catch (dsStatusError) {
+            console.warn(`[KB Update] ⚠️ Could not retrieve data source status from DO API:`, dsStatusError.message);
+            // Fall back to using datasources from kbDetails
+            dataSourcesWithStatus = datasources;
+          }
+          
+          // Build list of all data source UUIDs from the API response (source of truth)
+          const allDsUuids = dataSourcesWithStatus
+            .map(ds => ds.uuid || ds.id)
+            .filter(Boolean);
+          
+          // Build map of data source UUID -> indexing status
+          const dsIndexingStatus = new Map();
+          for (const ds of dataSourcesWithStatus) {
+            const dsUuid = ds.uuid || ds.id;
+            if (dsUuid) {
+              const lastJob = ds?.last_datasource_indexing_job;
+              // A file is indexed if it has a last_datasource_indexing_job (regardless of status)
+              // The presence of last_datasource_indexing_job indicates the data source has been processed
+              const isIndexed = !!lastJob;
+              dsIndexingStatus.set(dsUuid, isIndexed);
+              if (lastJob) {
+                console.log(`[KB Update] Data source ${dsUuid}: INDEXED (status: ${lastJob.status || 'unknown'})`);
+              } else {
+                console.log(`[KB Update] Data source ${dsUuid}: NOT INDEXED (no last_datasource_indexing_job)`);
+              }
+            }
+          }
+          
+          let listToIndex = [];
+          
+          if (userDoc.kbReindexAll) {
+            listToIndex = allDsUuids;
+            console.log(`[KB Update] Re-indexing all ${allDsUuids.length} data sources (kbReindexAll=true)`);
+          } else if (Array.isArray(userDoc.kbChangedDataSourceUuids) && userDoc.kbChangedDataSourceUuids.length > 0) {
+            listToIndex = userDoc.kbChangedDataSourceUuids.filter(uuid => allDsUuids.includes(uuid));
+            console.log(`[KB Update] Indexing ${listToIndex.length} changed data source(s) from kbChangedDataSourceUuids`);
+          } else if (newlyCreatedDsUuids.length > 0) {
+            listToIndex = newlyCreatedDsUuids.filter(uuid => allDsUuids.includes(uuid));
+            console.log(`[KB Update] Indexing ${newlyCreatedDsUuids.length} newly created data source(s)`);
+          } else {
+            // Check DO API for which data sources are not indexed
+            const unindexedDsUuids = allDsUuids.filter(uuid => {
+              const isIndexed = dsIndexingStatus.get(uuid) === true;
+              return !isIndexed;
+            });
+            
+            if (unindexedDsUuids.length > 0) {
+              listToIndex = unindexedDsUuids;
+              console.log(`[KB Update] Found ${unindexedDsUuids.length} unindexed data source(s) from DO API status check: ${unindexedDsUuids.join(', ')}`);
+            } else if (allDsUuids.length > 0) {
+              // All data sources are indexed - nothing to do
+              console.log(`[KB Update] All ${allDsUuids.length} data source(s) are already indexed according to DO API`);
+              listToIndex = [];
+            } else {
+              // No data sources at all
+              console.log(`[KB Update] No data sources found in KB`);
+              listToIndex = [];
+            }
+          }
+
+          if (listToIndex.length === 0) {
+            console.warn(`[KB Update] ⚠️ No data sources to index - KB may be empty or all datasources were removed`);
+            console.log(`[KB Update] Debug: kbReindexAll=${userDoc.kbReindexAll}, filesInKB.length=${filesInKB.length}`);
+            // If KB is empty and kbReindexAll was set, mark as complete
+            if (userDoc.kbReindexAll && filesInKB.length === 0) {
+              console.log(`[KB Update] Handling empty KB case`);
+              const emptyDoc = await cloudant.getDocument('maia_users', userId);
+              if (emptyDoc) {
+                emptyDoc.kbIndexedFiles = [];
+                emptyDoc.kbPendingFiles = undefined;
+                emptyDoc.kbIndexingNeeded = false;
+                emptyDoc.kbReindexAll = false;
+                emptyDoc.kbChangedDataSourceUuids = [];
+                await cloudant.saveDocument('maia_users', emptyDoc);
+                invalidateResourceCache(userId);
+              }
+              return res.json({
+                success: true,
+                message: 'Knowledge base updated successfully (empty KB)',
+                kbId: kbId,
+                filesInKB: [],
+                jobId: null,
+                phase: 'complete'
+              });
+            } else {
+              // No data sources to index, but KB might have files that need per-file data sources created
+              // Or files were just deleted and we need to clear the indexing flags
+              console.log(`[KB Update] Handling no datasources case (kbReindexAll=${userDoc.kbReindexAll}, filesInKB.length=${filesInKB.length})`);
+              const freshDoc = await cloudant.getDocument('maia_users', userId);
+              if (freshDoc) {
+                // Clear indexing flags since there's nothing to index
+                freshDoc.kbIndexingNeeded = false;
+                freshDoc.kbReindexAll = false;
+                freshDoc.kbChangedDataSourceUuids = [];
+                await cloudant.saveDocument('maia_users', freshDoc);
+                invalidateResourceCache(userId);
+              }
+              return res.json({
+                success: true,
+                message: 'Knowledge base updated successfully (no data sources to index)',
+                kbId: kbId,
+                filesInKB: filesInKB,
+                jobId: null,
+                phase: 'complete'
+              });
+            }
+          } else {
               try {
                 // Start indexing job using global endpoint
-                const indexingJob = await doClient.indexing.startGlobal(kbId, [dataSourceUuid]);
+                const indexingJob = await doClient.indexing.startGlobal(kbId, listToIndex);
                 jobId = indexingJob.uuid || indexingJob.id || indexingJob.indexing_job?.uuid || indexingJob.indexing_job?.id || indexingJob.job?.uuid || indexingJob.job?.id;
                 
                 if (jobId) {
@@ -5232,6 +5955,9 @@ app.post('/api/update-knowledge-base', async (req, res) => {
                   // Store job ID in user document
                   const jobUserDoc = await cloudant.getDocument('maia_users', userId);
                   if (jobUserDoc) {
+                    // Clear change tracking flags now that indexing started
+                    jobUserDoc.kbChangedDataSourceUuids = [];
+                    jobUserDoc.kbReindexAll = false;
                     jobUserDoc.kbLastIndexingJobId = jobId;
                     jobUserDoc.kbIndexingStartedAt = new Date().toISOString();
                     jobUserDoc.workflowStage = 'indexing';
@@ -5297,10 +6023,7 @@ app.post('/api/update-knowledge-base', async (req, res) => {
                 }
               }
             }
-          } else {
-            console.error(`[KB Update] ❌ Could not add datasource or datasource UUID not found`);
           }
-        }
       } catch (indexingError) {
         console.error(`[KB Update] ❌ Error starting indexing job:`, indexingError.message);
         // Continue - background polling will try to find the job
@@ -5324,6 +6047,44 @@ app.post('/api/update-knowledge-base', async (req, res) => {
     // Only start polling if we actually started a new job
     // Don't poll if we didn't start a job - that would find old completed jobs incorrectly
     if (jobId && indexingStarted) {
+      // Verify the job actually exists and is active before starting to poll
+      // This prevents getting stuck waiting for a job that doesn't exist
+      try {
+        const verifyJobs = await doClient.indexing.listForKB(kbId);
+        const verifyJobsArray = Array.isArray(verifyJobs) ? verifyJobs : 
+                              (verifyJobs?.jobs || verifyJobs?.indexing_jobs || verifyJobs?.data || []);
+        
+        const verifyJob = verifyJobsArray.find(j => {
+          const currentJobId = j.uuid || j.id || j.indexing_job_id;
+          return currentJobId === jobId;
+        });
+        
+        if (!verifyJob) {
+          console.warn(`[KB Update] ⚠️ Job ${jobId} not found in active jobs list - will not start polling`);
+          // Job doesn't exist - don't start polling
+          return;
+        }
+        
+        const verifyStatus = verifyJob.status || verifyJob.job_status || verifyJob.state;
+        const isActive = verifyStatus === 'INDEX_JOB_STATUS_PENDING' || 
+                        verifyStatus === 'INDEX_JOB_STATUS_RUNNING' ||
+                        verifyStatus === 'INDEX_JOB_STATUS_IN_PROGRESS' ||
+                        verifyStatus === 'pending' ||
+                        verifyStatus === 'running' ||
+                        verifyStatus === 'in_progress';
+        
+        if (!isActive) {
+          console.warn(`[KB Update] ⚠️ Job ${jobId} is not active (status: ${verifyStatus}) - will not start polling`);
+          // Job is not active - don't start polling
+          return;
+        }
+        
+        console.log(`[KB Update] ✅ Verified job ${jobId} is active (status: ${verifyStatus}) - starting polling`);
+      } catch (verifyError) {
+        console.warn(`[KB Update] ⚠️ Could not verify job before polling:`, verifyError.message);
+        // Continue with polling if verification fails (might be a transient error)
+      }
+    
     // Start polling for indexing jobs in background (non-blocking)
       // Poll every 30 seconds for max 30 minutes (60 polls)
     const startTime = Date.now();
@@ -5432,17 +6193,17 @@ app.post('/api/update-knowledge-base', async (req, res) => {
             if (!summary || summary.trim().length === 0) {
               console.error(`[KB AUTO] ❌ Patient summary generation returned empty result for user ${userId}`);
             } else {
-              const summaryUserDoc = await cloudant.getDocument('maia_users', userId);
-              if (summaryUserDoc) {
+            const summaryUserDoc = await cloudant.getDocument('maia_users', userId);
+            if (summaryUserDoc) {
                 // Use helper function to add new summary (default to 'newest' strategy)
                 addNewSummary(summaryUserDoc, summary, 'newest');
-                summaryUserDoc.workflowStage = 'patient_summary';
-                await cloudant.saveDocument('maia_users', summaryUserDoc);
-                invalidateResourceCache(userId);
+              summaryUserDoc.workflowStage = 'patient_summary';
+              await cloudant.saveDocument('maia_users', summaryUserDoc);
+              invalidateResourceCache(userId);
                 console.log(`[KB AUTO] ✅ Patient summary generated and saved successfully for user ${userId}`);
               } else {
                 console.error(`[KB AUTO] ❌ Could not load user document to save patient summary for user ${userId}`);
-              }
+            }
             }
           } else {
             console.log(`[KB AUTO] ⚠️ Skipping patient summary generation for user ${userId} - agent not fully configured (assignedAgentId: ${!!finalUserDoc?.assignedAgentId}, agentEndpoint: ${!!finalUserDoc?.agentEndpoint}, agentApiKey: ${!!finalUserDoc?.agentApiKey})`);
@@ -5695,6 +6456,7 @@ app.get('/api/kb-indexing-status/:jobId', async (req, res) => {
     let completed = false;
     let tokens = '0';
     let filesIndexed = 0;
+    let kbIndexedFilesFromDO = null; // Initialize at function scope
     
     try {
       // Get job status from DO API
@@ -5708,7 +6470,7 @@ app.get('/api/kb-indexing-status/:jobId', async (req, res) => {
         phase = 'indexing';
       } else if (status === 'INDEX_JOB_STATUS_COMPLETED') {
         phase = 'indexing'; // Still 'indexing' because backend hasn't finished processing yet
-        completed = false; // Not completed from backend perspective
+        completed = true; // DO API says completed
       } else if (status === 'INDEX_JOB_STATUS_FAILED') {
         phase = 'error';
         completed = true;
@@ -5725,16 +6487,50 @@ app.get('/api/kb-indexing-status/:jobId', async (req, res) => {
         }
       }
       
-      // Count files - prioritize kbPendingFiles (being indexed), then kbIndexedFiles, then derive from KB folder
-      if (userDoc.kbPendingFiles && Array.isArray(userDoc.kbPendingFiles) && userDoc.kbPendingFiles.length > 0) {
+      // If job is completed, query DO API directly to get the actual indexed files
+      // This ensures we return the correct state even if backend hasn't updated userDoc yet
+      if (status === 'INDEX_JOB_STATUS_COMPLETED' && userDoc.kbId) {
+        try {
+          const dataSources = await doClient.kb.listDataSources(userDoc.kbId);
+          const kbName = getKBNameFromUserDoc(userDoc, userId);
+          const kbFolderPath = `${userId}/${kbName}/`;
+          
+          // Get all files that have been indexed (have last_datasource_indexing_job)
+          const indexedFilesList = [];
+          for (const ds of dataSources) {
+            const dsPath = ds?.item_path || ds?.spaces_data_source?.item_path;
+            if (dsPath && dsPath.startsWith(kbFolderPath)) {
+              // If data source has a last_datasource_indexing_job, the file is indexed
+              if (ds?.last_datasource_indexing_job) {
+                indexedFilesList.push(dsPath);
+              }
+            }
+          }
+          
+          kbIndexedFilesFromDO = indexedFilesList;
+          filesIndexed = indexedFilesList.length;
+        } catch (dsError) {
+          console.warn(`[KB Status] Could not query data sources for indexed files: ${dsError.message}`);
+          // Fall back to userDoc or counting files
+        }
+      }
+      
+      // If we don't have indexed files from DO API, use userDoc or count files
+      if (!kbIndexedFilesFromDO) {
+        if (userDoc.kbPendingFiles && Array.isArray(userDoc.kbPendingFiles) && userDoc.kbPendingFiles.length > 0) {
         filesIndexed = userDoc.kbPendingFiles.length;
-      } else if (userDoc.kbIndexedFiles && Array.isArray(userDoc.kbIndexedFiles) && userDoc.kbIndexedFiles.length > 0) {
-        filesIndexed = userDoc.kbIndexedFiles.length;
+          kbIndexedFilesFromDO = userDoc.kbPendingFiles;
+        } else if (userDoc.kbIndexedFiles && Array.isArray(userDoc.kbIndexedFiles) && userDoc.kbIndexedFiles.length > 0) {
+          filesIndexed = userDoc.kbIndexedFiles.length;
+          kbIndexedFilesFromDO = userDoc.kbIndexedFiles;
       } else if (userDoc.files) {
         const kbNameForCount = getKBNameFromUserDoc(userDoc, userId);
-        filesIndexed = userDoc.files.filter(file => 
+          const filesInKB = (userDoc.files || []).filter(file => 
           file.bucketKey && file.bucketKey.startsWith(`${userId}/${kbNameForCount}/`)
-        ).length;
+          ).map(file => file.bucketKey);
+          filesIndexed = filesInKB.length;
+          kbIndexedFilesFromDO = filesInKB;
+        }
       }
       
     } catch (error) {
@@ -5762,7 +6558,7 @@ app.get('/api/kb-indexing-status/:jobId', async (req, res) => {
       });
     }
 
-    // Return current status - backend is still processing
+    // Return current status - backend may still be processing automation
     res.json({
       success: true,
       phase: phase,
@@ -5772,7 +6568,7 @@ app.get('/api/kb-indexing-status/:jobId', async (req, res) => {
       filesIndexed: filesIndexed,
       completed: completed,
       progress: jobStatus.progress || 0.0,
-      kbIndexedFiles: userDoc.kbIndexedFiles || userDoc.kbPendingFiles || undefined,
+      kbIndexedFiles: kbIndexedFilesFromDO || userDoc.kbIndexedFiles || userDoc.kbPendingFiles || undefined,
       backendCompleted: false // Backend automation (attach KB, generate summary) not finished yet
     });
   } catch (error) {
@@ -6080,6 +6876,9 @@ app.post('/api/toggle-kb-connection', async (req, res) => {
         await doClient.agent.attachKB(userDoc.assignedAgentId, userDoc.kbId);
         console.log(`✅ Attached KB ${userDoc.kbId} to agent ${userDoc.assignedAgentId}`);
         
+        // Invalidate cache so subsequent calls get fresh connection status
+        invalidateResourceCache(userId);
+        
         res.json({ 
           success: true, 
           message: 'Knowledge base attached to agent successfully',
@@ -6091,6 +6890,9 @@ app.post('/api/toggle-kb-connection', async (req, res) => {
         // Detach KB from agent
         await doClient.agent.detachKB(userDoc.assignedAgentId, userDoc.kbId);
         console.log(`✅ Detached KB ${userDoc.kbId} from agent ${userDoc.assignedAgentId}`);
+        
+        // Invalidate cache so subsequent calls get fresh connection status
+        invalidateResourceCache(userId);
         
         res.json({ 
           success: true, 
@@ -6686,16 +7488,11 @@ app.post('/api/patient-summary/swap', async (req, res) => {
 // Serve static files from dist in production
 // On DigitalOcean App Platform, NODE_ENV might not be set to 'production'
 // So we also check if dist folder exists as an indicator
-console.log(`🔍 [STATIC] NODE_ENV: ${process.env.NODE_ENV}`);
-console.log(`🔍 [STATIC] __dirname: ${__dirname}`);
 
 // Check if we're in production (before CORS setup)
 const distPath = path.join(__dirname, '../dist');
 const distExists = existsSync(distPath);
 const isProduction = process.env.NODE_ENV === 'production' || distExists;
-
-console.log(`🔍 [STATIC] dist folder exists: ${distExists}`);
-console.log(`🔍 [STATIC] isProduction: ${isProduction}`);
 
 if (isProduction) {
   const indexPath = path.join(distPath, 'index.html');
@@ -6703,13 +7500,9 @@ if (isProduction) {
   // Check if index.html exists
   const indexExists = existsSync(indexPath);
   
-  console.log(`📁 [STATIC] Serving static files from: ${distPath}`);
-  console.log(`📁 [STATIC] index.html exists: ${indexExists}`);
-  
   if (distExists) {
     try {
       const distFiles = readdirSync(distPath);
-      console.log(`📁 [STATIC] Files in dist: ${distFiles.slice(0, 10).join(', ')}${distFiles.length > 10 ? '...' : ''}`);
     } catch (err) {
       console.error(`❌ [STATIC] Error reading dist folder:`, err);
     }
@@ -6747,13 +7540,6 @@ if (isProduction) {
     fallthrough: true // Allow fallthrough to catch-all for SPA routes
   }));
   
-  // Add middleware to log static file requests
-  app.use((req, res, next) => {
-    if (!req.path.startsWith('/api')) {
-      console.log(`📄 [STATIC] Request: ${req.method} ${req.path}`);
-    }
-    next();
-  });
   
   // Catch-all handler: serve index.html for all non-API routes
   // This enables client-side routing for the Vue SPA
@@ -6780,8 +7566,6 @@ if (isProduction) {
     });
   });
 } else {
-  console.log(`⚠️ [STATIC] Not in production mode, skipping static file serving`);
-  
   // In dev mode, serve Privacy.md from public folder
   const publicPath = path.join(__dirname, '../public');
   app.get('/Privacy.md', (req, res) => {
@@ -6812,7 +7596,6 @@ app.listen(PORT, () => {
   chatClient.getAvailableProviders().forEach(provider => {
     console.log(`   ✅ ${provider}`);
   });
-  console.log(`\n🤖 Anthropic Model: claude-sonnet-4-5-20250929 (Claude Sonnet 4.5)`);
 });
 
 export default app;
