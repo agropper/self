@@ -1398,13 +1398,6 @@ function getProvisionPage(userId) {
               <div class="check-item pending">
                 <span class="status-icon">⏳</span>
                 <div>
-                  <strong>Config Stored</strong>
-                  <div class="check-message" style="font-size: 11px; color: #666;">Waiting...</div>
-                </div>
-              </div>
-              <div class="check-item pending">
-                <span class="status-icon">⏳</span>
-                <div>
                   <strong>API Key</strong>
                   <div class="check-message" style="font-size: 11px; color: #666;">Waiting...</div>
                 </div>
@@ -1549,7 +1542,6 @@ function getProvisionPage(userId) {
               'Agent Exists': verification.results.agentExists,
               'Agent Deployed': verification.results.agentDeployed,
               'Agent Config': verification.results.agentConfig,
-              'Config Stored': verification.results.agentConfigStored,
               'API Key': verification.results.apiKey,
               'API Key Works': verification.results.apiKeyWorks
             };
@@ -2191,7 +2183,6 @@ async function verifyProvisioningComplete(userId, agentId, agentName, kbName, ex
     agentExists: { passed: false, message: '' },
     agentDeployed: { passed: false, message: '' },
     agentConfig: { passed: false, message: '' },
-    agentConfigStored: { passed: false, message: '' },
     apiKey: { passed: false, message: '' },
     apiKeyWorks: { passed: false, message: '' }
   };
@@ -2326,28 +2317,7 @@ async function verifyProvisioningComplete(userId, agentId, agentName, kbName, ex
       logProvisioning(userId, `❌ Agent verification error: ${err.message}`, 'error');
     }
     
-    // 4. Verify agent config in maia_agents collection
-    try {
-      const agentDoc = await cloudant.getDocument('maia_agents', agentId);
-      if (agentDoc && agentDoc.userId === userId) {
-        verificationResults.agentConfigStored.passed = true;
-        verificationResults.agentConfigStored.message = `Agent config stored in maia_agents`;
-        logProvisioning(userId, `✅ Agent config stored in maia_agents`, 'success');
-      } else {
-        verificationResults.agentConfigStored.message = `Agent config not found in maia_agents`;
-        logProvisioning(userId, `❌ Agent config not found in maia_agents`, 'error');
-      }
-    } catch (err) {
-      if (err.statusCode === 404) {
-        verificationResults.agentConfigStored.message = `Agent config document not found`;
-        logProvisioning(userId, `❌ Agent config document not found in maia_agents`, 'error');
-      } else {
-        verificationResults.agentConfigStored.message = `Error checking maia_agents: ${err.message}`;
-        logProvisioning(userId, `❌ Error checking maia_agents: ${err.message}`, 'error');
-      }
-    }
-    
-    // 5. Verify API key
+    // 4. Verify API key
     // Fetch user document to check API key and agent details
     let userDoc = null;
     try {
@@ -2981,43 +2951,6 @@ async function provisionUserAsync(userId, token) {
     }
 
     updateStatus('Agent configuration updated', { updated: true });
-
-    // Save agent config to maia_agents collection
-    logProvisioning(userId, `💾 Saving agent config to maia_agents collection...`, 'info');
-    try {
-      const agentConfigDoc = {
-        _id: newAgent.uuid,
-        userId: userId,
-        agentId: newAgent.uuid,
-        agentName: agentName,
-        instruction: maiaInstruction,
-        config: {
-          maxTokens: 16384,
-          topP: 1,
-          temperature: 0.1,
-          k: 10,
-          retrievalMethod: 'RETRIEVAL_METHOD_NONE'
-        },
-        deployment: {
-          status: agentDetails?.deployment?.status || 'STATUS_UNKNOWN',
-          url: agentDetails?.deployment?.url || null,
-          createdAt: new Date().toISOString()
-        },
-        model: {
-          uuid: agentDetails?.model?.uuid || modelId,
-          name: agentDetails?.model?.name || null,
-          inference_name: agentDetails?.model?.inference_name || null
-        },
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString()
-      };
-      
-      await cloudant.saveDocument('maia_agents', agentConfigDoc);
-      logProvisioning(userId, `✅ Agent config saved to maia_agents collection`, 'success');
-    } catch (err) {
-      logProvisioning(userId, `⚠️  Failed to save agent config to maia_agents: ${err.message}`, 'warning');
-      // Non-critical, continue
-    }
 
     // Step 6: Create API Key
     updateStatus('Creating API key...');
