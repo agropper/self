@@ -1615,7 +1615,7 @@ const handleDocumentSelected = (file: UploadedFile | { fileName: string; bucketK
   // User files have fileName property but no id property
   if ('fileName' in file && 'bucketKey' in file && !('id' in file)) {
     // User file from account - create a minimal UploadedFile-like object
-    const fileType = 'fileType' in file ? file.fileType : undefined;
+    const fileType = 'fileType' in file ? (file.fileType as string | undefined) : undefined;
     const userFile: UploadedFile = {
       id: `user-file-${file.bucketKey}`,
       name: file.fileName,
