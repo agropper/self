@@ -126,6 +126,44 @@
         </q-card-section>
       </q-card>
 
+      <!-- Clinical Notes List -->
+      <q-card class="q-mb-md">
+        <q-card-section>
+          <div class="text-h6 q-mb-md">Clinical Notes</div>
+          
+          <div v-if="isLoadingClinicalNotes" class="text-center q-pa-md">
+            <q-spinner size="2em" color="primary" />
+            <div class="q-mt-sm text-caption">Loading clinical notes...</div>
+          </div>
+          
+          <div v-else-if="clinicalNotes.length === 0" class="text-center q-pa-md text-grey">
+            No clinical notes found. Process a PDF to index clinical notes.
+          </div>
+          
+          <q-list v-else bordered separator>
+            <q-item 
+              v-for="note in clinicalNotes" 
+              :key="note.id"
+              clickable
+              @click="copyNoteToClipboard(note)"
+              class="cursor-pointer"
+            >
+              <q-item-section>
+                <q-item-label class="text-body2">
+                  {{ formatNoteDescription(note) }}
+                </q-item-label>
+              </q-item-section>
+              <q-item-section side>
+                <q-item-label caption>
+                  <span v-if="note.fileName" class="text-grey">{{ note.fileName }}</span>
+                  <span v-if="note.page > 0" class="text-grey q-ml-sm">Page {{ note.page }}</span>
+                </q-item-label>
+              </q-item-section>
+            </q-item>
+          </q-list>
+        </q-card-section>
+      </q-card>
+
       <!-- Markdown Categories List -->
       <q-card v-if="categories.length > 0 || pdfData?.categoryError" class="q-mb-md">
         <q-card-section>
@@ -212,6 +250,9 @@
 
 <script setup lang="ts">
 import { ref, onMounted } from 'vue';
+import { useQuasar } from 'quasar';
+
+const $q = useQuasar();
 
 interface Props {
   userId: string;
@@ -248,6 +289,17 @@ interface ClinicalNotesIndexed {
   errors: string[];
 }
 
+interface ClinicalNote {
+  id: string;
+  type: string;
+  author: string;
+  category: string;
+  created: string;
+  date: string;
+  fileName: string;
+  page: number;
+}
+
 interface PdfData {
   totalPages: number;
   pages: PdfPage[];
@@ -266,6 +318,8 @@ const error = ref<string>('');
 const pdfData = ref<PdfData | null>(null);
 const categories = ref<MarkdownCategory[]>([]);
 const activePageTab = ref<number>(1);
+const clinicalNotes = ref<ClinicalNote[]>([]);
+const isLoadingClinicalNotes = ref(false);
 
 const loadUserFiles = async () => {
   try {
@@ -407,6 +461,11 @@ const processPdfFromBucket = async (bucketKey: string) => {
     if (data.pages && data.pages.length > 0) {
       activePageTab.value = data.pages[0].page;
     }
+    
+    // Reload clinical notes after processing
+    if (data.clinicalNotesIndexed && data.clinicalNotesIndexed.indexed > 0) {
+      loadClinicalNotes();
+    }
   } catch (err) {
     const errorMessage = err instanceof Error ? err.message : 'Failed to process PDF';
     error.value = errorMessage;
@@ -452,8 +511,92 @@ const downloadMarkdown = () => {
   }
 };
 
+const loadClinicalNotes = async () => {
+  isLoadingClinicalNotes.value = true;
+  try {
+    const response = await fetch('/api/files/clinical-notes', {
+      credentials: 'include'
+    });
+    
+    if (response.ok) {
+      const result = await response.json();
+      clinicalNotes.value = result.notes || [];
+    } else {
+      console.error('Failed to load clinical notes:', response.statusText);
+    }
+  } catch (err) {
+    console.error('Error loading clinical notes:', err);
+  } finally {
+    isLoadingClinicalNotes.value = false;
+  }
+};
+
+const formatNoteDescription = (note: ClinicalNote): string => {
+  const parts: string[] = [];
+  
+  if (note.type) {
+    parts.push(`Type: ${note.type}`);
+  }
+  if (note.author) {
+    parts.push(`Author: ${note.author}`);
+  }
+  if (note.category) {
+    parts.push(`Category: ${note.category}`);
+  }
+  if (note.created) {
+    parts.push(`Created: ${note.created}`);
+  }
+  
+  return parts.join('; ') || 'No details available';
+};
+
+const copyNoteToClipboard = async (note: ClinicalNote) => {
+  const description = formatNoteDescription(note);
+  // Exclude the source document from the search - we want RAG to find it in other documents
+  const excludeFile = note.fileName ? ` (excluding ${note.fileName})` : '';
+  const query = `Find the encounter note for: ${description} in your knowledge base${excludeFile} and return the filename and page number in that file.`;
+  
+  try {
+    await navigator.clipboard.writeText(query);
+    $q.notify({
+      message: 'Copied to clipboard!',
+      type: 'positive',
+      position: 'top',
+      timeout: 2000
+    });
+  } catch (err) {
+    console.error('Failed to copy to clipboard:', err);
+    // Fallback: try using a temporary textarea
+    const textarea = document.createElement('textarea');
+    textarea.value = query;
+    textarea.style.position = 'fixed';
+    textarea.style.opacity = '0';
+    document.body.appendChild(textarea);
+    textarea.select();
+    try {
+      document.execCommand('copy');
+      $q.notify({
+        message: 'Copied to clipboard!',
+        type: 'positive',
+        position: 'top',
+        timeout: 2000
+      });
+    } catch (fallbackErr) {
+      console.error('Fallback copy failed:', fallbackErr);
+      $q.notify({
+        message: 'Failed to copy to clipboard',
+        type: 'negative',
+        position: 'top',
+        timeout: 2000
+      });
+    }
+    document.body.removeChild(textarea);
+  }
+};
+
 onMounted(() => {
   loadUserFiles();
+  loadClinicalNotes();
 });
 </script>
 

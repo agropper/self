@@ -498,7 +498,11 @@ export function extractIndividualClinicalNotes(fullMarkdown, pages, fileName = '
       const noteLines = processedLines.slice(startLine, endLine);
       let noteText = noteLines.join('\n').trim();
       
-      // Extract metadata: find the last date and location in the note
+      // Extract structured fields from the note
+      let noteType = '';
+      let noteCategory = '';
+      let noteAuthor = '';
+      let noteCreated = '';
       let lastDate = '';
       let lastLocation = '';
       
@@ -511,63 +515,69 @@ export function extractIndividualClinicalNotes(fullMarkdown, pages, fileName = '
         /clinic/i,
       ];
       
-      // Look through all lines in the note to find dates and locations
-      for (const line of noteLines) {
-        const trimmed = line.trim();
-        if (!trimmed) continue;
-        
-        // Check if this line is a date
-        const isDate = datePatterns.some(pattern => pattern.test(trimmed));
-        if (isDate) {
-          // Extract the date (take the first match)
-          for (const pattern of datePatterns) {
-            const match = trimmed.match(pattern);
-            if (match) {
-              lastDate = match[0].trim();
-              break;
-            }
-          }
-        }
-        
-        // Check if this line contains a location
-        for (const locationPattern of locationPatterns) {
-          if (locationPattern.test(trimmed)) {
-            // Extract location - try to get a meaningful phrase
-            // Look for common patterns like "Mass General Brigham" or institution names
-            let locationText = trimmed;
-            
-            // Try to extract just the institution name part
-            const locationMatch = trimmed.match(/(?:mass general\s+brigham|brigham|mass general|hospital|medical center|clinic)[^,\n]*/i);
-            if (locationMatch) {
-              locationText = locationMatch[0].trim();
-            }
-            
-            // Only update if we found a substantial location (not just a word)
-            if (locationText.length > 5) {
-              lastLocation = locationText;
-            }
-            break;
-          }
-        }
-      }
-      
-      // Clean up the note - remove any remaining header/footer artifacts
-      // Remove lines that are just dates or page numbers at the start/end
-      const noteLinesArray = noteText.split('\n');
+      // Clean up the note - extract structured fields and remove them from content
       const cleanedLines = [];
-      for (let j = 0; j < noteLinesArray.length; j++) {
-        const line = noteLinesArray[j].trim();
+      
+      for (let j = 0; j < noteLines.length; j++) {
+        const line = noteLines[j].trim();
         if (!line) {
           cleanedLines.push('');
           continue;
         }
         
-        // Skip lines that are just dates or page numbers (likely artifacts)
+        // Extract Type field
+        const typeMatch = line.match(/^Type:\s*(.+)$/i);
+        if (typeMatch) {
+          noteType = typeMatch[1].trim();
+          continue; // Don't include the Type: line in cleaned text
+        }
+        
+        // Extract Category field (specific to this note)
+        const categoryMatch = line.match(/^Category:\s*(.+)$/i);
+        if (categoryMatch) {
+          noteCategory = categoryMatch[1].trim();
+          continue; // Don't include the Category: line in cleaned text
+        }
+        
+        // Extract Author field
+        const authorMatch = line.match(/^Author:\s*(.+)$/i);
+        if (authorMatch) {
+          noteAuthor = authorMatch[1].trim();
+          continue; // Don't include the Author: line in cleaned text
+        }
+        
+        // Extract Created field (this is the date we want to use)
+        const createdMatch = line.match(/^Created:\s*(.+)$/i);
+        if (createdMatch) {
+          noteCreated = createdMatch[1].trim();
+          // Extract date from Created field (e.g., "Aug 16, 2022 at 5:00 PM" -> "Aug 16, 2022")
+          const createdDateMatch = noteCreated.match(/^([^a]+?)(?:\s+at\s+|$)/i);
+          if (createdDateMatch) {
+            lastDate = createdDateMatch[1].trim();
+          } else {
+            lastDate = noteCreated;
+          }
+          continue; // Don't include the Created: line in cleaned text
+        }
+        
+        // Skip standalone dates and page numbers
         const isJustDate = datePatterns.some(pattern => pattern.test(line) && line.length < 30);
         const isPageNumber = /^Page\s+\d+$/i.test(line) || /^\d+$/.test(line);
         
         if (!isJustDate && !isPageNumber) {
-          cleanedLines.push(noteLinesArray[j]);
+          cleanedLines.push(noteLines[j]);
+        }
+        
+        // Capture last date and location for metadata (fallback if Created: not found)
+        if (!lastDate) {
+          const dateMatch = datePatterns.map(p => line.match(p)).find(m => m);
+          if (dateMatch) {
+            lastDate = dateMatch[0];
+          }
+        }
+        const locationMatch = locationPatterns.map(p => line.match(p)).find(m => m);
+        if (locationMatch) {
+          lastLocation = locationMatch[0];
         }
       }
       
@@ -577,27 +587,42 @@ export function extractIndividualClinicalNotes(fullMarkdown, pages, fileName = '
     if (noteText.length < 30) continue;
     
     // Find which page this note belongs to
-    // Count characters up to this note in the current clinical notes section
+    // We need to find the page by looking at the original markdown structure
+    // The note's position in the processedLines corresponds to a position in the original markdown
+    
+    // Calculate the character position of this note in the original clinical notes section
     let charCountInSection = 0;
     for (let j = 0; j < startLine; j++) {
       charCountInSection += processedLines[j].length + 1; // +1 for newline
     }
     
-    // Calculate absolute position in full markdown
+    // Calculate absolute position in full markdown (from start of document)
     const notePositionInFull = sectionStart + charCountInSection;
     
+    // Now find which page this position corresponds to
+    // We need to reconstruct how the fullMarkdown was built: pages joined with "## Page X\n\n" and "\n\n---\n\n"
     let notePage = 1;
     let accumulatedLength = 0;
     
     for (const page of pages) {
-      const pageMarkdown = `## Page ${page.page}\n\n${page.markdown}`;
-      accumulatedLength += pageMarkdown.length + 10;
+      // Reconstruct the page markdown as it appears in fullMarkdown
+      // Format: "## Page X\n\n{markdown}\n\n---\n\n"
+      const pageHeader = `## Page ${page.page}\n\n`;
+      const pageSeparator = `\n\n---\n\n`;
+      const pageLength = pageHeader.length + page.markdown.length + pageSeparator.length;
       
-      // Check if this note's position in the full markdown falls within this page
-      if (notePositionInFull <= accumulatedLength) {
+      // Check if this note's position falls within this page's range
+      if (notePositionInFull >= accumulatedLength && notePositionInFull < accumulatedLength + pageLength) {
         notePage = page.page;
         break;
       }
+      
+      accumulatedLength += pageLength;
+    }
+    
+    // Fallback: if we didn't find a page, use the last page
+    if (notePage === 1 && accumulatedLength > 0 && notePositionInFull >= accumulatedLength) {
+      notePage = pages[pages.length - 1]?.page || 1;
     }
     
     // Extract plain text from markdown (remove markdown syntax)
@@ -609,16 +634,19 @@ export function extractIndividualClinicalNotes(fullMarkdown, pages, fileName = '
       .replace(/`(.+?)`/g, '$1') // Remove code
       .trim();
     
-    notes.push({
-      fileName: fileName,
-      page: notePage,
-      category: 'Clinical Notes',
-      content: plainText,
-      markdown: noteText,
-      noteIndex: notes.length + 1,
-      date: lastDate || '',
-      location: lastLocation || ''
-    });
+            notes.push({
+              fileName: fileName,
+              page: notePage,
+              category: noteCategory || 'Clinical Notes', // Use note-specific category
+              content: plainText,
+              markdown: noteText,
+              noteIndex: notes.length + 1,
+              date: lastDate || '', // Use Created: date
+              location: lastLocation || '',
+              type: noteType || '', // Extract Type field
+              author: noteAuthor || '', // Extract Author field
+              created: noteCreated || '' // Extract Created field
+            });
     }
     
   }

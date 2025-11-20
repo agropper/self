@@ -172,6 +172,51 @@ function getClinicalNotesClient() {
   }
 }
 
+// Helper function to parse date strings in various formats
+function parseDate(dateStr) {
+  if (!dateStr) return null;
+  
+  // Try common date formats
+  // Format: "Oct 27, 2025" or "October 27, 2025"
+  const monthNames = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec'];
+  const monthMatch = dateStr.match(/(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\s+(\d{1,2}),?\s+(\d{4})/i);
+  if (monthMatch) {
+    const month = monthNames.indexOf(monthMatch[1].toLowerCase().substring(0, 3));
+    const day = parseInt(monthMatch[2], 10);
+    const year = parseInt(monthMatch[3], 10);
+    if (month >= 0) {
+      return new Date(year, month, day);
+    }
+  }
+  
+  // Format: "10/27/2025" or "10-27-2025"
+  const numericMatch = dateStr.match(/(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})/);
+  if (numericMatch) {
+    const month = parseInt(numericMatch[1], 10) - 1;
+    const day = parseInt(numericMatch[2], 10);
+    let year = parseInt(numericMatch[3], 10);
+    if (year < 100) year += 2000; // Handle 2-digit years
+    return new Date(year, month, day);
+  }
+  
+  // Format: "2025-10-27"
+  const isoMatch = dateStr.match(/(\d{4})[\/\-](\d{1,2})[\/\-](\d{1,2})/);
+  if (isoMatch) {
+    const year = parseInt(isoMatch[1], 10);
+    const month = parseInt(isoMatch[2], 10) - 1;
+    const day = parseInt(isoMatch[3], 10);
+    return new Date(year, month, day);
+  }
+  
+  // Try native Date parsing as fallback
+  const parsed = new Date(dateStr);
+  if (!isNaN(parsed.getTime())) {
+    return parsed;
+  }
+  
+  return null;
+}
+
 export default function setupFileRoutes(app, cloudant, doClient) {
   /**
    * PDF parsing endpoint
@@ -995,6 +1040,90 @@ export default function setupFileRoutes(app, cloudant, doClient) {
     } catch (error) {
       console.error('❌ [CLINICAL-NOTES] Error searching clinical notes:', error);
       res.status(500).json({ error: `Failed to search clinical notes: ${error.message}` });
+    }
+  });
+
+  /**
+   * Get all clinical notes for the authenticated user
+   * GET /api/files/clinical-notes
+   */
+  app.get('/api/files/clinical-notes', async (req, res) => {
+    try {
+      // Require authentication
+      const userId = req.session?.userId || req.session?.deepLinkUserId;
+      if (!userId) {
+        return res.status(401).json({ error: 'Authentication required' });
+      }
+
+      const notesClient = getClinicalNotesClient();
+      if (!notesClient) {
+        return res.status(503).json({ 
+          error: 'Clinical Notes not configured',
+          message: 'OPENSEARCH_ENDPOINT environment variable is required'
+        });
+      }
+
+      // Get all notes for the user (match all query)
+      // Don't sort by date in OpenSearch since it might not be sortable in existing indices
+      const searchResult = await notesClient.searchNotes(userId, {
+        query: '*', // Match all
+        size: 10000, // Get up to 10,000 notes
+        from: 0
+        // Sort will be done in JavaScript after fetching
+      });
+
+      // Extract relevant fields: type, author, category, created
+      const notes = searchResult.hits.map(hit => {
+        const source = hit.source;
+        
+        // Use stored fields if available, otherwise extract from markdown
+        const type = source.type || '';
+        const author = source.author || '';
+        const category = source.category || '';
+        const created = source.created || '';
+        const date = source.date || '';
+
+        return {
+          id: hit.id,
+          type: type,
+          author: author,
+          category: category,
+          created: created,
+          date: date,
+          fileName: source.fileName || '',
+          page: source.page || 0
+        };
+      });
+
+      // Sort by date (newest first) in JavaScript
+      // Parse dates for proper sorting (handle various formats)
+      notes.sort((a, b) => {
+        // If both have dates, try to parse and compare
+        if (a.date && b.date) {
+          // Try to parse dates - handle formats like "Oct 27, 2025", "10/27/2025", etc.
+          const dateA = parseDate(a.date);
+          const dateB = parseDate(b.date);
+          if (dateA && dateB) {
+            return dateB.getTime() - dateA.getTime(); // Newest first
+          }
+          // If parsing fails, do string comparison
+          return b.date.localeCompare(a.date);
+        }
+        // If only one has a date, prioritize it
+        if (a.date && !b.date) return -1;
+        if (!a.date && b.date) return 1;
+        // If neither has a date, sort by page (newest first)
+        return b.page - a.page;
+      });
+
+      res.json({
+        success: true,
+        total: searchResult.total,
+        notes: notes
+      });
+    } catch (error) {
+      console.error('❌ [CLINICAL-NOTES] Error fetching clinical notes:', error);
+      res.status(500).json({ error: `Failed to fetch clinical notes: ${error.message}` });
     }
   });
 
