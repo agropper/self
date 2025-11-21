@@ -39,10 +39,14 @@
       <q-input
         v-if="action === 'register'"
         v-model="email"
-        label="Email (optional)"
+        label="Email"
         type="email"
         outlined
-        hint="Optional: Used for account notifications"
+        :rules="[
+          (val) => !!val || 'Email is required',
+          (val) => /.+@.+\..+/.test(val) || 'Please enter a valid email address'
+        ]"
+        hint="Required for account notifications."
         @keyup.enter="handleEnterKey"
       />
 
@@ -51,7 +55,7 @@
           label="Continue"
           color="primary"
           :loading="loading"
-          :disable="!userId || userId.length < 3"
+          :disable="!userId || userId.length < 3 || (action === 'register' && !email)"
           @click="continueAction"
         />
         <q-btn
