@@ -951,6 +951,22 @@ const sendMessage = async () => {
               const responseTime = Date.now() - startTime;
               console.log(`[*] AI Response time: ${responseTime}ms`);
               
+              // [RAG] Debug: Log the full response for RAG queries
+              const lastUserMessage = messages.value.filter(m => m.role === 'user').pop()?.content || '';
+              if (lastUserMessage.toLowerCase().includes('find the encounter note') || 
+                  lastUserMessage.toLowerCase().includes('document and page')) {
+                console.log('[RAG] Full AI response:', assistantMessage.content);
+                console.log('[RAG] Original query:', lastUserMessage);
+                
+                // Extract filename and page from response if present
+                const filenameMatch = assistantMessage.content.match(/(?:File|Filename|Document|Source):\s*([A-Za-z0-9_\-\.]+\.(?:PDF|pdf))/i);
+                const pageMatch = assistantMessage.content.match(/Page:\s*(\d+)/i);
+                if (filenameMatch || pageMatch) {
+                  console.log('[RAG] Extracted filename:', filenameMatch?.[1] || 'not found');
+                  console.log('[RAG] Extracted page:', pageMatch?.[1] || 'not found');
+                }
+              }
+              
               // Save patient summary if this was a summary request
               if (isPatientSummaryRequest && props.user?.userId && assistantMessage.content) {
                 savePatientSummary(assistantMessage.content);
@@ -1333,13 +1349,34 @@ const processPageReferences = (content: string): string => {
   }
   
   // Find PDF filenames in the content
-  const pdfFilenamePattern = /([A-Za-z0-9_\-\.]+\.(?:PDF|pdf))/gi;
-  const pdfFilenames: Array<{ filename: string; index: number }> = [];
-  let filenameMatch;
-  pdfFilenamePattern.lastIndex = 0;
-  while ((filenameMatch = pdfFilenamePattern.exec(content)) !== null) {
-    pdfFilenames.push({ filename: filenameMatch[1], index: filenameMatch.index });
+  // Look for filenames with various labels: File:, Filename:, Document:, or standalone
+  // Also handle markdown formatting like **Filename:** or **File:**
+  const pdfFilenamePatterns = [
+    /\*\*(?:File|Filename|Document|Source):\*\*\s*([A-Za-z0-9_\-\.]+\.(?:PDF|pdf))/gi, // Markdown bold with label
+    /(?:File|Filename|Document|Source):\s*([A-Za-z0-9_\-\.]+\.(?:PDF|pdf))/gi, // With label (no markdown)
+    /([A-Za-z0-9_\-\.]+\.(?:PDF|pdf))/gi // Standalone
+  ];
+  const pdfFilenames: Array<{ filename: string; index: number; label?: string }> = [];
+  
+  // First, find filenames with labels (including markdown)
+  for (const pattern of pdfFilenamePatterns) {
+    let filenameMatch;
+    pattern.lastIndex = 0;
+    while ((filenameMatch = pattern.exec(content)) !== null) {
+      const filename = filenameMatch[1] || filenameMatch[0];
+      // Avoid duplicates
+      if (!pdfFilenames.some(f => f.filename === filename && f.index === filenameMatch.index)) {
+        pdfFilenames.push({ 
+          filename: filename, 
+          index: filenameMatch.index,
+          label: filenameMatch[0].includes(':') ? filenameMatch[0].split(':')[0].replace(/\*/g, '') : undefined
+        });
+      }
+    }
   }
+  
+  // Sort by index
+  pdfFilenames.sort((a, b) => a.index - b.index);
   
   // Process page references in reverse order to preserve indices
   let processedContent = content;
@@ -1353,13 +1390,23 @@ const processPageReferences = (content: string): string => {
       continue;
     }
     
-    // Find the closest PDF filename before this page reference
+    // Find the closest PDF filename before or after this page reference
+    // If there's only one filename in the context (within 200 chars before/after), use it regardless of label
     let matchedFilename: string | null = null;
     let matchedFile: UploadedFile | null = null;
     
-    const filenameBefore = pdfFilenames.filter(f => f.index < index);
-    if (filenameBefore.length > 0) {
-      matchedFilename = filenameBefore[filenameBefore.length - 1].filename;
+    const contextStart = Math.max(0, index - 200);
+    const contextEnd = Math.min(content.length, index + fullMatch.length + 200);
+    const contextText = content.substring(contextStart, contextEnd);
+    
+    // Find all filenames in the context
+    const filenamesInContext = pdfFilenames.filter(f => 
+      f.index >= contextStart && f.index <= contextEnd
+    );
+    
+    // If there's exactly one filename in context, use it (regardless of label or position)
+    if (filenamesInContext.length === 1) {
+      matchedFilename = filenamesInContext[0].filename;
       matchedFile = pdfFiles.find(f => {
         const nameUpper = f.name?.toUpperCase();
         const filenameUpper = matchedFilename!.toUpperCase();
@@ -1367,6 +1414,38 @@ const processPageReferences = (content: string): string => {
                nameUpper.includes(filenameUpper.replace(/\.(PDF|pdf)$/, '')) ||
                filenameUpper.includes(nameUpper.replace(/\.(PDF|pdf)$/, ''));
       }) || null;
+      
+      // If not found in uploadedFiles, check availableUserFiles (if already loaded)
+      if (!matchedFile && matchedFilename && availableUserFiles.value.length > 0) {
+        const matchedUserFile = availableUserFiles.value.find(f => {
+          const fileUpper = f.fileName?.toUpperCase();
+          const filenameUpper = matchedFilename.toUpperCase();
+          return fileUpper === filenameUpper || 
+                 fileUpper?.includes(filenameUpper.replace(/\.(PDF|pdf)$/, '')) ||
+                 filenameUpper.includes(fileUpper?.replace(/\.(PDF|pdf)$/, '') || '');
+        });
+        
+        if (matchedUserFile) {
+          // Create a pseudo-file object for matching
+          matchedFile = {
+            name: matchedUserFile.fileName,
+            bucketKey: matchedUserFile.bucketKey
+          } as UploadedFile;
+        }
+      }
+    } else {
+      // Multiple filenames or none - use the closest one before the page reference
+      const filenameBefore = pdfFilenames.filter(f => f.index < index);
+      if (filenameBefore.length > 0) {
+        matchedFilename = filenameBefore[filenameBefore.length - 1].filename;
+        matchedFile = pdfFiles.find(f => {
+          const nameUpper = f.name?.toUpperCase();
+          const filenameUpper = matchedFilename!.toUpperCase();
+          return nameUpper === filenameUpper || 
+                 nameUpper.includes(filenameUpper.replace(/\.(PDF|pdf)$/, '')) ||
+                 filenameUpper.includes(nameUpper.replace(/\.(PDF|pdf)$/, ''));
+        }) || null;
+      }
     }
     
     // Create the HTML link (markdown allows raw HTML)
@@ -1395,8 +1474,13 @@ const processPageReferences = (content: string): string => {
         // Found a match in user files - create direct link
         const escapedText = fullMatch.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
         linkHtml = `<a href="#" class="page-link" data-filename="${matchedFilename}" data-page="${pageNum}" data-bucket-key="${matchedUserFile.bucketKey}">${escapedText}</a>`;
+      } else if (matchedFilename) {
+        // We found a filename in the AI response but haven't matched it yet
+        // Store the filename in the link so it can be matched when files are loaded on click
+        const escapedText = fullMatch.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+        linkHtml = `<a href="#" class="page-link page-link-chooser" data-filename="${matchedFilename}" data-page="${pageNum}">${escapedText}</a>`;
       } else {
-        // No match - create chooser link
+        // No filename found - create chooser link without filename
         const escapedText = fullMatch.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
         linkHtml = `<a href="#" class="page-link page-link-chooser" data-page="${pageNum}">${escapedText}</a>`;
       }

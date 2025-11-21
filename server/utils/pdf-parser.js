@@ -584,7 +584,35 @@ export function extractIndividualClinicalNotes(fullMarkdown, pages, fileName = '
       noteText = cleanedLines.join('\n').trim();
     
     // Skip very short notes (likely false positives)
-    if (noteText.length < 30) continue;
+    // BUT: If a note has a Created: field, it's a real note and should be included regardless of content length
+    // The Created: field is the primary indicator that this is a valid clinical note
+    const hasCreatedField = !!noteCreated;
+    const hasStructuredFields = !!(noteType || noteAuthor || noteCategory || noteCreated);
+    
+    // Calculate effective content length: include structured fields in the length check
+    // This prevents valid notes from being filtered out just because they only have structured fields
+    const structuredFieldsLength = [
+      noteType ? `Type: ${noteType}` : '',
+      noteAuthor ? `Author: ${noteAuthor}` : '',
+      noteCategory ? `Category: ${noteCategory}` : '',
+      noteCreated ? `Created: ${noteCreated}` : ''
+    ].filter(f => f).join('; ').length;
+    
+    const effectiveLength = noteText.length + structuredFieldsLength;
+    
+    // Skip only if:
+    // 1. No Created: field AND
+    // 2. Effective content length is less than 30 characters
+    // Notes with Created: fields are always valid (they're real clinical notes)
+    if (!hasCreatedField && effectiveLength < 30) {
+      console.log(`⚠️ [CLINICAL-NOTES] Skipping short note (${noteText.length} chars, ${effectiveLength} effective): Type=${noteType}, Author=${noteAuthor}, Category=${noteCategory}, Created=${noteCreated}`);
+      continue;
+    }
+    
+    // If we have a Created: field but content is very short, log it for debugging
+    if (hasCreatedField && noteText.length < 30) {
+      console.log(`ℹ️ [CLINICAL-NOTES] Including note with Created: field despite short content (${noteText.length} chars): Created=${noteCreated}, Author=${noteAuthor}, Category=${noteCategory}`);
+    }
     
     // Find which page this note belongs to
     // We need to find the page by looking at the original markdown structure
