@@ -145,6 +145,29 @@ Please provide a list of all top-level markdown categories (### headings) and th
   }
 }
 
+// Helper function to get S3 client
+function getS3Client() {
+  const bucketUrl = process.env.DIGITALOCEAN_BUCKET;
+  if (!bucketUrl) {
+    throw new Error('DigitalOcean bucket not configured');
+  }
+
+  const bucketName = bucketUrl.split('//')[1]?.split('.')[0] || 'maia';
+
+  return {
+    client: new S3Client({
+      endpoint: process.env.DIGITALOCEAN_ENDPOINT_URL || 'https://tor1.digitaloceanspaces.com',
+      region: 'us-east-1',
+      forcePathStyle: false,
+      credentials: {
+        accessKeyId: process.env.DIGITALOCEAN_AWS_ACCESS_KEY_ID || '',
+        secretAccessKey: process.env.DIGITALOCEAN_AWS_SECRET_ACCESS_KEY || ''
+      }
+    }),
+    bucketName
+  };
+}
+
 // Lazy initialization of OpenSearch client for clinical notes
 let clinicalNotesClient = null;
 
@@ -610,55 +633,59 @@ export default function setupFileRoutes(app, cloudant, doClient) {
         }
       }
 
-      // Extract and index individual clinical notes if "Clinical Notes" category exists
-      let clinicalNotesIndexed = null;
-      const notesClient = getClinicalNotesClient();
-      const clinicalNotesCategory = categories.find(cat => 
-        cat.category.toLowerCase().includes('clinical notes') || 
-        cat.category.toLowerCase() === 'clinical notes'
-      );
-      
-      if (clinicalNotesCategory && notesClient) {
-        try {
-          // Delete existing notes for this file before indexing new ones
-          console.log(`🗑️ [CLINICAL-NOTES] Deleting existing notes for file: ${req.file.originalname}`);
-          const deleteResult = await notesClient.deleteNotesByFileName(userId, req.file.originalname);
-          console.log(`🗑️ [CLINICAL-NOTES] Deleted ${deleteResult.deleted} existing notes for file`);
-          
-          console.log(`📝 [CLINICAL-NOTES] Extracting individual notes from Clinical Notes category (${clinicalNotesCategory.count} entries)`);
-          const individualNotes = extractIndividualClinicalNotes(
-            fullMarkdown,
-            result.pages,
-            req.file.originalname
-          );
-          
-          if (individualNotes.length > 0) {
-            console.log(`📝 [CLINICAL-NOTES] Found ${individualNotes.length} individual clinical notes to index`);
-            const bulkResult = await notesClient.indexNotesBulk(userId, individualNotes);
-            clinicalNotesIndexed = {
-              total: individualNotes.length,
-              indexed: bulkResult.indexed,
-              errors: bulkResult.errors || [],
-              deleted: deleteResult.deleted
-            };
-            console.log(`✅ [CLINICAL-NOTES] Indexed ${bulkResult.indexed} individual clinical notes`);
-          } else {
-            console.log('⚠️ [CLINICAL-NOTES] No individual notes extracted from Clinical Notes section');
-            clinicalNotesIndexed = {
-              total: 0,
-              indexed: 0,
-              errors: ['No individual notes could be extracted from Clinical Notes section'],
-              deleted: deleteResult.deleted
-            };
+      // Note: Clinical Notes processing is now done on-demand when user clicks the category
+      // Save PDF and processing results to Lists folder
+      let savedPdfBucketKey = null;
+      let savedResultsBucketKey = null;
+      try {
+        const { client: s3Client, bucketName } = getS3Client();
+        const listsFolder = `${userId}/Lists/`;
+        const cleanFileName = req.file.originalname.replace(/[^a-zA-Z0-9.-]/g, '_');
+        
+        // Save PDF file to Lists folder
+        savedPdfBucketKey = `${listsFolder}${cleanFileName}`;
+        await s3Client.send(new PutObjectCommand({
+          Bucket: bucketName,
+          Key: savedPdfBucketKey,
+          Body: req.file.buffer,
+          ContentType: 'application/pdf',
+          Metadata: {
+            originalName: req.file.originalname,
+            processedAt: new Date().toISOString(),
+            userId: userId
           }
-        } catch (error) {
-          console.error('❌ [CLINICAL-NOTES] Error indexing individual clinical notes:', error);
-          clinicalNotesIndexed = {
-            total: 0,
-            indexed: 0,
-            errors: [error.message]
-          };
-        }
+        }));
+        console.log(`💾 [LISTS] Saved PDF to ${savedPdfBucketKey}`);
+
+        // Save processing results as JSON
+        const resultsFileName = cleanFileName.replace(/\.pdf$/i, '_results.json');
+        savedResultsBucketKey = `${listsFolder}${resultsFileName}`;
+        const processingResults = {
+          fileName: req.file.originalname,
+          totalPages: result.totalPages,
+          pages: result.pages,
+          categories: categories,
+          fullMarkdown: fullMarkdown,
+          categoryError: categoryError || undefined,
+          processedAt: new Date().toISOString(),
+          pdfProcessedAt: new Date().toISOString() // Track when PDF was processed
+        };
+        
+        await s3Client.send(new PutObjectCommand({
+          Bucket: bucketName,
+          Key: savedResultsBucketKey,
+          Body: JSON.stringify(processingResults, null, 2),
+          ContentType: 'application/json',
+          Metadata: {
+            originalName: req.file.originalname,
+            processedAt: new Date().toISOString(),
+            userId: userId
+          }
+        }));
+        console.log(`💾 [LISTS] Saved processing results to ${savedResultsBucketKey}`);
+      } catch (saveError) {
+        console.error('⚠️ [LISTS] Failed to save PDF/results to Lists folder:', saveError);
+        // Don't fail the request if saving fails
       }
 
       res.json({
@@ -668,7 +695,9 @@ export default function setupFileRoutes(app, cloudant, doClient) {
         categories: categories,
         fullMarkdown: fullMarkdown,
         clinicalNotesIndexed,
-        categoryError: categoryError || undefined
+        categoryError: categoryError || undefined,
+        savedPdfBucketKey,
+        savedResultsBucketKey
       });
     } catch (error) {
       console.error('❌ PDF to markdown extraction error:', error);
@@ -690,18 +719,7 @@ export default function setupFileRoutes(app, cloudant, doClient) {
 
       const { bucketKey } = req.params;
       
-      const bucketUrl = process.env.DIGITALOCEAN_BUCKET;
-      const bucketName = bucketUrl?.split('//')[1]?.split('.')[0] || 'maia';
-
-      const s3Client = new S3Client({
-        endpoint: process.env.DIGITALOCEAN_ENDPOINT_URL || 'https://tor1.digitaloceanspaces.com',
-        region: 'us-east-1',
-        forcePathStyle: false,
-        credentials: {
-          accessKeyId: process.env.DIGITALOCEAN_AWS_ACCESS_KEY_ID || '',
-          secretAccessKey: process.env.DIGITALOCEAN_AWS_SECRET_ACCESS_KEY || ''
-        }
-      });
+      const { client: s3Client, bucketName } = getS3Client();
 
       const getCommand = new GetObjectCommand({
         Bucket: bucketName,
@@ -739,55 +757,63 @@ export default function setupFileRoutes(app, cloudant, doClient) {
         }
       }
 
-      // Extract and index individual clinical notes if "Clinical Notes" category exists
-      let clinicalNotesIndexed = null;
-      const notesClient = getClinicalNotesClient();
-      const clinicalNotesCategory = categories.find(cat => 
-        cat.category.toLowerCase().includes('clinical notes') || 
-        cat.category.toLowerCase() === 'clinical notes'
-      );
-      
-      if (clinicalNotesCategory && notesClient) {
-        try {
-          // Delete existing notes for this file before indexing new ones
-          console.log(`🗑️ [CLINICAL-NOTES] Deleting existing notes for file: ${fileName}`);
-          const deleteResult = await notesClient.deleteNotesByFileName(userId, fileName);
-          console.log(`🗑️ [CLINICAL-NOTES] Deleted ${deleteResult.deleted} existing notes for file`);
-          
-          console.log(`📝 [CLINICAL-NOTES] Extracting individual notes from Clinical Notes category (${clinicalNotesCategory.count} entries)`);
-          const individualNotes = extractIndividualClinicalNotes(
-            fullMarkdown,
-            result.pages,
-            fileName
-          );
-          
-          if (individualNotes.length > 0) {
-            console.log(`📝 [CLINICAL-NOTES] Found ${individualNotes.length} individual clinical notes to index`);
-            const bulkResult = await notesClient.indexNotesBulk(userId, individualNotes);
-            clinicalNotesIndexed = {
-              total: individualNotes.length,
-              indexed: bulkResult.indexed,
-              errors: bulkResult.errors || [],
-              deleted: deleteResult.deleted
-            };
-            console.log(`✅ [CLINICAL-NOTES] Indexed ${bulkResult.indexed} individual clinical notes`);
-          } else {
-            console.log('⚠️ [CLINICAL-NOTES] No individual notes extracted from Clinical Notes section');
-            clinicalNotesIndexed = {
-              total: 0,
-              indexed: 0,
-              errors: ['No individual notes could be extracted from Clinical Notes section'],
-              deleted: deleteResult.deleted
-            };
-          }
-        } catch (error) {
-          console.error('❌ [CLINICAL-NOTES] Error indexing individual clinical notes:', error);
-          clinicalNotesIndexed = {
-            total: 0,
-            indexed: 0,
-            errors: [error.message]
-          };
+      // Note: Clinical Notes processing is now done on-demand when user clicks the category
+      // Save PDF and processing results to Lists folder
+      let savedPdfBucketKey = null;
+      let savedResultsBucketKey = null;
+      try {
+        const listsFolder = `${userId}/Lists/`;
+        const cleanFileName = fileName.replace(/[^a-zA-Z0-9.-]/g, '_');
+        
+        // Copy PDF file to Lists folder (if not already there)
+        if (!bucketKey.startsWith(listsFolder)) {
+          savedPdfBucketKey = `${listsFolder}${cleanFileName}`;
+          await s3Client.send(new PutObjectCommand({
+            Bucket: bucketName,
+            Key: savedPdfBucketKey,
+            Body: pdfBuffer,
+            ContentType: 'application/pdf',
+            Metadata: {
+              originalName: fileName,
+              processedAt: new Date().toISOString(),
+              userId: userId,
+              sourceBucketKey: bucketKey
+            }
+          }));
+          console.log(`💾 [LISTS] Saved PDF to ${savedPdfBucketKey}`);
+        } else {
+          savedPdfBucketKey = bucketKey;
         }
+
+        // Save processing results as JSON
+        const resultsFileName = cleanFileName.replace(/\.pdf$/i, '_results.json');
+        savedResultsBucketKey = `${listsFolder}${resultsFileName}`;
+        const processingResults = {
+          fileName: fileName,
+          totalPages: result.totalPages,
+          pages: result.pages,
+          categories: categories,
+          fullMarkdown: fullMarkdown,
+          categoryError: categoryError || undefined,
+          processedAt: new Date().toISOString(),
+          pdfProcessedAt: new Date().toISOString() // Track when PDF was processed
+        };
+        
+        await s3Client.send(new PutObjectCommand({
+          Bucket: bucketName,
+          Key: savedResultsBucketKey,
+          Body: JSON.stringify(processingResults, null, 2),
+          ContentType: 'application/json',
+          Metadata: {
+            originalName: fileName,
+            processedAt: new Date().toISOString(),
+            userId: userId
+          }
+        }));
+        console.log(`💾 [LISTS] Saved processing results to ${savedResultsBucketKey}`);
+      } catch (saveError) {
+        console.error('⚠️ [LISTS] Failed to save PDF/results to Lists folder:', saveError);
+        // Don't fail the request if saving fails
       }
 
       res.json({
@@ -796,12 +822,244 @@ export default function setupFileRoutes(app, cloudant, doClient) {
         pages: result.pages,
         categories: categories,
         fullMarkdown: fullMarkdown,
-        clinicalNotesIndexed,
-        categoryError: categoryError || undefined
+        categoryError: categoryError || undefined,
+        savedPdfBucketKey,
+        savedResultsBucketKey
       });
     } catch (error) {
       console.error('❌ PDF to markdown extraction error:', error);
       res.status(500).json({ error: `Failed to extract PDF: ${error.message}` });
+    }
+  });
+
+  /**
+   * Process Clinical Notes category on demand
+   * POST /api/files/lists/process-category
+   */
+  app.post('/api/files/lists/process-category', async (req, res) => {
+    try {
+      // Require authentication
+      const userId = req.session?.userId || req.session?.deepLinkUserId;
+      if (!userId) {
+        return res.status(401).json({ error: 'Authentication required' });
+      }
+
+      const { categoryName, resultsBucketKey } = req.body;
+      
+      if (!categoryName || !resultsBucketKey) {
+        return res.status(400).json({ error: 'categoryName and resultsBucketKey are required' });
+      }
+
+      // Only process Clinical Notes for now
+      if (!categoryName.toLowerCase().includes('clinical notes')) {
+        return res.status(400).json({ error: 'Only Clinical Notes category is supported' });
+      }
+
+      const { client: s3Client, bucketName } = getS3Client();
+
+      // Load the saved processing results
+      const getResultsCommand = new GetObjectCommand({
+        Bucket: bucketName,
+        Key: resultsBucketKey
+      });
+
+      const resultsResponse = await s3Client.send(getResultsCommand);
+      const resultsChunks = [];
+      for await (const chunk of resultsResponse.Body) {
+        resultsChunks.push(chunk);
+      }
+      const resultsJson = Buffer.concat(resultsChunks).toString('utf-8');
+      const processingResults = JSON.parse(resultsJson);
+
+      // Check if we have a saved list file for this category
+      const listsFolder = `${userId}/Lists/`;
+      const cleanFileName = processingResults.fileName.replace(/[^a-zA-Z0-9.-]/g, '_');
+      const listFileName = `${cleanFileName.replace(/\.pdf$/i, '')}_${categoryName.toLowerCase().replace(/\s+/g, '_')}_list.json`;
+      const listBucketKey = `${listsFolder}${listFileName}`;
+
+      // Check if list file exists and if it's still valid (PDF hasn't been reprocessed)
+      let existingList = null;
+      let listIsStale = false;
+      try {
+        const getListCommand = new GetObjectCommand({
+          Bucket: bucketName,
+          Key: listBucketKey
+        });
+        const listResponse = await s3Client.send(getListCommand);
+        const listChunks = [];
+        for await (const chunk of listResponse.Body) {
+          listChunks.push(chunk);
+        }
+        const listJson = Buffer.concat(listChunks).toString('utf-8');
+        existingList = JSON.parse(listJson);
+        
+        // Check if PDF was reprocessed after list was created
+        const listProcessedAt = new Date(existingList.processedAt || 0);
+        const pdfProcessedAt = new Date(processingResults.pdfProcessedAt || 0);
+        listIsStale = pdfProcessedAt > listProcessedAt;
+      } catch (err) {
+        // List file doesn't exist, that's fine
+        console.log(`📝 [LISTS] No existing list file found for ${categoryName}`);
+      }
+
+      // If list exists and is not stale, return it
+      if (existingList && !listIsStale) {
+        console.log(`✅ [LISTS] Returning cached list for ${categoryName}`);
+        return res.json({
+          success: true,
+          categoryName,
+          list: existingList.list,
+          indexed: existingList.indexed,
+          processedAt: existingList.processedAt,
+          fromCache: true
+        });
+      }
+
+      // Process the category
+      const notesClient = getClinicalNotesClient();
+      if (!notesClient) {
+        return res.status(503).json({ 
+          error: 'Clinical Notes indexing not configured',
+          message: 'OPENSEARCH_ENDPOINT environment variable is required'
+        });
+      }
+
+      console.log(`📝 [LISTS] Processing ${categoryName} category on demand`);
+      
+      // Delete existing notes for this file before indexing new ones
+      const deleteResult = await notesClient.deleteNotesByFileName(userId, processingResults.fileName);
+      console.log(`🗑️ [CLINICAL-NOTES] Deleted ${deleteResult.deleted} existing notes for file`);
+      
+      // Extract individual notes
+      const individualNotes = extractIndividualClinicalNotes(
+        processingResults.fullMarkdown,
+        processingResults.pages,
+        processingResults.fileName
+      );
+      
+      let indexedResult = null;
+      if (individualNotes.length > 0) {
+        console.log(`📝 [CLINICAL-NOTES] Found ${individualNotes.length} individual clinical notes to index`);
+        const bulkResult = await notesClient.indexNotesBulk(userId, individualNotes);
+        indexedResult = {
+          total: individualNotes.length,
+          indexed: bulkResult.indexed,
+          errors: bulkResult.errors || [],
+          deleted: deleteResult.deleted
+        };
+        console.log(`✅ [CLINICAL-NOTES] Indexed ${bulkResult.indexed} individual clinical notes`);
+      } else {
+        console.log('⚠️ [CLINICAL-NOTES] No individual notes extracted from Clinical Notes section');
+        indexedResult = {
+          total: 0,
+          indexed: 0,
+          errors: ['No individual notes could be extracted from Clinical Notes section'],
+          deleted: deleteResult.deleted
+        };
+      }
+
+      // Save the processed list to file
+      const listData = {
+        categoryName,
+        fileName: processingResults.fileName,
+        list: individualNotes,
+        indexed: indexedResult,
+        processedAt: new Date().toISOString(),
+        pdfProcessedAt: processingResults.pdfProcessedAt
+      };
+
+      await s3Client.send(new PutObjectCommand({
+        Bucket: bucketName,
+        Key: listBucketKey,
+        Body: JSON.stringify(listData, null, 2),
+        ContentType: 'application/json',
+        Metadata: {
+          categoryName: categoryName,
+          fileName: processingResults.fileName,
+          processedAt: new Date().toISOString(),
+          userId: userId
+        }
+      }));
+      console.log(`💾 [LISTS] Saved processed list to ${listBucketKey}`);
+
+      res.json({
+        success: true,
+        categoryName,
+        list: individualNotes,
+        indexed: indexedResult,
+        processedAt: listData.processedAt,
+        fromCache: false
+      });
+    } catch (error) {
+      console.error('❌ Error processing category:', error);
+      res.status(500).json({ error: `Failed to process category: ${error.message}` });
+    }
+  });
+
+  /**
+   * Get saved processing results from Lists folder
+   * GET /api/files/lists/results
+   */
+  app.get('/api/files/lists/results', async (req, res) => {
+    try {
+      // Require authentication (regular user or deep-link user)
+      const userId = req.session?.userId || req.session?.deepLinkUserId;
+      if (!userId) {
+        return res.status(401).json({ error: 'Authentication required' });
+      }
+
+      const { client: s3Client, bucketName } = getS3Client();
+      const listsFolder = `${userId}/Lists/`;
+
+      // List all files in Lists folder
+      const listCommand = new ListObjectsV2Command({
+        Bucket: bucketName,
+        Prefix: listsFolder
+      });
+
+      const listResult = await s3Client.send(listCommand);
+      
+      // Find the most recent _results.json file
+      const resultsFiles = (listResult.Contents || [])
+        .filter(obj => obj.Key && obj.Key.endsWith('_results.json'))
+        .sort((a, b) => (b.LastModified?.getTime() || 0) - (a.LastModified?.getTime() || 0));
+
+      if (resultsFiles.length === 0) {
+        return res.json({
+          success: true,
+          hasResults: false
+        });
+      }
+
+      // Get the most recent results file
+      const latestResultsKey = resultsFiles[0].Key;
+      const getCommand = new GetObjectCommand({
+        Bucket: bucketName,
+        Key: latestResultsKey
+      });
+
+      const response = await s3Client.send(getCommand);
+      const chunks = [];
+      for await (const chunk of response.Body) {
+        chunks.push(chunk);
+      }
+      const resultsJson = Buffer.concat(chunks).toString('utf-8');
+      const processingResults = JSON.parse(resultsJson);
+
+      // Find the corresponding PDF file
+      const pdfFileName = processingResults.fileName.replace(/[^a-zA-Z0-9.-]/g, '_');
+      const pdfKey = `${listsFolder}${pdfFileName}`;
+
+      res.json({
+        success: true,
+        hasResults: true,
+        pdfBucketKey: pdfKey,
+        resultsBucketKey: latestResultsKey,
+        results: processingResults
+      });
+    } catch (error) {
+      console.error('❌ Error retrieving Lists processing results:', error);
+      res.status(500).json({ error: `Failed to retrieve results: ${error.message}` });
     }
   });
 

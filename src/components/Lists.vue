@@ -15,8 +15,8 @@
       </div>
     </div>
 
-    <!-- File Selection -->
-    <q-card class="q-mb-md">
+    <!-- File Selection (hidden if saved results exist) -->
+    <q-card v-if="!hasSavedResults" class="q-mb-md">
       <q-card-section>
         <div class="text-h6 q-mb-md">Select PDF File</div>
         
@@ -115,12 +115,22 @@
               </div>
             </div>
             <div class="col-auto">
-              <q-btn
-                color="primary"
-                icon="download"
-                label="Download Markdown"
-                @click="downloadMarkdown"
-              />
+              <div class="row q-gutter-sm">
+                <q-btn
+                  v-if="hasSavedResults"
+                  color="secondary"
+                  icon="refresh"
+                  label="Re-process PDF"
+                  @click="reprocessPdf"
+                  :loading="isProcessing"
+                />
+                <q-btn
+                  color="primary"
+                  icon="download"
+                  label="Download Markdown"
+                  @click="downloadMarkdown"
+                />
+              </div>
             </div>
           </div>
         </q-card-section>
@@ -141,29 +151,49 @@
           </q-banner>
           
           <q-list v-if="categories.length > 0" bordered separator>
-            <q-item v-for="(cat, index) in categories" :key="index">
+            <q-item 
+              v-for="(cat, index) in categories" 
+              :key="index"
+              :clickable="cat.category.toLowerCase().includes('clinical notes')"
+              @click="cat.category.toLowerCase().includes('clinical notes') ? processCategory(cat.category) : null"
+              :class="{ 'cursor-pointer': cat.category.toLowerCase().includes('clinical notes') }"
+            >
               <q-item-section>
-                <q-item-label>{{ cat.category }}</q-item-label>
-                <!-- Show indexing results for Clinical Notes -->
+                <q-item-label>
+                  {{ cat.category }}
+                  <q-icon 
+                    v-if="cat.category.toLowerCase().includes('clinical notes')" 
+                    name="play_arrow" 
+                    size="sm" 
+                    class="q-ml-sm text-primary"
+                  />
+                </q-item-label>
+                <!-- Show processing status for Clinical Notes -->
                 <q-item-label 
-                  v-if="cat.category.toLowerCase().includes('clinical notes') && pdfData?.clinicalNotesIndexed"
+                  v-if="cat.category.toLowerCase().includes('clinical notes')"
                   caption
                   class="q-mt-xs"
                 >
-                  <div v-if="pdfData.clinicalNotesIndexed.indexed > 0" class="text-positive">
-                    ✅ Indexed {{ pdfData.clinicalNotesIndexed.indexed }} of {{ pdfData.clinicalNotesIndexed.total }} notes
+                  <div v-if="processingCategory === cat.category" class="text-primary">
+                    <q-spinner size="xs" /> Processing...
                   </div>
-                  <div v-else-if="pdfData.clinicalNotesIndexed.total > 0" class="text-warning">
+                  <div v-else-if="categoryProcessingStatus[cat.category]?.indexed > 0" class="text-positive">
+                    ✅ Indexed {{ categoryProcessingStatus[cat.category].indexed }} of {{ categoryProcessingStatus[cat.category].total }} notes
+                  </div>
+                  <div v-else-if="categoryProcessingStatus[cat.category]?.total === 0" class="text-grey">
+                    Click to process
+                  </div>
+                  <div v-else-if="categoryProcessingStatus[cat.category]" class="text-warning">
                     ⚠️ Failed to index notes
                   </div>
                   <div v-else class="text-grey">
-                    No notes extracted
+                    Click to process
                   </div>
                   <div 
-                    v-if="pdfData.clinicalNotesIndexed.errors && pdfData.clinicalNotesIndexed.errors.length > 0"
+                    v-if="categoryProcessingStatus[cat.category]?.errors && categoryProcessingStatus[cat.category].errors.length > 0"
                     class="text-negative q-mt-xs"
                   >
-                    Errors: {{ pdfData.clinicalNotesIndexed.errors.join(', ') }}
+                    Errors: {{ categoryProcessingStatus[cat.category].errors.join(', ') }}
                   </div>
                 </q-item-label>
               </q-item-section>
@@ -177,8 +207,8 @@
         </q-card-section>
       </q-card>
 
-      <!-- Clinical Notes List -->
-      <q-card class="q-mb-md">
+      <!-- Clinical Notes List (only shown when processed) -->
+      <q-card v-if="hasCategoryBeenProcessed('clinical notes')" class="q-mb-md">
         <q-card-section>
           <div class="text-h6 q-mb-md">Clinical Notes</div>
           
@@ -188,7 +218,7 @@
           </div>
           
           <div v-else-if="clinicalNotes.length === 0" class="text-center q-pa-md text-grey">
-            No clinical notes found. Process a PDF to index clinical notes.
+            No clinical notes found. Click "Clinical Notes" in the Markdown Categories list to process.
           </div>
           
           <q-list v-else bordered separator>
@@ -212,36 +242,6 @@
               </q-item-section>
             </q-item>
           </q-list>
-        </q-card-section>
-      </q-card>
-
-      <!-- Pages with Markdown -->
-      <q-card>
-        <q-card-section>
-          <div class="text-h6 q-mb-md">Extracted Pages</div>
-          
-          <q-tabs v-model="activePageTab" align="left" class="q-mb-md">
-            <q-tab
-              v-for="page in pdfData.pages"
-              :key="page.page"
-              :name="page.page"
-              :label="`Page ${page.page}`"
-            />
-          </q-tabs>
-
-          <q-tab-panels v-model="activePageTab" animated>
-            <q-tab-panel
-              v-for="page in pdfData.pages"
-              :key="page.page"
-              :name="page.page"
-            >
-              <div class="text-subtitle2 q-mb-sm">Page {{ page.page }} - Markdown</div>
-              <pre class="markdown-preview q-pa-md bg-grey-1 rounded-borders">{{ page.markdown }}</pre>
-              
-              <div class="text-subtitle2 q-mt-md q-mb-sm">Plain Text</div>
-              <pre class="text-preview q-pa-md bg-grey-1 rounded-borders">{{ page.text }}</pre>
-            </q-tab-panel>
-          </q-tab-panels>
         </q-card-section>
       </q-card>
     </div>
@@ -305,7 +305,6 @@ interface PdfData {
   pages: PdfPage[];
   categories: MarkdownCategory[];
   fullMarkdown: string;
-  clinicalNotesIndexed?: ClinicalNotesIndexed;
   categoryError?: string;
 }
 
@@ -320,6 +319,11 @@ const categories = ref<MarkdownCategory[]>([]);
 const activePageTab = ref<number>(1);
 const clinicalNotes = ref<ClinicalNote[]>([]);
 const isLoadingClinicalNotes = ref(false);
+const hasSavedResults = ref(false);
+const savedPdfBucketKey = ref<string | null>(null);
+const savedResultsBucketKey = ref<string | null>(null);
+const processingCategory = ref<string | null>(null);
+const categoryProcessingStatus = ref<Record<string, { total: number; indexed: number; errors: string[] }>>({});
 
 const loadUserFiles = async () => {
   try {
@@ -346,6 +350,57 @@ const loadUserFiles = async () => {
   } catch (err) {
     console.error('Error loading user files:', err);
   }
+};
+
+const loadSavedResults = async () => {
+  try {
+    const response = await fetch('/api/files/lists/results', {
+      credentials: 'include'
+    });
+    
+    if (response.ok) {
+      const result = await response.json();
+      if (result.hasResults && result.results) {
+        hasSavedResults.value = true;
+        savedPdfBucketKey.value = result.pdfBucketKey;
+        
+        // Load the saved processing results
+        pdfData.value = {
+          totalPages: result.results.totalPages,
+          pages: result.results.pages,
+          categories: result.results.categories || [],
+          fullMarkdown: result.results.fullMarkdown,
+          categoryError: result.results.categoryError
+        };
+        categories.value = result.results.categories || [];
+        selectedFileName.value = result.results.fileName || '';
+        savedResultsBucketKey.value = result.resultsBucketKey;
+        
+        if (result.results.pages && result.results.pages.length > 0) {
+          activePageTab.value = result.results.pages[0].page;
+        }
+      }
+    }
+  } catch (err) {
+    console.error('Error loading saved results:', err);
+  }
+};
+
+const reprocessPdf = async () => {
+  if (!savedPdfBucketKey.value) {
+    error.value = 'No saved PDF found to re-process';
+    return;
+  }
+  
+  await handleBucketFileSelected(savedPdfBucketKey.value);
+};
+
+// Helper function to check if a category has been processed (case-insensitive)
+const hasCategoryBeenProcessed = (categoryName: string): boolean => {
+  const normalized = categoryName.toLowerCase();
+  return Object.keys(categoryProcessingStatus.value).some(
+    key => key.toLowerCase() === normalized && categoryProcessingStatus.value[key]?.indexed > 0
+  );
 };
 
 const handleFileSelected = async (file: File | null) => {
@@ -412,6 +467,13 @@ const processPdfFile = async (file: File) => {
     
     pdfData.value = data;
     categories.value = data.categories || [];
+    hasSavedResults.value = true; // Mark that we now have saved results
+    if (data.savedPdfBucketKey) {
+      savedPdfBucketKey.value = data.savedPdfBucketKey;
+    }
+    if (data.savedResultsBucketKey) {
+      savedResultsBucketKey.value = data.savedResultsBucketKey;
+    }
     
     if (data.pages && data.pages.length > 0) {
       activePageTab.value = data.pages[0].page;
@@ -457,14 +519,16 @@ const processPdfFromBucket = async (bucketKey: string) => {
     
     pdfData.value = data;
     categories.value = data.categories || [];
+    hasSavedResults.value = true; // Mark that we now have saved results
+    if (data.savedPdfBucketKey) {
+      savedPdfBucketKey.value = data.savedPdfBucketKey;
+    }
+    if (data.savedResultsBucketKey) {
+      savedResultsBucketKey.value = data.savedResultsBucketKey;
+    }
     
     if (data.pages && data.pages.length > 0) {
       activePageTab.value = data.pages[0].page;
-    }
-    
-    // Reload clinical notes after processing
-    if (data.clinicalNotesIndexed && data.clinicalNotesIndexed.indexed > 0) {
-      loadClinicalNotes();
     }
   } catch (err) {
     const errorMessage = err instanceof Error ? err.message : 'Failed to process PDF';
@@ -472,6 +536,70 @@ const processPdfFromBucket = async (bucketKey: string) => {
     console.error('PDF processing error:', err);
   } finally {
     isProcessing.value = false;
+  }
+};
+
+const processCategory = async (categoryName: string) => {
+  if (!savedResultsBucketKey.value) {
+    error.value = 'No saved processing results found';
+    return;
+  }
+
+  processingCategory.value = categoryName;
+  
+  try {
+    const response = await fetch('/api/files/lists/process-category', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      credentials: 'include',
+      body: JSON.stringify({
+        categoryName,
+        resultsBucketKey: savedResultsBucketKey.value
+      })
+    });
+
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({ error: `HTTP ${response.status}: ${response.statusText}` }));
+      throw new Error(errorData.error || 'Failed to process category');
+    }
+
+    const result = await response.json();
+    
+    // Update processing status
+    categoryProcessingStatus.value[categoryName] = {
+      total: result.indexed.total,
+      indexed: result.indexed.indexed,
+      errors: result.indexed.errors || []
+    };
+
+    // If it's Clinical Notes, reload the clinical notes list
+    if (categoryName.toLowerCase().includes('clinical notes')) {
+      loadClinicalNotes();
+    }
+
+    if ($q && typeof $q.notify === 'function') {
+      $q.notify({
+        type: result.fromCache ? 'info' : 'positive',
+        message: result.fromCache 
+          ? `Loaded cached ${categoryName} list`
+          : `Processed ${categoryName}: ${result.indexed.indexed} items indexed`,
+        timeout: 3000
+      });
+    }
+  } catch (err) {
+    const errorMessage = err instanceof Error ? err.message : 'Failed to process category';
+    error.value = errorMessage;
+    if ($q && typeof $q.notify === 'function') {
+      $q.notify({
+        type: 'negative',
+        message: errorMessage,
+        timeout: 5000
+      });
+    }
+  } finally {
+    processingCategory.value = null;
   }
 };
 
@@ -597,6 +725,7 @@ const copyNoteToClipboard = async (note: ClinicalNote) => {
 onMounted(() => {
   loadUserFiles();
   loadClinicalNotes();
+  loadSavedResults(); // Check for saved results first
 });
 </script>
 
