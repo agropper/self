@@ -21,6 +21,7 @@
           <q-tab name="agent" label="My AI Agent" icon="smart_toy" />
           <q-tab name="chats" label="Saved Chats" icon="chat" />
           <q-tab name="summary" label="Patient Summary" icon="description" />
+          <q-tab name="lists" label="My Lists" icon="list" />
         </q-tabs>
 
         <q-tab-panels v-model="currentTab" animated>
@@ -402,6 +403,14 @@
             </div>
           </q-tab-panel>
 
+          <!-- My Lists Tab -->
+          <q-tab-panel name="lists">
+            <Lists
+              :userId="userId"
+              @back-to-chat="closeDialog"
+            />
+          </q-tab-panel>
+
           <!-- Patient Summary Tab -->
           <q-tab-panel name="summary">
             <div v-if="loadingSummary" class="text-center q-pa-md">
@@ -645,6 +654,7 @@ import { ref, computed, watch, onUnmounted } from 'vue';
 import VueMarkdown from 'vue-markdown-render';
 import PdfViewerModal from './PdfViewerModal.vue';
 import TextViewerModal from './TextViewerModal.vue';
+import Lists from './Lists.vue';
 import { useQuasar } from 'quasar';
 import { deleteChatById } from '../utils/chatApi';
 
@@ -2852,6 +2862,8 @@ watch(currentTab, (newTab) => {
       loadSharedChats();
     } else if (newTab === 'summary') {
       loadPatientSummary();
+    } else if (newTab === 'lists') {
+      // Lists component handles its own data loading
     }
   }
 });

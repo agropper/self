@@ -126,44 +126,6 @@
         </q-card-section>
       </q-card>
 
-      <!-- Clinical Notes List -->
-      <q-card class="q-mb-md">
-        <q-card-section>
-          <div class="text-h6 q-mb-md">Clinical Notes</div>
-          
-          <div v-if="isLoadingClinicalNotes" class="text-center q-pa-md">
-            <q-spinner size="2em" color="primary" />
-            <div class="q-mt-sm text-caption">Loading clinical notes...</div>
-          </div>
-          
-          <div v-else-if="clinicalNotes.length === 0" class="text-center q-pa-md text-grey">
-            No clinical notes found. Process a PDF to index clinical notes.
-          </div>
-          
-          <q-list v-else bordered separator>
-            <q-item 
-              v-for="note in clinicalNotes" 
-              :key="note.id"
-              clickable
-              @click="copyNoteToClipboard(note)"
-              class="cursor-pointer"
-            >
-              <q-item-section>
-                <q-item-label class="text-body2">
-                  {{ formatNoteDescription(note) }}
-                </q-item-label>
-              </q-item-section>
-              <q-item-section side>
-                <q-item-label caption>
-                  <span v-if="note.fileName" class="text-grey">{{ note.fileName }}</span>
-                  <span v-if="note.page > 0" class="text-grey q-ml-sm">Page {{ note.page }}</span>
-                </q-item-label>
-              </q-item-section>
-            </q-item>
-          </q-list>
-        </q-card-section>
-      </q-card>
-
       <!-- Markdown Categories List -->
       <q-card v-if="categories.length > 0 || pdfData?.categoryError" class="q-mb-md">
         <q-card-section>
@@ -208,6 +170,44 @@
               <q-item-section side>
                 <q-item-label>
                   <q-badge color="primary">{{ cat.count }}</q-badge>
+                </q-item-label>
+              </q-item-section>
+            </q-item>
+          </q-list>
+        </q-card-section>
+      </q-card>
+
+      <!-- Clinical Notes List -->
+      <q-card class="q-mb-md">
+        <q-card-section>
+          <div class="text-h6 q-mb-md">Clinical Notes</div>
+          
+          <div v-if="isLoadingClinicalNotes" class="text-center q-pa-md">
+            <q-spinner size="2em" color="primary" />
+            <div class="q-mt-sm text-caption">Loading clinical notes...</div>
+          </div>
+          
+          <div v-else-if="clinicalNotes.length === 0" class="text-center q-pa-md text-grey">
+            No clinical notes found. Process a PDF to index clinical notes.
+          </div>
+          
+          <q-list v-else bordered separator>
+            <q-item 
+              v-for="note in clinicalNotes" 
+              :key="note.id"
+              clickable
+              @click="copyNoteToClipboard(note)"
+              class="cursor-pointer"
+            >
+              <q-item-section>
+                <q-item-label class="text-body2">
+                  {{ formatNoteDescription(note) }}
+                </q-item-label>
+              </q-item-section>
+              <q-item-section side>
+                <q-item-label caption>
+                  <span v-if="note.fileName" class="text-grey">{{ note.fileName }}</span>
+                  <span v-if="note.page > 0" class="text-grey q-ml-sm">Page {{ note.page }}</span>
                 </q-item-label>
               </q-item-section>
             </q-item>
