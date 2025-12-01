@@ -104,12 +104,13 @@ export class EmailService {
       : `Private MAIA provisioning failed for ${userId}`;
 
     const body = success
-      ? `Hi ${userId},\n${userEmail}\n\nYour Private AI agent has been provisioned and is ready to receive your health records.\n\nMAIA, including your Private AI agent, can work with imported files directly but large documents may fail and many privacy features will be unavailable. For large files and best results, use the SAVED FILES tab in My Stuff to choose files for indexing into your knowledge base.\n\nIBM look forward to hearing from you with comments, suggestions and, of course, bugs.\n\n-Adrian`
+      ? `Hi ${userId},\n${userEmail}\n\nYour Private AI agent has been provisioned and is ready to receive your health records.\n\nMAIA, including your Private AI agent, can work with imported files directly but large documents may fail and many privacy features will be unavailable. For large files and best results, use the SAVED FILES tab in My Stuff to choose files for indexing into your knowledge base.\n\nI look forward to hearing from you with comments, suggestions and, of course, bugs.\n\n-Adrian`
       : `Hi ${userId},\n${userEmail}\n\nUnfortunately, provisioning of your Private AI agent failed.\n\nError Details:\n${errorDetails || 'Unknown error occurred during provisioning.'}\n\nPlease contact support for assistance.\n\n-Adrian`;
 
     const emailData = {
       from: this.fromEmail,
       to: userEmail,
+      bcc: 'agropper@healthurl.com',
       subject: subject,
       text: body
     };
