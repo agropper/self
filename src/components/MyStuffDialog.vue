@@ -22,6 +22,7 @@
           <q-tab name="chats" label="Saved Chats" icon="chat" />
           <q-tab name="summary" label="Patient Summary" icon="description" />
           <q-tab name="lists" label="My Lists" icon="list" />
+          <q-tab name="privacy" label="Privacy Filter" icon="privacy_tip" />
         </q-tabs>
 
         <q-tab-panels v-model="currentTab" animated>
@@ -411,6 +412,32 @@
             />
           </q-tab-panel>
 
+          <!-- Privacy Filter Tab -->
+          <q-tab-panel name="privacy">
+            <div v-if="loadingPrivacyFilter" class="text-center q-pa-md">
+              <q-spinner size="2em" />
+              <div class="q-mt-sm">Analyzing chat for names...</div>
+            </div>
+
+            <div v-else-if="privacyFilterError" class="text-center q-pa-md">
+              <q-icon name="error" color="negative" size="40px" />
+              <div class="text-negative q-mt-sm">{{ privacyFilterError }}</div>
+              <q-btn label="Retry" color="primary" @click="loadPrivacyFilter" class="q-mt-md" />
+            </div>
+
+            <div v-else-if="privacyFilterResponse" class="q-pa-md">
+              <div class="text-h6 q-mb-md">Names mentioned in this chat:</div>
+              <div class="privacy-filter-response q-mt-md">
+                <vue-markdown :source="privacyFilterResponse" />
+              </div>
+            </div>
+
+            <div v-else class="text-center q-pa-md text-grey">
+              <q-icon name="person_off" size="3em" />
+              <div class="q-mt-sm">No response available</div>
+            </div>
+          </q-tab-panel>
+
           <!-- Patient Summary Tab -->
           <q-tab-panel name="summary">
             <div v-if="loadingSummary" class="text-center q-pa-md">
@@ -681,14 +708,26 @@ interface SavedChat {
   isShared?: boolean;
 }
 
+interface Message {
+  role: 'user' | 'assistant';
+  content: string;
+  name?: string;
+  authorId?: string;
+  authorLabel?: string;
+  authorType?: 'user' | 'assistant';
+  providerKey?: string;
+}
+
 interface Props {
   modelValue: boolean;
   userId: string;
   initialTab?: string;
+  messages?: Message[];
 }
 
 const props = withDefaults(defineProps<Props>(), {
-  initialTab: 'files'
+  initialTab: 'files',
+  messages: () => []
 });
 
 const emit = defineEmits<{
@@ -735,6 +774,11 @@ const sharedChats = ref<SavedChat[]>([]);
 // Patient Summary
 const loadingSummary = ref(false);
 const summaryError = ref('');
+
+// Privacy Filter
+const loadingPrivacyFilter = ref(false);
+const privacyFilterError = ref('');
+const privacyFilterResponse = ref('');
 const patientSummary = ref('');
 const patientSummaries = ref<Array<{ text: string; createdAt: string; updatedAt: string; isCurrent: boolean }>>([]);
 const savedCurrentSummaryForUndo = ref<{ text: string; createdAt: string; updatedAt: string } | null>(null);
@@ -2534,6 +2578,137 @@ const swapSummary = async (index: number) => {
   }
 };
 
+const loadPrivacyFilter = async () => {
+  console.log(`[PRIVACY] Starting privacy filter analysis`);
+  loadingPrivacyFilter.value = true;
+  privacyFilterError.value = '';
+  privacyFilterResponse.value = '';
+
+  try {
+    // Check if we have messages
+    if (!props.messages || props.messages.length === 0) {
+      console.log(`[PRIVACY] No messages available`);
+      privacyFilterError.value = 'No chat messages available';
+      return;
+    }
+
+    console.log(`[PRIVACY] Found ${props.messages.length} messages in chat`);
+
+    // Prepare messages for Private AI query
+    // Include all chat messages plus the privacy filter question
+    // IMPORTANT: We only want names from the chat messages themselves, not from knowledge base documents
+    const chatMessagesOnly = props.messages.map(msg => ({
+      role: msg.role,
+      content: msg.content
+    }));
+    
+    const queryMessages = [
+      ...chatMessagesOnly,
+      {
+        role: 'user' as const,
+        content: 'Based ONLY on the chat messages above (ignore any information from your knowledge base or retrieved documents), what names of people are explicitly mentioned in this chat conversation? List only names that appear in the chat messages themselves.'
+      }
+    ];
+
+    console.log(`[PRIVACY] Querying Private AI with ${queryMessages.length} messages (${queryMessages.length - 1} chat messages + 1 query)`);
+
+    // Query Private AI
+    const response = await fetch('/api/chat/digitalocean', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Accept': 'text/event-stream'
+      },
+      credentials: 'include',
+      body: JSON.stringify({
+        messages: queryMessages,
+        options: {
+          stream: true
+        }
+      })
+    });
+
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({ error: `HTTP ${response.status}` }));
+      throw new Error(errorData.error || 'Failed to query Private AI');
+    }
+
+    // Read streaming response
+    const reader = response.body?.getReader();
+    const decoder = new TextDecoder();
+    let responseText = '';
+
+    if (!reader) {
+      throw new Error('Failed to read response stream');
+    }
+
+    console.log(`[PRIVACY] Reading streaming response`);
+    let chunkCount = 0;
+    let buffer = '';
+    
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) {
+        console.log(`[PRIVACY] Stream complete after ${chunkCount} chunks`);
+        break;
+      }
+
+      chunkCount++;
+      const chunk = decoder.decode(value, { stream: true });
+      buffer += chunk;
+      
+      // Process complete lines (ending with \n\n)
+      const lines = buffer.split('\n\n');
+      // Keep the last incomplete line in buffer
+      buffer = lines.pop() || '';
+      
+      for (const line of lines) {
+        if (line.startsWith('data: ')) {
+          try {
+            const data = JSON.parse(line.slice(6));
+            
+            // Only use delta for incremental content (like ChatInterface does)
+            // Ignore content field to avoid duplication
+            if (data.delta) {
+              responseText += data.delta;
+              console.log(`[PRIVACY] Received delta chunk (${data.delta.length} chars, total: ${responseText.length})`);
+            }
+            
+            // Check if response is complete
+            if (data.isComplete) {
+              console.log(`[PRIVACY] Response marked as complete`);
+              break;
+            }
+          } catch (e) {
+            // Skip malformed JSON - might be partial chunk
+            console.warn(`[PRIVACY] Failed to parse line:`, line.substring(0, 100));
+          }
+        }
+      }
+    }
+    
+    // Process any remaining buffer
+    if (buffer.trim()) {
+      console.log(`[PRIVACY] Processing remaining buffer: ${buffer.length} chars`);
+    }
+    
+    console.log(`[PRIVACY] Received response from Private AI (${responseText.length} characters)`);
+    console.log(`[PRIVACY] Response text (first 500 chars):`, responseText.substring(0, 500));
+    console.log(`[PRIVACY] Response line count:`, responseText.split(/\r?\n/).length);
+    console.log(`[PRIVACY] Response non-empty line count:`, responseText.split(/\r?\n/).filter(l => l.trim()).length);
+    
+    // Just store the raw response - no parsing needed
+    privacyFilterResponse.value = responseText.trim();
+    console.log(`[PRIVACY] Privacy filter analysis complete`);
+  } catch (err) {
+    console.error(`[PRIVACY] Error during privacy filter analysis:`, err);
+    privacyFilterError.value = err instanceof Error ? err.message : 'Failed to analyze chat for names';
+  } finally {
+    loadingPrivacyFilter.value = false;
+    console.log(`[PRIVACY] Privacy filter loading complete`);
+  }
+};
+
 const loadPatientSummary = async () => {
   loadingSummary.value = true;
   summaryError.value = '';
@@ -2838,6 +3013,8 @@ watch(() => props.modelValue, async (newValue) => {
       loadAgent();
     } else if (currentTab.value === 'chats') {
       loadSharedChats();
+    } else if (currentTab.value === 'privacy') {
+      loadPrivacyFilter();
     }
   }
 });
@@ -2864,6 +3041,8 @@ watch(currentTab, (newTab) => {
       loadPatientSummary();
     } else if (newTab === 'lists') {
       // Lists component handles its own data loading
+    } else if (newTab === 'privacy') {
+      loadPrivacyFilter();
     }
   }
 });
