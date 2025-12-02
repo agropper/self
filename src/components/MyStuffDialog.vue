@@ -425,16 +425,44 @@
               <q-btn label="Retry" color="primary" @click="loadPrivacyFilter" class="q-mt-md" />
             </div>
 
+            <div v-else-if="privacyFilterMapping.length > 0" class="q-pa-md">
+              <div class="text-h6 q-mb-md">Privacy Filter - Name Pseudonymization</div>
+              
+              <div v-if="loadingRandomNames" class="text-center q-pa-md">
+                <q-spinner size="1.5em" />
+                <div class="q-mt-sm">Generating pseudonyms...</div>
+              </div>
+              
+              <div v-else class="q-mt-md">
+                <div class="text-body2 text-grey q-mb-sm">
+                  Showing {{ privacyFilterMapping.length }} name{{ privacyFilterMapping.length !== 1 ? 's' : '' }} in pseudonym mapping
+                </div>
+                <q-table
+                  :rows="privacyFilterMapping"
+                  :columns="[
+                    { name: 'original', label: 'Original Name', field: 'original', align: 'left' },
+                    { name: 'pseudonym', label: 'Pseudonym', field: 'pseudonym', align: 'left' }
+                  ]"
+                  row-key="original"
+                  flat
+                  bordered
+                  :rows-per-page-options="[0]"
+                  hide-pagination
+                />
+              </div>
+            </div>
+
             <div v-else-if="privacyFilterResponse" class="q-pa-md">
-              <div class="text-h6 q-mb-md">Names mentioned in this chat:</div>
-              <div class="privacy-filter-response q-mt-md">
+              <div class="text-h6 q-mb-md">Privacy Filter - Name Pseudonymization</div>
+              <div class="text-body2 text-grey q-mb-md">No pseudonym mapping available. Original response:</div>
+              <div class="privacy-filter-response">
                 <vue-markdown :source="privacyFilterResponse" />
               </div>
             </div>
 
             <div v-else class="text-center q-pa-md text-grey">
               <q-icon name="person_off" size="3em" />
-              <div class="q-mt-sm">No response available</div>
+              <div class="q-mt-sm">No mapping available</div>
             </div>
           </q-tab-panel>
 
@@ -779,6 +807,8 @@ const summaryError = ref('');
 const loadingPrivacyFilter = ref(false);
 const privacyFilterError = ref('');
 const privacyFilterResponse = ref('');
+const privacyFilterMapping = ref<Array<{ original: string; pseudonym: string }>>([]);
+const loadingRandomNames = ref(false);
 const patientSummary = ref('');
 const patientSummaries = ref<Array<{ text: string; createdAt: string; updatedAt: string; isCurrent: boolean }>>([]);
 const savedCurrentSummaryForUndo = ref<{ text: string; createdAt: string; updatedAt: string } | null>(null);
@@ -2585,10 +2615,33 @@ const loadPrivacyFilter = async () => {
   privacyFilterResponse.value = '';
 
   try {
-    // Check if we have messages
+    // Always try to load existing mapping first (cumulative - never deleted)
+    try {
+      const loadResponse = await fetch('/api/privacy-filter-mapping', {
+        credentials: 'include'
+      });
+      
+      if (loadResponse.ok) {
+        const loadData = await loadResponse.json();
+        if (loadData.mapping && loadData.mapping.length > 0) {
+          console.log(`[PRIVACY] Loaded existing mapping with ${loadData.mapping.length} entries`);
+          privacyFilterMapping.value = loadData.mapping;
+        }
+      }
+    } catch (loadErr) {
+      console.warn(`[PRIVACY] Could not load existing mapping:`, loadErr);
+      privacyFilterMapping.value = [];
+    }
+
+    // Check if we have messages to query Private AI
     if (!props.messages || props.messages.length === 0) {
       console.log(`[PRIVACY] No messages available`);
-      privacyFilterError.value = 'No chat messages available';
+      // Still show existing mapping if available - don't set error if mapping exists
+      if (privacyFilterMapping.value.length === 0) {
+        privacyFilterError.value = 'No chat messages available';
+      } else {
+        console.log(`[PRIVACY] No messages but showing existing mapping (${privacyFilterMapping.value.length} entries)`);
+      }
       return;
     }
 
@@ -2694,11 +2747,13 @@ const loadPrivacyFilter = async () => {
     
     console.log(`[PRIVACY] Received response from Private AI (${responseText.length} characters)`);
     console.log(`[PRIVACY] Response text (first 500 chars):`, responseText.substring(0, 500));
-    console.log(`[PRIVACY] Response line count:`, responseText.split(/\r?\n/).length);
-    console.log(`[PRIVACY] Response non-empty line count:`, responseText.split(/\r?\n/).filter(l => l.trim()).length);
     
-    // Just store the raw response - no parsing needed
+    // Store the raw response
     privacyFilterResponse.value = responseText.trim();
+    
+    // Always check for new names and add them to existing mapping (cumulative)
+    await createPseudonymMapping(responseText.trim());
+    
     console.log(`[PRIVACY] Privacy filter analysis complete`);
   } catch (err) {
     console.error(`[PRIVACY] Error during privacy filter analysis:`, err);
@@ -2706,6 +2761,140 @@ const loadPrivacyFilter = async () => {
   } finally {
     loadingPrivacyFilter.value = false;
     console.log(`[PRIVACY] Privacy filter loading complete`);
+  }
+};
+
+const createPseudonymMapping = async (responseText: string) => {
+  console.log(`[PRIVACY] Creating pseudonym mapping`);
+  loadingRandomNames.value = true;
+  
+  try {
+    // Load random names from backend API
+    const randomNamesResponse = await fetch('/api/random-names');
+    if (!randomNamesResponse.ok) {
+      throw new Error('Failed to load random names');
+    }
+    
+    const randomNamesData = await randomNamesResponse.json();
+    const randomNamesList = randomNamesData.names || [];
+    
+    console.log(`[PRIVACY] Found ${randomNamesList.length} random names`);
+    
+    // Parse names from Privacy Filter response
+    // Split by newlines and extract names (one per line, may have notes in parentheses)
+    const responseLines = responseText.split(/\r?\n/)
+      .map(line => line.trim())
+      .filter(line => line && !line.startsWith('#') && !line.startsWith('*'));
+    
+    const extractedNames: string[] = [];
+    for (const line of responseLines) {
+      // Extract name (may have notes in parentheses like "Adrian Gropper (also appears as...)")
+      const nameMatch = line.match(/^([A-Z][a-z]+(?:\s+[A-Z][a-z]+(?:\.[A-Z])?)+)/);
+      if (nameMatch) {
+        extractedNames.push(nameMatch[1]);
+      }
+    }
+    
+    console.log(`[PRIVACY] Extracted ${extractedNames.length} names from response`);
+    
+    // Start with existing mapping (cumulative - never delete)
+    const existingMapping = privacyFilterMapping.value || [];
+    const existingOriginals = new Set(existingMapping.map(m => m.original));
+    console.log(`[PRIVACY] Existing mapping has ${existingMapping.length} entries`);
+    
+    // Find new names that aren't in existing mapping
+    const newNames = extractedNames.filter(name => !existingOriginals.has(name));
+    console.log(`[PRIVACY] Found ${newNames.length} new names to add`);
+    
+    if (newNames.length === 0) {
+      console.log(`[PRIVACY] No new names to add, keeping existing mapping`);
+      return; // No new names, keep existing mapping
+    }
+    
+    // Create pseudonym mapping for new names only
+    const newMappings: Array<{ original: string; pseudonym: string }> = [];
+    const usedRandomNames = new Set<number>();
+    
+    // Track which random names are already used in existing mapping
+    existingMapping.forEach((m: { original: string; pseudonym: string }) => {
+      // Extract the random name from pseudonym (e.g., "Emily45 Johnson67" -> "Emily Johnson")
+      const pseudonymParts = m.pseudonym.split(/\s+/);
+      if (pseudonymParts.length >= 2) {
+        const firstName = pseudonymParts[0].replace(/\d+$/, ''); // Remove trailing numbers
+        const lastName = pseudonymParts[1].replace(/\d+$/, ''); // Remove trailing numbers
+        const randomName = `${firstName} ${lastName}`;
+        const index = randomNamesList.findIndex((name: string) => name === randomName);
+        if (index >= 0) {
+          usedRandomNames.add(index);
+        }
+      }
+    });
+    
+    for (const originalName of newNames) {
+      // Pick a random name from the list (without replacement to avoid duplicates)
+      let randomIndex: number;
+      let attempts = 0;
+      do {
+        randomIndex = Math.floor(Math.random() * randomNamesList.length);
+        attempts++;
+        // If we've used all names, reset (allow reuse)
+        if (attempts > randomNamesList.length * 2) {
+          usedRandomNames.clear();
+          break;
+        }
+      } while (usedRandomNames.has(randomIndex));
+      
+      usedRandomNames.add(randomIndex);
+      const randomName = randomNamesList[randomIndex];
+      
+      // Split into first and last name
+      const nameParts = randomName.split(/\s+/);
+      const firstName = nameParts[0];
+      const lastName = nameParts.slice(1).join(' ') || nameParts[1] || '';
+      
+      // Generate random numbers (10-99) for first and last name
+      const firstNum = Math.floor(Math.random() * 90) + 10; // 10-99
+      const lastNum = Math.floor(Math.random() * 90) + 10; // 10-99
+      
+      // Create pseudonym: "FirstNameXX LastNameYY"
+      const pseudonym = lastName 
+        ? `${firstName}${firstNum} ${lastName}${lastNum}`
+        : `${firstName}${firstNum}`;
+      
+      newMappings.push({ original: originalName, pseudonym });
+      console.log(`[PRIVACY] Mapped new name "${originalName}" -> "${pseudonym}"`);
+    }
+    
+    // Merge new mappings with existing ones (cumulative)
+    const updatedMapping = [...existingMapping, ...newMappings];
+    privacyFilterMapping.value = updatedMapping;
+    console.log(`[PRIVACY] Updated mapping: ${existingMapping.length} existing + ${newMappings.length} new = ${updatedMapping.length} total`);
+    
+    // Save updated mapping to user document
+    try {
+      const saveResponse = await fetch('/api/privacy-filter-mapping', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        credentials: 'include',
+        body: JSON.stringify({ mapping: updatedMapping })
+      });
+      
+      if (saveResponse.ok) {
+        console.log(`[PRIVACY] Saved pseudonym mapping to user document`);
+      } else {
+        console.warn(`[PRIVACY] Failed to save mapping:`, await saveResponse.text());
+      }
+    } catch (saveErr) {
+      console.error(`[PRIVACY] Error saving mapping:`, saveErr);
+      // Don't fail the whole operation if save fails
+    }
+  } catch (err) {
+    console.error(`[PRIVACY] Error creating pseudonym mapping:`, err);
+    privacyFilterMapping.value = [];
+  } finally {
+    loadingRandomNames.value = false;
   }
 };
 

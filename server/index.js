@@ -8085,6 +8085,114 @@ if (isProduction) {
     }
   });
 
+  // Save privacy filter pseudonym mapping
+  app.post('/api/privacy-filter-mapping', async (req, res) => {
+    try {
+      const userId = req.session?.userId || req.session?.deepLinkUserId;
+      if (!userId) {
+        return res.status(401).json({ error: 'Authentication required' });
+      }
+
+      const { mapping } = req.body;
+      if (!mapping || !Array.isArray(mapping)) {
+        return res.status(400).json({ error: 'Mapping array is required' });
+      }
+
+      // Get the user document
+      const userDoc = await cloudant.getDocument('maia_users', userId);
+      if (!userDoc) {
+        return res.status(404).json({ error: 'User not found' });
+      }
+
+      // Initialize privacyFilter object if it doesn't exist
+      if (!userDoc.privacyFilter) {
+        userDoc.privacyFilter = {};
+      }
+
+      // Save the mapping
+      userDoc.privacyFilter.pseudonymMapping = mapping;
+      userDoc.privacyFilter.lastUpdated = new Date().toISOString();
+      userDoc.updatedAt = new Date().toISOString();
+
+      await cloudant.saveDocument('maia_users', userDoc);
+
+      res.json({
+        success: true,
+        message: 'Pseudonym mapping saved successfully',
+        mappingCount: mapping.length
+      });
+    } catch (error) {
+      console.error('Error saving privacy filter mapping:', error);
+      res.status(500).json({ error: `Failed to save mapping: ${error.message}` });
+    }
+  });
+
+  // Load privacy filter pseudonym mapping
+  app.get('/api/privacy-filter-mapping', async (req, res) => {
+    try {
+      const userId = req.session?.userId || req.session?.deepLinkUserId;
+      if (!userId) {
+        return res.status(401).json({ error: 'Authentication required' });
+      }
+
+      // Get the user document
+      const userDoc = await cloudant.getDocument('maia_users', userId);
+      if (!userDoc) {
+        return res.status(404).json({ error: 'User not found' });
+      }
+
+      // Return the mapping if it exists
+      const mapping = userDoc.privacyFilter?.pseudonymMapping || [];
+      const lastUpdated = userDoc.privacyFilter?.lastUpdated || null;
+
+      res.json({
+        success: true,
+        mapping,
+        lastUpdated,
+        mappingCount: mapping.length
+      });
+    } catch (error) {
+      console.error('Error loading privacy filter mapping:', error);
+      res.status(500).json({ error: `Failed to load mapping: ${error.message}` });
+    }
+  });
+
+  // Serve random names from NEW-AGENT.txt for privacy filtering
+  app.get('/api/random-names', (req, res) => {
+    const newAgentPath = path.join(__dirname, '../NEW-AGENT.txt');
+    
+    if (!existsSync(newAgentPath)) {
+      return res.status(404).json({ error: 'NEW-AGENT.txt not found' });
+    }
+
+    try {
+      const content = readFileSync(newAgentPath, 'utf-8');
+      
+      // Find the "## Random Names" section
+      const randomNamesSection = content.match(/## Random Names\s*\n([\s\S]*?)(?=\n---|\n##|$)/i);
+      if (!randomNamesSection) {
+        return res.status(404).json({ error: 'Random Names section not found' });
+      }
+
+      // Extract names (one per line, filter out empty lines and section headers)
+      const names = randomNamesSection[1]
+        .split('\n')
+        .map(line => line.trim())
+        .filter(line => line && !line.startsWith('#'))
+        .map(line => {
+          // Extract just the name (remove any trailing notes in parentheses)
+          const nameMatch = line.match(/^([A-Z][a-z]+(?:\s+[A-Z][a-z]+(?:\.[A-Z])?)+)/);
+          return nameMatch ? nameMatch[1] : null;
+        })
+        .filter(name => name !== null);
+
+      res.json({ names });
+    } catch (err) {
+      console.error('Error reading random names:', err);
+      res.status(500).json({ error: 'Error loading random names' });
+    }
+  });
+
   // Serve welcome page video caption from NEW-AGENT.txt
   app.get('/api/welcome-caption', (req, res) => {
     const newAgentPath = path.join(__dirname, '../NEW-AGENT.txt');
