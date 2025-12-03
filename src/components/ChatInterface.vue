@@ -935,7 +935,7 @@ const sendMessage = async () => {
       name: providerLabel
     };
     messages.value.push(assistantMessage);
-    originalMessages.value = JSON.parse(JSON.stringify(messages.value)); // Keep original in sync
+    // DO NOT update originalMessages here - wait until streaming completes
 
     // Read stream
     while (true) {
@@ -981,6 +981,9 @@ const sendMessage = async () => {
                 savePatientSummary(assistantMessage.content);
               }
               
+              // Update originalMessages AFTER streaming completes with full content
+              originalMessages.value = JSON.parse(JSON.stringify(messages.value));
+              
               return;
             }
           } catch (e) {
@@ -998,6 +1001,9 @@ const sendMessage = async () => {
     if (isPatientSummaryRequest && props.user?.userId && assistantMessage.content) {
       savePatientSummary(assistantMessage.content);
     }
+    
+    // Update originalMessages AFTER streaming completes with full content
+    originalMessages.value = JSON.parse(JSON.stringify(messages.value));
   } catch (error) {
     const responseTime = Date.now() - startTime;
     console.error('Chat error:', error);

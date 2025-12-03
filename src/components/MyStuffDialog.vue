@@ -2978,7 +2978,6 @@ const loadPrivacyFilter = async () => {
 };
 
 const createPseudonymMapping = async (responseText: string) => {
-  console.log(`[PRIVACY] Creating pseudonym mapping`);
   loadingRandomNames.value = true;
   
   try {
@@ -2990,8 +2989,6 @@ const createPseudonymMapping = async (responseText: string) => {
     
     const randomNamesData = await randomNamesResponse.json();
     const randomNamesList = randomNamesData.names || [];
-    
-    console.log(`[PRIVACY] Found ${randomNamesList.length} random names`);
     
     // Parse names from Privacy Filter response
     // Split by newlines and extract names (one per line, may have notes in parentheses)
@@ -3069,8 +3066,13 @@ const createPseudonymMapping = async (responseText: string) => {
         ? `${firstName}${firstNum} ${lastName}${lastNum}`
         : `${firstName}${firstNum}`;
       
+      // Validate pseudonym before adding
+      if (!pseudonym || pseudonym.trim() === '') {
+        console.error(`[PRIVACY] ERROR: Failed to create pseudonym for "${originalName}" - pseudonym is empty!`);
+        continue; // Skip this name
+      }
+      
       newMappings.push({ original: originalName, pseudonym });
-      console.log(`[PRIVACY] Mapped new name "${originalName}" -> "${pseudonym}"`);
     }
     
     // Merge new mappings with existing ones (cumulative)
@@ -3148,6 +3150,11 @@ const filterCurrentChat = () => {
       const original = mapping.original;
       const pseudonym = mapping.pseudonym;
       
+      // Validate pseudonym before using it
+      if (!pseudonym || typeof pseudonym !== 'string' || pseudonym.trim() === '') {
+        continue; // Skip this mapping
+      }
+      
       // Escape special regex characters
       const escapedOriginal = original.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
       
@@ -3170,10 +3177,6 @@ const filterCurrentChat = () => {
     };
   });
   
-  // Log which names were pseudonymized
-  if (pseudonymizedNames.length > 0) {
-    console.log(`[PRIVACY] Pseudonymized ${pseudonymizedNames.length} name(s):`, pseudonymizedNames.map(n => `${n.original} -> ${n.pseudonym}`).join(', '));
-  }
   
   // Emit filtered messages to parent component
   emit('messages-filtered', filteredMessages);
