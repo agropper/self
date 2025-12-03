@@ -478,7 +478,7 @@ const formatItemDescription = (item: any, categoryName: string): string => {
 
 const copyItemToClipboard = async (item: any, categoryName: string) => {
   if (categoryName.toLowerCase().includes('clinical notes')) {
-    copyNoteToClipboard(item);
+    await copyNoteToClipboard(item);
     return;
   }
   

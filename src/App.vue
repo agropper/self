@@ -129,7 +129,7 @@
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted } from 'vue';
 
-// Store route check interval for cleanup (must be at top level)
+// Store route check interval and event listener for cleanup (must be at top level)
 const routeCheckInterval = ref<ReturnType<typeof setInterval> | null>(null);
 const checkRouteRef = ref<(() => void) | null>(null);
 
@@ -137,9 +137,11 @@ const checkRouteRef = ref<(() => void) | null>(null);
 onUnmounted(() => {
   if (routeCheckInterval.value) {
     clearInterval(routeCheckInterval.value);
+    routeCheckInterval.value = null;
   }
   if (checkRouteRef.value) {
     window.removeEventListener('popstate', checkRouteRef.value);
+    checkRouteRef.value = null;
   }
 });
 import PasskeyAuth from './components/PasskeyAuth.vue';
@@ -413,15 +415,16 @@ onMounted(async () => {
     showAdminPage.value = path === '/admin';
   };
   
-  // Store reference for cleanup
+  // Store reference for cleanup before setting up listeners
   checkRouteRef.value = checkRoute;
   
   // Check route on mount and when it changes
   checkRoute();
   window.addEventListener('popstate', checkRoute);
   
-  // Also check periodically in case of programmatic navigation
-  routeCheckInterval.value = setInterval(checkRoute, 100);
+  // Use a more reasonable interval for route checking (1 second instead of 100ms)
+  // This reduces performance impact while still catching programmatic navigation
+  routeCheckInterval.value = setInterval(checkRoute, 1000);
 });
 </script>
 

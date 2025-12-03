@@ -698,7 +698,7 @@ export default function setupFileRoutes(app, cloudant, doClient) {
       if (!bucketUrl) {
         return res.status(500).json({
           error: 'DigitalOcean bucket not configured',
-          error: 'BUCKET_NOT_CONFIGURED'
+          code: 'BUCKET_NOT_CONFIGURED'
         });
       }
 
@@ -956,7 +956,7 @@ export default function setupFileRoutes(app, cloudant, doClient) {
       if (!bucketUrl) {
         return res.status(500).json({
           error: 'DigitalOcean bucket not configured',
-          error: 'BUCKET_NOT_CONFIGURED'
+          code: 'BUCKET_NOT_CONFIGURED'
         });
       }
 
@@ -1456,14 +1456,6 @@ export default function setupFileRoutes(app, cloudant, doClient) {
       }
 
       // Process the category
-      const notesClient = getClinicalNotesClient();
-      if (!notesClient) {
-        return res.status(503).json({ 
-          error: 'Clinical Notes indexing not configured',
-          message: 'OPENSEARCH_ENDPOINT environment variable is required'
-        });
-      }
-
       console.log(`📝 [LISTS] Processing ${categoryName} category on demand`);
       
       let individualItems = [];

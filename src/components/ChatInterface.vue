@@ -3068,6 +3068,10 @@ const handleMessagesFiltered = (filteredMessages: Message[]) => {
   // Replace current messages with filtered messages
   messages.value = filteredMessages;
   
+  // Keep originalMessages synchronized with filtered messages
+  // The filtered messages become the new "original" state
+  originalMessages.value = JSON.parse(JSON.stringify(filteredMessages));
+  
   // Scroll to bottom to show the filtered messages
   setTimeout(() => {
     if (chatMessagesRef.value) {
@@ -3134,7 +3138,8 @@ const handleReferenceFileAdded = async (file: { fileName: string; bucketKey: str
       
       if (textResponse.ok) {
         const textResult = await textResponse.json();
-        const fileType = file.fileType === 'markdown' ? 'markdown' : (file.fileType === 'pdf' ? 'pdf' : 'text');
+        // Determine file type: markdown, text, or other (pdf is already handled in the if branch above)
+        const fileType = file.fileType === 'markdown' ? 'markdown' : 'text';
         const uploadedFile: UploadedFile = {
           id: `ref-${Date.now()}-${Math.random().toString(36).substring(7)}`,
           name: file.fileName,

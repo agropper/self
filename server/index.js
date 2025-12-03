@@ -8113,7 +8113,8 @@ if (isProduction) {
   // Get patient diary entries
   app.get('/api/patient-diary', async (req, res) => {
     try {
-      const userId = req.query.userId || req.session?.userId || req.session?.deepLinkUserId;
+      // Security: Only use userId from authenticated session, never from query parameters
+      const userId = req.session?.userId || req.session?.deepLinkUserId;
       if (!userId) {
         return res.status(401).json({ error: 'Authentication required' });
       }
@@ -8155,7 +8156,8 @@ if (isProduction) {
   // Add patient diary entry
   app.post('/api/patient-diary', async (req, res) => {
     try {
-      const userId = req.body.userId || req.session?.userId || req.session?.deepLinkUserId;
+      // Security: Only use userId from authenticated session, never from request body
+      const userId = req.session?.userId || req.session?.deepLinkUserId;
       if (!userId) {
         return res.status(401).json({ error: 'Authentication required' });
       }
@@ -8210,7 +8212,8 @@ if (isProduction) {
   // Mark diary entries as posted
   app.post('/api/patient-diary/mark-posted', async (req, res) => {
     try {
-      const userId = req.body.userId || req.session?.userId || req.session?.deepLinkUserId;
+      // Security: Only use userId from authenticated session, never from request body
+      const userId = req.session?.userId || req.session?.deepLinkUserId;
       if (!userId) {
         return res.status(401).json({ error: 'Authentication required' });
       }
@@ -8260,7 +8263,8 @@ if (isProduction) {
   // Update entry bubbleId
   app.post('/api/patient-diary/update-bubble-id', async (req, res) => {
     try {
-      const userId = req.body.userId || req.session?.userId || req.session?.deepLinkUserId;
+      // Security: Only use userId from authenticated session, never from request body
+      const userId = req.session?.userId || req.session?.deepLinkUserId;
       if (!userId) {
         return res.status(401).json({ error: 'Authentication required' });
       }
@@ -8305,7 +8309,8 @@ if (isProduction) {
   // Delete diary entries
   app.post('/api/patient-diary/delete', async (req, res) => {
     try {
-      const userId = req.body.userId || req.session?.userId || req.session?.deepLinkUserId;
+      // Security: Only use userId from authenticated session, never from request body
+      const userId = req.session?.userId || req.session?.deepLinkUserId;
       if (!userId) {
         return res.status(401).json({ error: 'Authentication required' });
       }

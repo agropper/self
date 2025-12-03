@@ -110,10 +110,14 @@ export class EmailService {
     const emailData = {
       from: this.fromEmail,
       to: userEmail,
-      bcc: 'agropper@healthurl.com',
       subject: subject,
       text: body
     };
+    
+    // Add CC to admin email if configured
+    if (this.adminEmail) {
+      emailData.cc = this.adminEmail;
+    }
 
     try {
       const response = await fetch('https://api.resend.com/emails', {
