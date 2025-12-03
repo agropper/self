@@ -320,11 +320,14 @@
       :userId="props.user?.userId || ''"
       :initial-tab="myStuffInitialTab"
       :messages="messages"
+      :original-messages="originalMessages"
       @chat-selected="handleChatSelected"
       @indexing-started="handleIndexingStarted"
       @indexing-status-update="handleIndexingStatusUpdate"
       @indexing-finished="handleIndexingFinished"
       @files-archived="handleFilesArchived"
+      @messages-filtered="handleMessagesFiltered"
+      @diary-posted="handleDiaryPosted"
       v-if="canAccessMyStuff"
     />
 
@@ -475,6 +478,7 @@ const emit = defineEmits<{
 const providers = ref<string[]>([]);
 const selectedProvider = ref<string>('Private AI');
 const messages = ref<Message[]>([]);
+const originalMessages = ref<Message[]>([]); // Store original unfiltered messages for privacy filtering
 const inputMessage = ref('');
 const isStreaming = ref(false);
 const uploadedFiles = ref<UploadedFile[]>([]);
@@ -809,6 +813,7 @@ const sendMessage = async () => {
   // Check if this is a patient summary request
   const isPatientSummaryRequest = /patient\s+summary/i.test(inputMessage.value);
   messages.value.push(userMessage);
+  originalMessages.value = JSON.parse(JSON.stringify(messages.value)); // Keep original in sync
   inputMessage.value = '';
   // Defer snapshot updates so save buttons stay enabled until the user chooses how to persist the chat
   
@@ -928,6 +933,7 @@ const sendMessage = async () => {
       name: providerLabel
     };
     messages.value.push(assistantMessage);
+    originalMessages.value = JSON.parse(JSON.stringify(messages.value)); // Keep original in sync
 
     // Read stream
     while (true) {
@@ -1022,6 +1028,7 @@ const sendMessage = async () => {
       authorLabel: errorProviderLabel,
       name: errorProviderLabel
     });
+    originalMessages.value = JSON.parse(JSON.stringify(messages.value)); // Keep original in sync
     isStreaming.value = false;
   }
 };
@@ -2814,6 +2821,7 @@ const handleChatSelected = async (chat: any) => {
   if (chat.chatHistory) {
     const normalizedHistory = chat.chatHistory.map((msg: Message) => normalizeMessage(msg));
     messages.value = normalizedHistory;
+    originalMessages.value = JSON.parse(JSON.stringify(normalizedHistory)); // Keep original in sync
   }
   
   // Load the uploaded files
@@ -2870,6 +2878,10 @@ const saveEditedMessage = (idx: number) => {
     editingMessageIdx.value.splice(editIndex, 1);
   }
   delete editingOriginalContent.value[idx];
+  // Sync originalMessages when message is edited (edited content becomes the new "original")
+  if (originalMessages.value[idx] && messages.value[idx]) {
+    originalMessages.value[idx].content = messages.value[idx].content;
+  }
 };
 
 const cancelEditing = (idx: number) => {
@@ -2906,12 +2918,20 @@ const deleteMessageConfirmed = () => {
   
   // Remove the message
   messages.value.splice(idx, 1);
+  // Also remove from originalMessages to keep in sync
+  if (originalMessages.value[idx]) {
+    originalMessages.value.splice(idx, 1);
+  }
   
   // If there was a preceding user message, remove it too
   if (precedingUserMessage.value && idx > 0) {
     const userIdx = idx - 1;
     if (messages.value[userIdx]?.role === 'user') {
       messages.value.splice(userIdx, 1);
+      // Also remove from originalMessages
+      if (originalMessages.value[userIdx]) {
+        originalMessages.value.splice(userIdx, 1);
+      }
       delete editingOriginalContent.value[userIdx];
     }
   }
@@ -3034,6 +3054,39 @@ const handleFilesArchived = (archivedBucketKeys: string[]) => {
   
   // Update status tip immediately after files are archived
   updateContextualTip();
+};
+
+const handleMessagesFiltered = (filteredMessages: Message[]) => {
+  // Replace current messages with filtered messages
+  messages.value = filteredMessages;
+  
+  // Scroll to bottom to show the filtered messages
+  setTimeout(() => {
+    if (chatMessagesRef.value) {
+      chatMessagesRef.value.scrollTop = chatMessagesRef.value.scrollHeight;
+    }
+  }, 100);
+};
+
+const handleDiaryPosted = (diaryContent: string) => {
+  // Add diary content as a user message to the chat
+  const diaryMessage: Message = {
+    role: 'user',
+    content: diaryContent,
+    authorType: 'user',
+    authorLabel: 'Patient Diary',
+    name: 'Patient Diary'
+  };
+  
+  messages.value.push(diaryMessage);
+  originalMessages.value = JSON.parse(JSON.stringify(messages.value)); // Keep original in sync
+  
+  // Scroll to bottom to show the new message
+  setTimeout(() => {
+    if (chatMessagesRef.value) {
+      chatMessagesRef.value.scrollTop = chatMessagesRef.value.scrollHeight;
+    }
+  }, 100);
 };
 
 // Parse contextual tip to extract clickable links

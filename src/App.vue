@@ -128,6 +128,20 @@
 
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted } from 'vue';
+
+// Store route check interval for cleanup (must be at top level)
+const routeCheckInterval = ref<ReturnType<typeof setInterval> | null>(null);
+const checkRouteRef = ref<(() => void) | null>(null);
+
+// Register cleanup hook at top level (before any async operations)
+onUnmounted(() => {
+  if (routeCheckInterval.value) {
+    clearInterval(routeCheckInterval.value);
+  }
+  if (checkRouteRef.value) {
+    window.removeEventListener('popstate', checkRouteRef.value);
+  }
+});
 import PasskeyAuth from './components/PasskeyAuth.vue';
 import ChatInterface from './components/ChatInterface.vue';
 import DeepLinkAccess from './components/DeepLinkAccess.vue';
@@ -399,18 +413,15 @@ onMounted(async () => {
     showAdminPage.value = path === '/admin';
   };
   
+  // Store reference for cleanup
+  checkRouteRef.value = checkRoute;
+  
   // Check route on mount and when it changes
   checkRoute();
   window.addEventListener('popstate', checkRoute);
   
   // Also check periodically in case of programmatic navigation
-  const routeCheckInterval = setInterval(checkRoute, 100);
-  
-  // Clean up interval on unmount
-  onUnmounted(() => {
-    clearInterval(routeCheckInterval);
-    window.removeEventListener('popstate', checkRoute);
-  });
+  routeCheckInterval.value = setInterval(checkRoute, 100);
 });
 </script>
 
