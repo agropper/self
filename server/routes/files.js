@@ -684,8 +684,9 @@ export default function setupFileRoutes(app, cloudant, doClient) {
         return res.status(400).json({ error: 'No file provided' });
       }
 
-      // New imports go to root userId level (not archived yet)
-      const userFolder = `${userId}/`;
+      // Check if subfolder is specified (e.g., "References")
+      const subfolder = req.body.subfolder || '';
+      const userFolder = subfolder ? `${userId}/${subfolder}/` : `${userId}/`;
       const fileName = req.file.originalname;
       
       // Generate a unique key for the file
@@ -872,6 +873,66 @@ export default function setupFileRoutes(app, cloudant, doClient) {
       res.status(500).json({ 
         success: false,
         error: `Failed to fetch text file: ${error.message}` 
+      });
+    }
+  });
+
+  /**
+   * Parse PDF from bucket
+   * GET /api/files/parse-pdf-from-bucket/:bucketKey(*)
+   */
+  app.get('/api/files/parse-pdf-from-bucket/:bucketKey(*)', async (req, res) => {
+    try {
+      // Require authentication (regular user or deep-link user)
+      const userId = req.session?.userId || req.session?.deepLinkUserId;
+      if (!userId) {
+        return res.status(401).json({ error: 'Authentication required' });
+      }
+
+      const { bucketKey } = req.params;
+      
+      const bucketUrl = process.env.DIGITALOCEAN_BUCKET;
+      const bucketName = bucketUrl?.split('//')[1]?.split('.')[0] || 'maia';
+
+      const s3Client = new S3Client({
+        endpoint: process.env.DIGITALOCEAN_ENDPOINT_URL || 'https://tor1.digitaloceanspaces.com',
+        region: 'us-east-1',
+        forcePathStyle: false,
+        credentials: {
+          accessKeyId: process.env.DIGITALOCEAN_AWS_ACCESS_KEY_ID || '',
+          secretAccessKey: process.env.DIGITALOCEAN_AWS_SECRET_ACCESS_KEY || ''
+        }
+      });
+
+      const getCommand = new GetObjectCommand({
+        Bucket: bucketName,
+        Key: bucketKey
+      });
+      
+      const response = await s3Client.send(getCommand);
+      
+      // Read the file content
+      const chunks = [];
+      for await (const chunk of response.Body) {
+        chunks.push(chunk);
+      }
+      const buffer = Buffer.concat(chunks);
+      
+      // Parse PDF
+      const pdfData = await pdf(buffer);
+      const text = pdfData.text;
+      const pages = pdfData.numpages;
+      
+      res.json({
+        success: true,
+        text,
+        pages
+      });
+    } catch (error) {
+      console.error('❌ Error parsing PDF from bucket:', error);
+      res.status(500).json({ 
+        success: false,
+        error: `Failed to parse PDF: ${error.message}` 
       });
     }
   });

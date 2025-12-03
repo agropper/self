@@ -24,6 +24,7 @@
           <q-tab name="lists" label="My Lists" icon="list" />
           <q-tab name="privacy" label="Privacy Filter" icon="privacy_tip" />
           <q-tab name="diary" label="Patient Diary" icon="book" />
+          <q-tab name="references" label="SHARED REFERENCES" icon="link" />
         </q-tabs>
 
         <q-tab-panels v-model="currentTab" animated>
@@ -585,6 +586,100 @@
             </div>
           </q-tab-panel>
 
+          <!-- SHARED REFERENCES Tab -->
+          <q-tab-panel name="references" class="q-pa-none" style="display: flex; flex-direction: column; height: 100%;">
+            <div v-if="loadingReferences" class="text-center q-pa-md">
+              <q-spinner size="2em" />
+              <div class="q-mt-sm">Loading references...</div>
+            </div>
+
+            <div v-else-if="referencesError" class="text-center q-pa-md">
+              <q-icon name="error" color="negative" size="40px" />
+              <div class="text-negative q-mt-sm">{{ referencesError }}</div>
+              <q-btn label="Retry" color="primary" @click="loadReferences" class="q-mt-md" />
+            </div>
+
+            <div v-else style="display: flex; flex-direction: column; height: 100%;">
+              <!-- Header with paperclip -->
+              <div class="q-pa-md" style="flex-shrink: 0; border-bottom: 1px solid #eee;">
+                <div class="row items-center justify-between">
+                  <div class="text-h6">Shared References</div>
+                  <q-btn 
+                    flat 
+                    dense 
+                    round 
+                    icon="attach_file" 
+                    class="text-grey-6" 
+                    @click="triggerReferenceFileInput"
+                    title="Upload reference file"
+                  >
+                    <q-tooltip>Upload a reference file</q-tooltip>
+                  </q-btn>
+                  <input
+                    ref="referenceFileInput"
+                    type="file"
+                    style="display: none"
+                    @change="handleReferenceFileSelect"
+                    accept=".pdf,.txt,.md"
+                  />
+                </div>
+              </div>
+
+              <!-- References List -->
+              <div class="q-pa-md" style="flex: 1; overflow-y: auto; min-height: 0;">
+                <div v-if="referenceFiles.length === 0" class="text-center q-pa-md text-grey">
+                  <q-icon name="link" size="3em" />
+                  <div class="q-mt-sm">No reference files yet</div>
+                  <div class="text-caption q-mt-xs">Use the paperclip icon to upload reference files</div>
+                </div>
+
+                <q-list v-else>
+                  <q-item 
+                    v-for="file in referenceFiles" 
+                    :key="file.bucketKey" 
+                    class="q-pa-md"
+                    clickable
+                    @click="showAddReferenceToChatDialog(file)"
+                  >
+                    <q-item-section avatar>
+                      <q-icon name="description" size="2em" color="primary" />
+                    </q-item-section>
+                    <q-item-section>
+                      <q-item-label>{{ file.fileName }}</q-item-label>
+                      <q-item-label caption>
+                        {{ formatFileSize(file.fileSize) }} • Uploaded {{ formatDate(file.uploadedAt) }}
+                      </q-item-label>
+                    </q-item-section>
+                    <q-item-section side>
+                      <div class="row items-center q-gutter-xs">
+                        <q-btn 
+                          flat 
+                          dense 
+                          round 
+                          size="sm"
+                          icon="visibility" 
+                          color="primary"
+                          @click.stop="viewReferenceFile(file)"
+                          title="View file"
+                        />
+                        <q-btn 
+                          flat 
+                          dense 
+                          round 
+                          size="sm"
+                          icon="delete" 
+                          color="negative"
+                          @click.stop="deleteReferenceFile(file)"
+                          title="Delete file"
+                        />
+                      </div>
+                    </q-item-section>
+                  </q-item>
+                </q-list>
+              </div>
+            </div>
+          </q-tab-panel>
+
           <!-- Patient Summary Tab -->
           <q-tab-panel name="summary">
             <div v-if="loadingSummary" class="text-center q-pa-md">
@@ -888,6 +983,7 @@ const emit = defineEmits<{
   'files-archived': [archivedFiles: string[]]; // Emit bucketKeys of archived files
   'messages-filtered': [messages: Message[]]; // Emit filtered messages with pseudonyms
   'diary-posted': [content: string]; // Emit diary content to add to chat
+  'reference-file-added': [file: { fileName: string; bucketKey: string; fileSize: number; uploadedAt: string; fileType?: string; fileUrl?: string; isReference: boolean }]; // Emit reference file to add to chat
 }>();
 
 const isOpen = ref(props.modelValue);
@@ -942,6 +1038,14 @@ const diaryEntries = ref<Array<{ id: string; message: string; dateTime: string; 
 const diaryInputText = ref('');
 const isSavingDiary = ref(false);
 const diaryMessagesRef = ref<HTMLElement | null>(null);
+
+// Shared References
+const loadingReferences = ref(false);
+const referencesError = ref('');
+const referenceFiles = ref<Array<{ fileName: string; bucketKey: string; fileSize: number; uploadedAt: string; fileType?: string; fileUrl?: string }>>([]);
+const referenceFileInput = ref<HTMLInputElement | null>(null);
+const isUploadingReference = ref(false);
+const selectedReferenceForChat = ref<{ fileName: string; bucketKey: string; fileSize: number; uploadedAt: string; fileType?: string; fileUrl?: string } | null>(null);
 const savedCurrentSummaryForUndo = ref<{ text: string; createdAt: string; updatedAt: string } | null>(null);
 const showReplaceSummaryDialog = ref(false);
 const newSummaryToReplace = ref('');
@@ -3395,6 +3499,258 @@ const updateDiaryEntriesPosted = async (entryIds: string[]) => {
   }
 };
 
+// Shared References Functions
+const loadReferences = async () => {
+  loadingReferences.value = true;
+  referencesError.value = '';
+
+  try {
+    const response = await fetch(`/api/user-files?userId=${props.userId}&subfolder=References`, {
+      credentials: 'include'
+    });
+
+    if (!response.ok) {
+      throw new Error(`Failed to fetch references: ${response.statusText}`);
+    }
+
+    const result = await response.json();
+    referenceFiles.value = (result.files || []).map((file: any) => ({
+      fileName: file.fileName,
+      bucketKey: file.bucketKey,
+      fileSize: file.fileSize,
+      uploadedAt: file.uploadedAt,
+      fileType: file.fileType,
+      fileUrl: file.fileUrl
+    }));
+  } catch (err) {
+    referencesError.value = err instanceof Error ? err.message : 'Failed to load references';
+  } finally {
+    loadingReferences.value = false;
+  }
+};
+
+const triggerReferenceFileInput = () => {
+  referenceFileInput.value?.click();
+};
+
+const handleReferenceFileSelect = async (event: Event) => {
+  const input = event.target as HTMLInputElement;
+  const file = input.files?.[0];
+  
+  if (!file) return;
+
+  isUploadingReference.value = true;
+
+  try {
+    // Check file size
+    const maxSize = 50 * 1024 * 1024; // 50MB
+    if (file.size > maxSize) {
+      throw new Error(`File too large (${(file.size / 1024 / 1024).toFixed(1)}MB). Maximum size is 50MB.`);
+    }
+
+    // Upload to References subfolder
+    const uploadFormData = new FormData();
+    uploadFormData.append('file', file);
+    uploadFormData.append('subfolder', 'References');
+
+    const uploadResponse = await fetch('/api/files/upload', {
+      method: 'POST',
+      credentials: 'include',
+      body: uploadFormData
+    });
+
+    if (!uploadResponse.ok) {
+      const errorData = await uploadResponse.json();
+      throw new Error(errorData.message || errorData.error || 'Failed to upload file');
+    }
+
+    const uploadResult = await uploadResponse.json();
+
+    // Update user document with file metadata
+    try {
+      await fetch('/api/user-file-metadata', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        credentials: 'include',
+        body: JSON.stringify({
+          userId: props.userId,
+          fileMetadata: {
+            fileName: uploadResult.fileInfo.fileName,
+            bucketKey: uploadResult.fileInfo.bucketKey,
+            bucketPath: uploadResult.fileInfo.userFolder,
+            fileSize: uploadResult.fileInfo.size,
+            fileType: file.name.endsWith('.pdf') ? 'pdf' : (file.name.endsWith('.md') ? 'markdown' : 'text'),
+            uploadedAt: uploadResult.fileInfo.uploadedAt,
+            isReference: true // Mark as reference file
+          }
+        })
+      });
+    } catch (error) {
+      console.warn('Failed to save file metadata to user document:', error);
+    }
+
+    // Reload references list
+    await loadReferences();
+
+    if ($q && typeof $q.notify === 'function') {
+      $q.notify({
+        type: 'positive',
+        message: 'Reference file uploaded successfully',
+        timeout: 2000
+      });
+    }
+  } catch (error) {
+    console.error('Error uploading reference file:', error);
+    if ($q && typeof $q.notify === 'function') {
+      $q.notify({
+        type: 'negative',
+        message: error instanceof Error ? error.message : 'Failed to upload reference file',
+        timeout: 3000
+      });
+    }
+  } finally {
+    isUploadingReference.value = false;
+    // Reset input
+    if (input) {
+      input.value = '';
+    }
+  }
+};
+
+const viewReferenceFile = (file: { fileName: string; bucketKey: string; fileSize: number; uploadedAt: string; fileType?: string; fileUrl?: string }) => {
+  // Use the same PDF viewer modal as other files
+  if (file.fileType === 'pdf' && file.bucketKey) {
+    viewFileInPdfViewer({
+      fileName: file.fileName,
+      bucketKey: file.bucketKey,
+      fileSize: file.fileSize,
+      uploadedAt: file.uploadedAt,
+      inKnowledgeBase: false
+    });
+  } else {
+    // For text files, use PDF viewer modal (it can handle text too)
+    viewFileInPdfViewer({
+      fileName: file.fileName,
+      bucketKey: file.bucketKey,
+      fileSize: file.fileSize,
+      uploadedAt: file.uploadedAt,
+      inKnowledgeBase: false
+    });
+  }
+};
+
+const deleteReferenceFile = async (file: { fileName: string; bucketKey: string }) => {
+  if ($q && typeof $q.dialog === 'function') {
+    $q.dialog({
+      title: 'Delete Reference File',
+      message: `Are you sure you want to delete "${file.fileName}"?`,
+      persistent: true,
+      ok: {
+        label: 'Delete',
+        color: 'negative',
+        flat: false
+      },
+      cancel: {
+        label: 'Cancel',
+        color: 'grey',
+        flat: true
+      }
+    }).onOk(async () => {
+      try {
+        const response = await fetch('/api/files/delete', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json'
+          },
+          credentials: 'include',
+          body: JSON.stringify({
+            userId: props.userId,
+            bucketKey: file.bucketKey
+          })
+        });
+
+        if (!response.ok) {
+          const errorData = await response.json();
+          throw new Error(errorData.error || 'Failed to delete file');
+        }
+
+        // Remove from list
+        referenceFiles.value = referenceFiles.value.filter(f => f.bucketKey !== file.bucketKey);
+
+        if ($q && typeof $q.notify === 'function') {
+          $q.notify({
+            type: 'positive',
+            message: 'Reference file deleted successfully',
+            timeout: 2000
+          });
+        }
+      } catch (error) {
+        console.error('Error deleting reference file:', error);
+        if ($q && typeof $q.notify === 'function') {
+          $q.notify({
+            type: 'negative',
+            message: error instanceof Error ? error.message : 'Failed to delete reference file',
+            timeout: 3000
+          });
+        }
+      }
+    });
+  }
+};
+
+const showAddReferenceToChatDialog = (file: { fileName: string; bucketKey: string; fileSize: number; uploadedAt: string; fileType?: string; fileUrl?: string }) => {
+  selectedReferenceForChat.value = file;
+  
+  if ($q && typeof $q.dialog === 'function') {
+    $q.dialog({
+      title: 'Add Reference to Chat',
+      message: `Would you like to add "${file.fileName}" to the current chat? Reference files are not considered for indexing in the patient's knowledge base.`,
+      persistent: true,
+      ok: {
+        label: 'ADD TO CHAT',
+        color: 'primary',
+        flat: false
+      },
+      cancel: {
+        label: 'CANCEL',
+        color: 'grey',
+        flat: true
+      }
+    }).onOk(() => {
+      addReferenceToChat(file);
+    }).onCancel(() => {
+      selectedReferenceForChat.value = null;
+    }).onDismiss(() => {
+      selectedReferenceForChat.value = null;
+    });
+  }
+};
+
+const addReferenceToChat = (file: { fileName: string; bucketKey: string; fileSize: number; uploadedAt: string; fileType?: string; fileUrl?: string }) => {
+  // Emit event to add file to chat
+  emit('reference-file-added', {
+    fileName: file.fileName,
+    bucketKey: file.bucketKey,
+    fileSize: file.fileSize,
+    uploadedAt: file.uploadedAt,
+    fileType: file.fileType || 'text',
+    fileUrl: file.fileUrl,
+    isReference: true
+  });
+  
+  selectedReferenceForChat.value = null;
+  
+  if ($q && typeof $q.notify === 'function') {
+    $q.notify({
+      type: 'positive',
+      message: 'Reference file added to chat',
+      timeout: 2000
+    });
+  }
+};
+
 const deleteBubble = async (bubble: { id: string; entries: Array<{ id: string; message: string; dateTime: string; posted?: boolean; bubbleId?: string }>; lastDateTime: string; closed: boolean }) => {
   if ($q && typeof $q.dialog === 'function') {
     $q.dialog({
@@ -3769,6 +4125,8 @@ watch(() => props.modelValue, async (newValue) => {
       loadPrivacyFilter();
     } else if (currentTab.value === 'diary') {
       loadDiary();
+    } else if (currentTab.value === 'references') {
+      loadReferences();
     }
   }
 });
@@ -3799,6 +4157,8 @@ watch(currentTab, (newTab) => {
       loadPrivacyFilter();
     } else if (newTab === 'diary') {
       loadDiary();
+    } else if (newTab === 'references') {
+      loadReferences();
     }
   }
 });

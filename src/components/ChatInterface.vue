@@ -328,6 +328,7 @@
       @files-archived="handleFilesArchived"
       @messages-filtered="handleMessagesFiltered"
       @diary-posted="handleDiaryPosted"
+      @reference-file-added="handleReferenceFileAdded"
       v-if="canAccessMyStuff"
     />
 
@@ -455,11 +456,12 @@ interface UploadedFile {
   type: 'text' | 'pdf' | 'markdown';
   content: string;
   transcript?: string;
-  originalFile: File;
+  originalFile: File | null;
   bucketKey?: string;
   bucketPath?: string;
   fileUrl?: string;
   uploadedAt: Date;
+  isReference?: boolean;
 }
 
 interface Props {
@@ -3079,14 +3081,73 @@ const handleDiaryPosted = (diaryContent: string) => {
   };
   
   messages.value.push(diaryMessage);
-  originalMessages.value = JSON.parse(JSON.stringify(messages.value)); // Keep original in sync
+  originalMessages.value.push(diaryMessage);
   
-  // Scroll to bottom to show the new message
-  setTimeout(() => {
+  // Scroll to bottom
+  nextTick(() => {
     if (chatMessagesRef.value) {
       chatMessagesRef.value.scrollTop = chatMessagesRef.value.scrollHeight;
     }
-  }, 100);
+  });
+};
+
+const handleReferenceFileAdded = async (file: { fileName: string; bucketKey: string; fileSize: number; uploadedAt: string; fileType?: string; fileUrl?: string; isReference: boolean }) => {
+  // Add reference file to uploadedFiles (similar to regular file upload)
+  try {
+    // For PDF files, we need to parse them
+    if (file.fileType === 'pdf') {
+      // Fetch and parse PDF from bucket
+      const parseResponse = await fetch(`/api/files/parse-pdf-from-bucket/${encodeURIComponent(file.bucketKey)}`, {
+        method: 'GET',
+        credentials: 'include'
+      });
+      
+      if (parseResponse.ok) {
+        const parseResult = await parseResponse.json();
+        const uploadedFile: UploadedFile = {
+          id: `ref-${Date.now()}-${Math.random().toString(36).substring(7)}`,
+          name: file.fileName,
+          size: file.fileSize,
+          type: 'pdf',
+          content: parseResult.text || '',
+          originalFile: null as any,
+          bucketKey: file.bucketKey,
+          bucketPath: file.bucketKey.split('/').slice(0, -1).join('/'),
+          fileUrl: file.fileUrl,
+          uploadedAt: new Date(file.uploadedAt),
+          isReference: true
+        };
+        uploadedFiles.value.push(uploadedFile);
+      }
+    } else {
+      // For text files, fetch content
+      const textResponse = await fetch(`/api/files/get-text/${encodeURIComponent(file.bucketKey)}`, {
+        method: 'GET',
+        credentials: 'include'
+      });
+      
+      if (textResponse.ok) {
+        const textResult = await textResponse.json();
+        const fileType = file.fileType === 'markdown' ? 'markdown' : (file.fileType === 'pdf' ? 'pdf' : 'text');
+        const uploadedFile: UploadedFile = {
+          id: `ref-${Date.now()}-${Math.random().toString(36).substring(7)}`,
+          name: file.fileName,
+          size: file.fileSize,
+          type: fileType,
+          content: textResult.content || textResult.text || '',
+          originalFile: null as any,
+          bucketKey: file.bucketKey,
+          bucketPath: file.bucketKey.split('/').slice(0, -1).join('/'),
+          fileUrl: file.fileUrl,
+          uploadedAt: new Date(file.uploadedAt),
+          isReference: true
+        };
+        uploadedFiles.value.push(uploadedFile);
+      }
+    }
+  } catch (error) {
+    console.error('Error adding reference file to chat:', error);
+  }
 };
 
 // Parse contextual tip to extract clickable links

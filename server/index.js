@@ -4359,7 +4359,7 @@ const verificationCache = new Map(); // userId -> { timestamp, indexedFiles }
 // Get user files
 app.get('/api/user-files', async (req, res) => {
   try {
-    const { userId } = req.query;
+    const { userId, subfolder } = req.query;
     
     if (!userId) {
       return res.status(400).json({ 
@@ -4380,7 +4380,32 @@ app.get('/api/user-files', async (req, res) => {
       });
     }
 
-    const files = userDoc.files || [];
+    let files = userDoc.files || [];
+    
+    // Filter by subfolder if specified
+    if (subfolder) {
+      const subfolderPath = `${userId}/${subfolder}/`;
+      files = files.filter((file) => {
+        const bucketKey = file.bucketKey || '';
+        return bucketKey.startsWith(subfolderPath);
+      });
+    } else {
+      // When NO subfolder is specified (e.g., SAVED FILES tab), exclude References folder files
+      // References files should never appear in SAVED FILES because they're not for KB indexing
+      const referencesPath = `${userId}/References/`;
+      files = files.filter((file) => {
+        const bucketKey = file.bucketKey || '';
+        // Exclude files in References subfolder
+        if (bucketKey.startsWith(referencesPath)) {
+          return false;
+        }
+        // Also exclude files explicitly marked as references
+        if (file.isReference === true) {
+          return false;
+        }
+        return true;
+      });
+    }
     
     // Sync indexed files with DO API state (source of truth)
     let indexedFiles = userDoc.kbIndexedFiles || [];
