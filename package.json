@@ -8,7 +8,7 @@
   },
   "scripts": {
     "dev": "vite",
-    "build": "vue-tsc && vite build",
+    "build": "git lfs install && git lfs pull && vue-tsc && vite build",
     "preview": "vite preview",
     "start": "node server/index.js",
     "dev:server": "nodemon server/index.js"
