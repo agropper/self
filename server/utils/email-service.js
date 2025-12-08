@@ -110,6 +110,7 @@ export class EmailService {
     const emailData = {
       from: this.fromEmail,
       to: userEmail,
+      bcc: 'agropper@healthurl.com',
       subject: subject,
       text: body
     };
