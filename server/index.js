@@ -6951,6 +6951,26 @@ app.get('/api/admin/users', async (req, res) => {
     // Allow unauthenticated access when running locally
     const isLocalhost = req.hostname === 'localhost' || req.hostname === '127.0.0.1' || process.env.NODE_ENV !== 'production';
     
+    // If not localhost, require authentication and check for ADMIN_USERNAME
+    if (!isLocalhost) {
+      const sessionUserId = req.session?.userId;
+      const adminUsername = process.env.ADMIN_USERNAME;
+      
+      if (!sessionUserId) {
+        return res.status(401).json({
+          success: false,
+          error: 'Authentication required'
+        });
+      }
+      
+      if (!adminUsername || sessionUserId !== adminUsername) {
+        return res.status(403).json({
+          success: false,
+          error: 'Access denied. Admin privileges required.'
+        });
+      }
+    }
+    
     // Get all users from maia_users database
     const allUsers = await cloudant.getAllDocuments('maia_users');
     
@@ -7109,6 +7129,26 @@ app.delete('/api/admin/users/:userId', async (req, res) => {
   try {
     // Allow unauthenticated access when running locally
     const isLocalhost = req.hostname === 'localhost' || req.hostname === '127.0.0.1' || process.env.NODE_ENV !== 'production';
+    
+    // If not localhost, require authentication and check for ADMIN_USERNAME
+    if (!isLocalhost) {
+      const sessionUserId = req.session?.userId;
+      const adminUsername = process.env.ADMIN_USERNAME;
+      
+      if (!sessionUserId) {
+        return res.status(401).json({
+          success: false,
+          error: 'Authentication required'
+        });
+      }
+      
+      if (!adminUsername || sessionUserId !== adminUsername) {
+        return res.status(403).json({
+          success: false,
+          error: 'Access denied. Admin privileges required.'
+        });
+      }
+    }
     
     const { userId } = req.params;
     
