@@ -7088,7 +7088,11 @@ app.get('/api/admin/users', async (req, res) => {
       success: true,
       users: userStats,
       totalUsers: userStats.length,
-      totalDeepLinkUsers: totalDeepLinkUsers
+      totalDeepLinkUsers: totalDeepLinkUsers,
+      passkeyConfig: {
+        rpID: passkeyService.rpID,
+        origin: passkeyService.origin
+      }
     });
   } catch (error) {
     console.error('Error fetching admin users:', error);

@@ -2,8 +2,11 @@
   <q-page class="q-pa-md">
     <div class="q-mb-lg">
       <div class="text-h4 q-mb-sm">User Administration</div>
-      <div class="text-body2 text-grey-7">
+      <div class="text-body2 text-grey-7 q-mb-xs">
         Total Users: {{ totalUsers }} | Deep Link Users: {{ totalDeepLinkUsers }}
+      </div>
+      <div class="text-body2 text-grey-7" v-if="passkeyConfig">
+        Passkey rpID: {{ passkeyConfig.rpID }} | Passkey Origin: {{ passkeyConfig.origin }}
       </div>
     </div>
 
@@ -81,10 +84,16 @@ interface User {
   deepLinkUsersCount: number;
 }
 
+interface PasskeyConfig {
+  rpID: string;
+  origin: string;
+}
+
 const users = ref<User[]>([]);
 const loading = ref(false);
 const totalUsers = ref(0);
 const totalDeepLinkUsers = ref(0);
+const passkeyConfig = ref<PasskeyConfig | null>(null);
 const deletingUsers = ref(new Set<string>());
 
 const columns = [
@@ -188,6 +197,7 @@ async function loadUsers() {
       users.value = data.users;
       totalUsers.value = data.totalUsers;
       totalDeepLinkUsers.value = data.totalDeepLinkUsers;
+      passkeyConfig.value = data.passkeyConfig || null;
     } else {
       if ($q && typeof $q.notify === 'function') {
         $q.notify({
