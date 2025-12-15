@@ -30,6 +30,104 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 /**
+ * Generate agent name for a user
+ * Format: {userId}-agent-{YYYYMMDD}-{HHMMSS}
+ */
+function generateAgentName(userId) {
+  const now = new Date();
+  const dateStr = now.toISOString().split('T')[0].replace(/-/g, ''); // YYYYMMDD in UTC
+  const timeStr = now.toISOString().split('T')[1].split('.')[0].replace(/:/g, ''); // HHMMSS in UTC
+  return `${userId}-agent-${dateStr}-${timeStr}`;
+}
+
+/**
+ * Generate KB name for a user
+ * Format: {userId}-kb-{YYYYMMDD}{timestamp}
+ */
+function generateKBName(userId) {
+  const timestamp = new Date().toISOString().replace(/[-:]/g, '').split('T')[0]; // YYYYMMDD
+  return `${userId}-kb-${timestamp}${Date.now().toString().slice(-6)}`;
+}
+
+/**
+ * Create bucket folders for a user (root, archived, and KB subfolder)
+ * This is called during registration to enable file uploads before admin approval
+ */
+async function createUserBucketFolders(userId, kbName) {
+  console.log(`[NEW FLOW] Creating bucket folders for user: ${userId}, KB: ${kbName}`);
+  
+  const bucketUrl = process.env.DIGITALOCEAN_BUCKET;
+  if (!bucketUrl) {
+    throw new Error('DigitalOcean bucket not configured');
+  }
+  
+  const bucketName = bucketUrl.split('//')[1]?.split('.')[0] || 'maia';
+  
+  try {
+    const { S3Client, PutObjectCommand } = await import('@aws-sdk/client-s3');
+    const s3Client = new S3Client({
+      endpoint: process.env.DIGITALOCEAN_ENDPOINT_URL || 'https://tor1.digitaloceanspaces.com',
+      region: 'us-east-1',
+      forcePathStyle: false,
+      credentials: {
+        accessKeyId: process.env.DIGITALOCEAN_AWS_ACCESS_KEY_ID || '',
+        secretAccessKey: process.env.DIGITALOCEAN_AWS_SECRET_ACCESS_KEY || ''
+      }
+    });
+    
+    // Create placeholder files to make folders visible in dashboard
+    const rootPlaceholder = `${userId}/.keep`;
+    const archivedPlaceholder = `${userId}/archived/.keep`;
+    const kbPlaceholder = `${userId}/${kbName}/.keep`;
+    
+    // Create root userId folder placeholder (for new imports)
+    await s3Client.send(new PutObjectCommand({
+      Bucket: bucketName,
+      Key: rootPlaceholder,
+      Body: '',
+      ContentType: 'text/plain',
+      Metadata: {
+        createdBy: 'registration',
+        createdAt: new Date().toISOString()
+      }
+    }));
+    console.log(`[NEW FLOW] Created root folder: ${userId}/`);
+    
+    // Create archived folder placeholder (for files moved from root)
+    await s3Client.send(new PutObjectCommand({
+      Bucket: bucketName,
+      Key: archivedPlaceholder,
+      Body: '',
+      ContentType: 'text/plain',
+      Metadata: {
+        createdBy: 'registration',
+        createdAt: new Date().toISOString()
+      }
+    }));
+    console.log(`[NEW FLOW] Created archived folder: ${userId}/archived/`);
+    
+    // Create KB folder placeholder
+    await s3Client.send(new PutObjectCommand({
+      Bucket: bucketName,
+      Key: kbPlaceholder,
+      Body: '',
+      ContentType: 'text/plain',
+      Metadata: {
+        createdBy: 'registration',
+        createdAt: new Date().toISOString()
+      }
+    }));
+    console.log(`[NEW FLOW] Created KB folder: ${userId}/${kbName}/`);
+    
+    console.log(`[NEW FLOW] ✅ All bucket folders created successfully for ${userId}`);
+    return { root: `${userId}/`, archived: `${userId}/archived/`, kb: `${userId}/${kbName}/` };
+  } catch (err) {
+    console.error(`[NEW FLOW] ❌ Failed to create bucket folders: ${err.message}`);
+    throw new Error(`Failed to create bucket folders: ${err.message}`);
+  }
+}
+
+/**
  * Get KB name from user document
  * 
  * Naming Convention:
@@ -67,8 +165,7 @@ function getKBNameFromUserDoc(userDoc, userId) {
     return userDoc.connectedKB;
   }
   // Generate new KB name if none exists
-  const timestamp = new Date().toISOString().replace(/[-:]/g, '').split('T')[0]; // YYYYMMDD
-  return `${userId}-kb-${timestamp}${Date.now().toString().slice(-6)}`;
+  return generateKBName(userId);
 }
 
 /**
@@ -2156,13 +2253,88 @@ app.post('/api/admin/provision/confirm', async (req, res) => {
     }
 
     if (action === 'reject') {
+      console.log(`[NEW FLOW] Admin rejected provisioning for user: ${userId}`);
       logProvisioning(userId, `⛔️ Provisioning rejected for user ${userId}`, 'warning');
+      
+      // Cleanup: Delete bucket folder and user document (keep audit log)
+      try {
+        console.log(`[NEW FLOW] Starting cleanup for rejected user: ${userId}`);
+        
+        // Delete all files in user's bucket folder
+        const bucketUrl = process.env.DIGITALOCEAN_BUCKET;
+        if (bucketUrl) {
+          const bucketName = bucketUrl.split('//')[1]?.split('.')[0] || 'maia';
+          const { S3Client, ListObjectsV2Command, DeleteObjectCommand } = await import('@aws-sdk/client-s3');
+          const s3Client = new S3Client({
+            endpoint: process.env.DIGITALOCEAN_ENDPOINT_URL || 'https://tor1.digitaloceanspaces.com',
+            region: 'us-east-1',
+            forcePathStyle: false,
+            credentials: {
+              accessKeyId: process.env.DIGITALOCEAN_AWS_ACCESS_KEY_ID || '',
+              secretAccessKey: process.env.DIGITALOCEAN_AWS_SECRET_ACCESS_KEY || ''
+            }
+          });
+          
+          // List all objects with userId prefix
+          const listCommand = new ListObjectsV2Command({
+            Bucket: bucketName,
+            Prefix: `${userId}/`
+          });
+          
+          let deletedCount = 0;
+          let hasMore = true;
+          
+          while (hasMore) {
+            const listResult = await s3Client.send(listCommand);
+            
+            if (listResult.Contents && listResult.Contents.length > 0) {
+              for (const object of listResult.Contents) {
+                if (object.Key) {
+                  try {
+                    await s3Client.send(new DeleteObjectCommand({
+                      Bucket: bucketName,
+                      Key: object.Key
+                    }));
+                    deletedCount++;
+                    console.log(`[NEW FLOW] Deleted file: ${object.Key}`);
+                  } catch (deleteErr) {
+                    console.error(`[NEW FLOW] Failed to delete ${object.Key}:`, deleteErr.message);
+                  }
+                }
+              }
+            }
+            
+            hasMore = listResult.IsTruncated || false;
+            if (hasMore && listResult.ContinuationToken) {
+              listCommand.input.ContinuationToken = listResult.ContinuationToken;
+            } else {
+              hasMore = false;
+            }
+          }
+          
+          console.log(`[NEW FLOW] Deleted ${deletedCount} files from bucket folder for ${userId}`);
+        }
+        
+        // Delete user document
+        try {
+          await cloudant.deleteDocument('maia_users', userId);
+          console.log(`[NEW FLOW] Deleted user document for ${userId}`);
+        } catch (deleteErr) {
+          console.error(`[NEW FLOW] Failed to delete user document:`, deleteErr.message);
+        }
+        
+        console.log(`[NEW FLOW] ✅ Cleanup completed for rejected user: ${userId}`);
+      } catch (cleanupErr) {
+        console.error(`[NEW FLOW] ❌ Error during cleanup:`, cleanupErr.message);
+        // Continue even if cleanup fails
+      }
+      
       return res.send(`
         <html>
           <head><title>Provisioning Cancelled</title></head>
           <body style="font-family: Arial, sans-serif; max-width: 600px; margin: 50px auto; padding: 20px;">
             <h2 style="color: #d32f2f;">Provisioning Cancelled</h2>
-            <p>The provisioning request for <strong>${userId}</strong> has been cancelled. No changes were made.</p>
+            <p>The provisioning request for <strong>${userId}</strong> has been cancelled. The user account and associated files have been removed.</p>
           </body>
         </html>
       `);
@@ -2619,11 +2791,14 @@ async function provisionUserAsync(userId, token) {
     // MAIA medical assistant instruction (from NEW-AGENT.txt)
     const maiaInstruction = getMaiaInstructionText();
 
-    // Create agent name: {userId}-agent-{YYYYMMDD}-{HRMINSEC} for uniqueness
-    const now = new Date();
-    const dateStr = now.toISOString().split('T')[0].replace(/-/g, ''); // YYYYMMDD in UTC
-    const timeStr = now.toISOString().split('T')[1].split('.')[0].replace(/:/g, ''); // HHMMSS in UTC
-    const agentName = `${userId}-agent-${dateStr}-${timeStr}`;
+    // Use pre-generated agent name from user document (created during registration)
+    // If not found, generate one (backward compatibility)
+    const agentName = userDoc.assignedAgentName || generateAgentName(userId);
+    if (!userDoc.assignedAgentName) {
+      logProvisioning(userId, `⚠️  Agent name not found in user doc, generating: ${agentName}`, 'warning');
+    } else {
+      logProvisioning(userId, `✅ Using pre-generated agent name: ${agentName}`, 'info');
+    }
 
     const agentClient = doClient.agent;
 
@@ -2632,9 +2807,10 @@ async function provisionUserAsync(userId, token) {
       throw new Error(`Cannot create agent: Invalid modelId or projectId`);
     }
 
-    // Step 1: Create bucket folder (KB folder)
-    updateStatus('Creating bucket folders...');
-    logProvisioning(userId, `📁 Creating bucket folders for user: ${userId}`, 'info');
+    // Step 1: Create bucket folder (KB folder) - Note: Folders should already exist from registration
+    // This is kept here for backward compatibility, but should be a no-op if folders already exist
+    updateStatus('Verifying bucket folders...');
+    logProvisioning(userId, `📁 Verifying bucket folders for user: ${userId}`, 'info');
     
     const bucketUrl = process.env.DIGITALOCEAN_BUCKET;
     if (!bucketUrl) {
@@ -2644,8 +2820,9 @@ async function provisionUserAsync(userId, token) {
     const bucketName = bucketUrl.split('//')[1]?.split('.')[0] || 'maia';
     const kbName = getKBNameFromUserDoc(userDoc, userId);
     
+    // Check if folders already exist (created during registration)
     try {
-      const { S3Client, PutObjectCommand } = await import('@aws-sdk/client-s3');
+      const { S3Client, PutObjectCommand, GetObjectCommand } = await import('@aws-sdk/client-s3');
       const s3Client = new S3Client({
         endpoint: process.env.DIGITALOCEAN_ENDPOINT_URL || 'https://tor1.digitaloceanspaces.com',
         region: 'us-east-1',
@@ -2656,61 +2833,78 @@ async function provisionUserAsync(userId, token) {
         }
       });
       
-      // Create placeholder files to make folders visible in dashboard
+      // Check if folders already exist
       const rootPlaceholder = `${userId}/.keep`;
       const archivedPlaceholder = `${userId}/archived/.keep`;
       const kbPlaceholder = `${userId}/${kbName}/.keep`;
       
-      // Create root userId folder placeholder (for new imports)
-      await s3Client.send(new PutObjectCommand({
-        Bucket: bucketName,
-        Key: rootPlaceholder,
-        Body: '',
-        ContentType: 'text/plain',
-        Metadata: {
-          createdBy: 'provisioning',
-          createdAt: new Date().toISOString()
-        }
-      }));
+      let foldersExist = false;
+      try {
+        await s3Client.send(new GetObjectCommand({ Bucket: bucketName, Key: rootPlaceholder }));
+        await s3Client.send(new GetObjectCommand({ Bucket: bucketName, Key: archivedPlaceholder }));
+        await s3Client.send(new GetObjectCommand({ Bucket: bucketName, Key: kbPlaceholder }));
+        foldersExist = true;
+        logProvisioning(userId, `✅ Bucket folders already exist (created during registration)`, 'info');
+      } catch (checkErr) {
+        // Folders don't exist, create them (backward compatibility)
+        logProvisioning(userId, `📁 Creating bucket folders (not found during registration)`, 'info');
+      }
       
-      // Create archived folder placeholder (for files moved from root)
-      await s3Client.send(new PutObjectCommand({
-        Bucket: bucketName,
-        Key: archivedPlaceholder,
-        Body: '',
-        ContentType: 'text/plain',
-        Metadata: {
-          createdBy: 'provisioning',
-          createdAt: new Date().toISOString()
-        }
-      }));
+      if (!foldersExist) {
+        // Create placeholder files to make folders visible in dashboard
+        // Create root userId folder placeholder (for new imports)
+        await s3Client.send(new PutObjectCommand({
+          Bucket: bucketName,
+          Key: rootPlaceholder,
+          Body: '',
+          ContentType: 'text/plain',
+          Metadata: {
+            createdBy: 'provisioning',
+            createdAt: new Date().toISOString()
+          }
+        }));
+        
+        // Create archived folder placeholder (for files moved from root)
+        await s3Client.send(new PutObjectCommand({
+          Bucket: bucketName,
+          Key: archivedPlaceholder,
+          Body: '',
+          ContentType: 'text/plain',
+          Metadata: {
+            createdBy: 'provisioning',
+            createdAt: new Date().toISOString()
+          }
+        }));
+        
+        // Create KB folder placeholder
+        await s3Client.send(new PutObjectCommand({
+          Bucket: bucketName,
+          Key: kbPlaceholder,
+          Body: '',
+          ContentType: 'text/plain',
+          Metadata: {
+            createdBy: 'provisioning',
+            createdAt: new Date().toISOString()
+          }
+        }));
+        
+        logProvisioning(userId, `✅ Bucket folders created: ${userId}/ (root), ${userId}/archived/ (archived), and ${userId}/${kbName}/ (KB)`, 'success');
+      }
       
-      // Create KB folder placeholder
-      await s3Client.send(new PutObjectCommand({
-        Bucket: bucketName,
-        Key: kbPlaceholder,
-        Body: '',
-        ContentType: 'text/plain',
-        Metadata: {
-          createdBy: 'provisioning',
-          createdAt: new Date().toISOString()
-        }
-      }));
+      // Ensure KB name is stored in user document
+      if (!userDoc.kbName) {
+        await updateUserDoc({
+          kbName: kbName
+        });
+      }
       
-      logProvisioning(userId, `✅ Bucket folders created: ${userId}/ (root), ${userId}/archived/ (archived), and ${userId}/${kbName}/ (KB)`, 'success');
-      
-      // Store the KB name in user document
-      await updateUserDoc({
-        kbName: kbName
-      });
-      
-      updateStatus('Bucket folders created', { 
+      updateStatus('Bucket folders verified', { 
         root: `${userId}/`,
         kb: `${userId}/${kbName}/`
       });
     } catch (err) {
-      logProvisioning(userId, `❌ Failed to create bucket folders: ${err.message}`, 'error');
-      throw new Error(`Failed to create bucket folders: ${err.message}`);
+      logProvisioning(userId, `❌ Failed to verify/create bucket folders: ${err.message}`, 'error');
+      throw new Error(`Failed to verify/create bucket folders: ${err.message}`);
     }
 
     // Step 2: Create KB with empty datasource

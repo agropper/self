@@ -87,6 +87,62 @@
       {{ error }}
     </q-banner>
   </div>
+
+  <!-- File Import Dialog - Step 1: Choose file -->
+  <q-dialog v-model="showFileImportDialog" persistent>
+    <q-card style="min-width: 400px; max-width: 500px">
+      <q-card-section>
+        <div class="text-h6">Import Initial Health Record</div>
+      </q-card-section>
+
+      <q-card-section class="q-pt-none">
+        <p class="text-body2">
+          If you have an Apple Health Export PDF file or another initial health record file, import it for your initial knowledge base. You will be able to add other health records files later, at any time.
+        </p>
+      </q-card-section>
+
+      <q-card-section class="q-pt-none">
+        <input
+          ref="fileInputRef"
+          type="file"
+          accept=".pdf,.txt,.md"
+          style="display: none"
+          @change="handleFileSelected"
+        />
+        <q-btn
+          label="CHOOSE FILE"
+          color="primary"
+          class="full-width"
+          @click="triggerFileInput"
+          :loading="uploadingFile"
+        />
+      </q-card-section>
+
+      <q-card-actions align="right">
+        <q-btn flat label="Cancel" @click="handleFileImportCancel" />
+      </q-card-actions>
+    </q-card>
+  </q-dialog>
+
+  <!-- File Import Dialog - Step 2: Confirm without file -->
+  <q-dialog v-model="showConfirmWithoutFileDialog" persistent>
+    <q-card style="min-width: 400px; max-width: 500px">
+      <q-card-section>
+        <div class="text-h6">Continue Without File</div>
+      </q-card-section>
+
+      <q-card-section class="q-pt-none">
+        <p class="text-body2">
+          You can request a private AI without including a file. You will be able to add health records using Import (the paper clip) and the Saved Files tab in MyStuff at a later time.
+        </p>
+      </q-card-section>
+
+      <q-card-actions align="right">
+        <q-btn flat label="I WANT TO ADD A FILE" @click="goBackToFileChooser" />
+        <q-btn label="SEND SUPPORT REQUEST ANYWAY" color="primary" @click="sendRequestWithoutFile" />
+      </q-card-actions>
+    </q-card>
+  </q-dialog>
 </template>
 
 <script setup lang="ts">
@@ -103,6 +159,11 @@ const loading = ref(false);
 const error = ref('');
 const action = ref(''); // 'signin' or 'register'
 const userIdInputRef = ref<HTMLInputElement | null>(null);
+const showFileImportDialog = ref(false);
+const showConfirmWithoutFileDialog = ref(false);
+const fileInputRef = ref<HTMLInputElement | null>(null);
+const uploadingFile = ref(false);
+const kbName = ref<string | null>(null);
 
 const startSignInFlow = async () => {
   action.value = 'signin';
@@ -125,6 +186,9 @@ const resetFlow = () => {
   error.value = '';
   action.value = '';
   loading.value = false;
+  showFileImportDialog.value = false;
+  showConfirmWithoutFileDialog.value = false;
+  kbName.value = null;
 };
 
 const handleEnterKey = () => {
@@ -205,9 +269,129 @@ const handleRegistration = async () => {
   const result = await verifyResponse.json();
 
   if (result.success) {
-    emit('authenticated', result.user);
+    // If showFileImport flag is set, show file import dialog instead of immediately authenticating
+    if (result.showFileImport && result.kbName) {
+      console.log('[NEW FLOW] Showing file import dialog');
+      kbName.value = result.kbName;
+      showFileImportDialog.value = true;
+      // Don't emit authenticated yet - wait for file upload or user to proceed
+    } else {
+      emit('authenticated', result.user);
+    }
   } else {
     throw new Error(result.error || 'Registration verification failed');
+  }
+};
+
+const triggerFileInput = () => {
+  fileInputRef.value?.click();
+};
+
+const handleFileSelected = async (event: Event) => {
+  const target = event.target as HTMLInputElement;
+  const file = target.files?.[0];
+  if (!file) return;
+
+  uploadingFile.value = true;
+  try {
+    console.log('[NEW FLOW] Uploading initial file to KB folder:', file.name);
+    
+    const formData = new FormData();
+    formData.append('file', file);
+    formData.append('subfolder', kbName.value || ''); // Upload to KB subfolder
+    formData.append('isInitialImport', 'true'); // Flag for initial import
+
+    const uploadResponse = await fetch('/api/files/upload', {
+      method: 'POST',
+      credentials: 'include',
+      body: formData
+    });
+
+    if (!uploadResponse.ok) {
+      const errorData = await uploadResponse.json();
+      throw new Error(errorData.error || 'Failed to upload file');
+    }
+
+    const uploadResult = await uploadResponse.json();
+    console.log('[NEW FLOW] File uploaded successfully:', uploadResult);
+
+    // Notify backend that initial file upload is complete
+    const completeResponse = await fetch('/api/passkey/registration-complete', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify({
+        userId: userId.value,
+        initialFile: {
+          fileName: uploadResult.fileInfo.fileName,
+          bucketKey: uploadResult.fileInfo.bucketKey,
+          fileSize: uploadResult.fileInfo.size,
+          uploadedAt: new Date().toISOString()
+        }
+      })
+    });
+
+    if (!completeResponse.ok) {
+      throw new Error('Failed to complete registration');
+    }
+
+    const completeResult = await completeResponse.json();
+    console.log('[NEW FLOW] Registration complete, admin email sent');
+
+    showFileImportDialog.value = false;
+    emit('authenticated', completeResult.user);
+  } catch (err: any) {
+    error.value = err.message || 'Failed to upload file';
+    console.error('[NEW FLOW] File upload error:', err);
+  } finally {
+    uploadingFile.value = false;
+    // Reset file input
+    if (fileInputRef.value) {
+      fileInputRef.value.value = '';
+    }
+  }
+};
+
+const handleFileImportCancel = () => {
+  showFileImportDialog.value = false;
+  showConfirmWithoutFileDialog.value = true;
+};
+
+const goBackToFileChooser = () => {
+  showConfirmWithoutFileDialog.value = false;
+  showFileImportDialog.value = true;
+};
+
+const sendRequestWithoutFile = async () => {
+  loading.value = true;
+  try {
+    console.log('[NEW FLOW] User proceeding without file, sending admin email');
+    
+    const response = await fetch('/api/passkey/registration-complete', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify({
+        userId: userId.value,
+        initialFile: null // No file uploaded
+      })
+    });
+
+    if (!response.ok) {
+      const errorData = await response.json();
+      throw new Error(errorData.error || 'Failed to complete registration');
+    }
+
+    const result = await response.json();
+    console.log('[NEW FLOW] Registration complete without file, admin email sent');
+
+    showConfirmWithoutFileDialog.value = false;
+    emit('authenticated', result.user);
+  } catch (err: any) {
+    error.value = err.message || 'Failed to complete registration';
+    console.error('[NEW FLOW] Registration completion error:', err);
+  } finally {
+    loading.value = false;
   }
 };
 

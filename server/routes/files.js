@@ -684,9 +684,26 @@ export default function setupFileRoutes(app, cloudant, doClient) {
         return res.status(400).json({ error: 'No file provided' });
       }
 
-      // Check if subfolder is specified (e.g., "References")
+      // Check if this is an initial import during registration (goes to KB subfolder)
+      const isInitialImport = req.body.isInitialImport === 'true';
       const subfolder = req.body.subfolder || '';
-      const userFolder = subfolder ? `${userId}/${subfolder}/` : `${userId}/`;
+      
+      // For initial import, use KB subfolder. Otherwise use specified subfolder or root
+      let userFolder;
+      if (isInitialImport && subfolder) {
+        // Initial import goes directly to KB subfolder
+        userFolder = `${userId}/${subfolder}/`;
+        console.log(`[NEW FLOW] Initial import during registration - uploading to KB folder: ${userFolder}`);
+      } else if (subfolder) {
+        // Regular subfolder (e.g., "References")
+        userFolder = `${userId}/${subfolder}/`;
+      } else {
+        // Root folder
+        userFolder = `${userId}/`;
+      }
+      
+      console.log(`[NEW FLOW] File upload - userId: ${userId}, isInitialImport: ${isInitialImport}, userFolder: ${userFolder}`);
+      
       const fileName = req.file.originalname;
       
       // Generate a unique key for the file
@@ -749,6 +766,10 @@ export default function setupFileRoutes(app, cloudant, doClient) {
       });
 
       await s3Client.send(uploadCommand);
+      
+      if (isInitialImport) {
+        console.log(`[NEW FLOW] ✅ Initial import file uploaded successfully: ${fileName} to ${bucketKey}`);
+      }
 
       // Generate signed URL for reading (valid for 7 days)
       const getCommand = new GetObjectCommand({
