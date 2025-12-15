@@ -81,11 +81,13 @@ async function createUserBucketFolders(userId, kbName) {
     const kbPlaceholder = `${userId}/${kbName}/.keep`;
     
     // Create root userId folder placeholder (for new imports)
+    // Use Buffer.from('') instead of empty string to avoid SDK warning about stream length
     await s3Client.send(new PutObjectCommand({
       Bucket: bucketName,
       Key: rootPlaceholder,
-      Body: '',
+      Body: Buffer.from(''),
       ContentType: 'text/plain',
+      ContentLength: 0,
       Metadata: {
         createdBy: 'registration',
         createdAt: new Date().toISOString()
@@ -97,8 +99,9 @@ async function createUserBucketFolders(userId, kbName) {
     await s3Client.send(new PutObjectCommand({
       Bucket: bucketName,
       Key: archivedPlaceholder,
-      Body: '',
+      Body: Buffer.from(''),
       ContentType: 'text/plain',
+      ContentLength: 0,
       Metadata: {
         createdBy: 'registration',
         createdAt: new Date().toISOString()
@@ -110,8 +113,9 @@ async function createUserBucketFolders(userId, kbName) {
     await s3Client.send(new PutObjectCommand({
       Bucket: bucketName,
       Key: kbPlaceholder,
-      Body: '',
+      Body: Buffer.from(''),
       ContentType: 'text/plain',
+      ContentLength: 0,
       Metadata: {
         createdBy: 'registration',
         createdAt: new Date().toISOString()
@@ -2275,16 +2279,18 @@ app.post('/api/admin/provision/confirm', async (req, res) => {
             }
           });
           
-          // List all objects with userId prefix
-          const listCommand = new ListObjectsV2Command({
-            Bucket: bucketName,
-            Prefix: `${userId}/`
-          });
-          
+          // List all objects with userId prefix (with pagination)
           let deletedCount = 0;
-          let hasMore = true;
+          let continuationToken = null;
           
-          while (hasMore) {
+          do {
+            // Create a new command for each iteration (commands are immutable)
+            const listCommand = new ListObjectsV2Command({
+              Bucket: bucketName,
+              Prefix: `${userId}/`,
+              ContinuationToken: continuationToken || undefined
+            });
+            
             const listResult = await s3Client.send(listCommand);
             
             if (listResult.Contents && listResult.Contents.length > 0) {
@@ -2304,13 +2310,9 @@ app.post('/api/admin/provision/confirm', async (req, res) => {
               }
             }
             
-            hasMore = listResult.IsTruncated || false;
-            if (hasMore && listResult.ContinuationToken) {
-              listCommand.input.ContinuationToken = listResult.ContinuationToken;
-            } else {
-              hasMore = false;
-            }
-          }
+            // Get continuation token for next iteration (if any)
+            continuationToken = listResult.NextContinuationToken || null;
+          } while (continuationToken);
           
           console.log(`[NEW FLOW] Deleted ${deletedCount} files from bucket folder for ${userId}`);
         }
