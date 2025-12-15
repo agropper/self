@@ -3104,6 +3104,271 @@ async function provisionUserAsync(userId, token) {
       throw new Error(`Failed to create knowledge base: ${err.message}`);
     }
 
+    // Step 2.5: Index Initial File (if provided) and Generate Patient Summary
+    // This happens BEFORE agent creation so the agent can use the indexed data immediately
+    if (userDoc.initialFile && userDoc.initialFile.bucketKey) {
+      try {
+        const initialFileBucketKey = userDoc.initialFile.bucketKey;
+        const initialFileName = userDoc.initialFile.fileName;
+        
+        logProvisioning(userId, `📄 Initial file detected: ${initialFileName} (${initialFileBucketKey})`, 'info');
+        updateStatus('Processing initial file...', { fileName: initialFileName });
+        
+        // Verify file exists in S3
+        try {
+          const { S3Client, HeadObjectCommand } = await import('@aws-sdk/client-s3');
+          const s3Client = new S3Client({
+            endpoint: process.env.DIGITALOCEAN_ENDPOINT_URL || 'https://tor1.digitaloceanspaces.com',
+            region: 'us-east-1',
+            forcePathStyle: false,
+            credentials: {
+              accessKeyId: process.env.DIGITALOCEAN_AWS_ACCESS_KEY_ID || '',
+              secretAccessKey: process.env.DIGITALOCEAN_AWS_SECRET_ACCESS_KEY || ''
+            }
+          });
+          
+          await s3Client.send(new HeadObjectCommand({
+            Bucket: bucketName,
+            Key: initialFileBucketKey
+          }));
+          logProvisioning(userId, `✅ Initial file verified in S3: ${initialFileBucketKey}`, 'success');
+        } catch (verifyErr) {
+          logProvisioning(userId, `⚠️  Initial file not found in S3: ${initialFileBucketKey}. Skipping indexing.`, 'warning');
+          // Continue provisioning without indexing
+        }
+        
+        // Create datasource for initial file
+        updateStatus('Creating data source for initial file...', { fileName: initialFileName });
+        logProvisioning(userId, `📦 Creating datasource for initial file: ${initialFileBucketKey}`, 'info');
+        
+        let datasourceUuid = null;
+        try {
+          const newDataSource = await doClient.kb.addDataSource(kbId, {
+            bucketName: bucketName,
+            itemPath: initialFileBucketKey,
+            region: process.env.DO_REGION || 'tor1'
+          });
+          
+          datasourceUuid = newDataSource.uuid || newDataSource.id || newDataSource.knowledge_base_data_source?.uuid;
+          
+          if (!datasourceUuid) {
+            throw new Error('Datasource created but no UUID returned');
+          }
+          
+          logProvisioning(userId, `✅ Datasource created: ${datasourceUuid}`, 'success');
+          
+          // Update user document to store datasource UUID on the file
+          // Find or create file entry in userDoc.files[]
+          if (!userDoc.files) {
+            userDoc.files = [];
+          }
+          
+          let fileIndex = userDoc.files.findIndex(f => f.bucketKey === initialFileBucketKey);
+          if (fileIndex < 0) {
+            // File not in userDoc.files yet - add it
+            userDoc.files.push({
+              bucketKey: initialFileBucketKey,
+              fileName: initialFileName,
+              size: userDoc.initialFile.fileSize || 0,
+              uploadedAt: userDoc.initialFile.uploadedAt || new Date().toISOString(),
+              knowledgeBases: [kbName],
+              kbDataSourceUuid: datasourceUuid
+            });
+            fileIndex = userDoc.files.length - 1;
+            logProvisioning(userId, `📝 Added initial file to userDoc.files[]`, 'info');
+          } else {
+            // File exists - update it
+            userDoc.files[fileIndex].kbDataSourceUuid = datasourceUuid;
+            if (!userDoc.files[fileIndex].knowledgeBases) {
+              userDoc.files[fileIndex].knowledgeBases = [];
+            }
+            if (!userDoc.files[fileIndex].knowledgeBases.includes(kbName)) {
+              userDoc.files[fileIndex].knowledgeBases.push(kbName);
+            }
+            logProvisioning(userId, `📝 Updated file entry in userDoc.files[]`, 'info');
+          }
+          
+          // Save file updates
+          await updateUserDoc({
+            files: userDoc.files
+          });
+          
+        } catch (dsError) {
+          logProvisioning(userId, `❌ Failed to create datasource: ${dsError.message}`, 'error');
+          throw new Error(`Failed to create datasource for initial file: ${dsError.message}`);
+        }
+        
+        // Start indexing job
+        updateStatus('Starting indexing job...', { fileName: initialFileName });
+        logProvisioning(userId, `🚀 Starting indexing job for datasource: ${datasourceUuid}`, 'info');
+        
+        let indexingJobId = null;
+        try {
+          const indexingJob = await doClient.indexing.startGlobal(kbId, [datasourceUuid]);
+          indexingJobId = indexingJob.uuid || indexingJob.id || indexingJob.indexing_job?.uuid || indexingJob.indexing_job?.id || indexingJob.job?.uuid || indexingJob.job?.id;
+          
+          if (!indexingJobId) {
+            throw new Error('Indexing job started but no job ID returned');
+          }
+          
+          logProvisioning(userId, `✅ Indexing job started: ${indexingJobId}`, 'success');
+          
+          // Store job ID in user document
+          await updateUserDoc({
+            kbLastIndexingJobId: indexingJobId,
+            kbIndexingStartedAt: new Date().toISOString(),
+            workflowStage: 'indexing',
+            kbChangedDataSourceUuids: [],
+            kbReindexAll: false
+          });
+          
+        } catch (indexError) {
+          // Check if indexing is already running
+          if (indexError.message && indexError.message.includes('already') && indexError.message.includes('running')) {
+            logProvisioning(userId, `ℹ️  Indexing already running, finding active job...`, 'info');
+            
+            try {
+              const indexingJobs = await doClient.indexing.listForKB(kbId);
+              const jobsArray = Array.isArray(indexingJobs) ? indexingJobs : 
+                                (indexingJobs?.jobs || indexingJobs?.indexing_jobs || indexingJobs?.data || []);
+              
+              const activeJob = jobsArray.find(job => {
+                const status = job.status || job.job_status || job.state;
+                return status === 'INDEX_JOB_STATUS_PENDING' || 
+                       status === 'INDEX_JOB_STATUS_RUNNING' ||
+                       status === 'INDEX_JOB_STATUS_IN_PROGRESS' ||
+                       status === 'pending' ||
+                       status === 'running' ||
+                       status === 'in_progress';
+              });
+              
+              if (activeJob) {
+                indexingJobId = activeJob.uuid || activeJob.id || activeJob.indexing_job_id;
+                logProvisioning(userId, `✅ Found active indexing job: ${indexingJobId}`, 'success');
+                await updateUserDoc({
+                  kbLastIndexingJobId: indexingJobId,
+                  kbIndexingStartedAt: new Date().toISOString(),
+                  workflowStage: 'indexing'
+                });
+              } else {
+                throw new Error('Indexing already running but could not find active job');
+              }
+            } catch (findError) {
+              logProvisioning(userId, `❌ Failed to find active indexing job: ${findError.message}`, 'error');
+              throw new Error(`Failed to start or find indexing job: ${findError.message}`);
+            }
+          } else {
+            logProvisioning(userId, `❌ Failed to start indexing job: ${indexError.message}`, 'error');
+            throw new Error(`Failed to start indexing job: ${indexError.message}`);
+          }
+        }
+        
+        // Wait for indexing to complete (blocking)
+        updateStatus('Waiting for indexing to complete...', { fileName: initialFileName, jobId: indexingJobId });
+        logProvisioning(userId, `⏳ Waiting for indexing to complete (job: ${indexingJobId})...`, 'info');
+        
+        const indexingStartTime = Date.now();
+        const maxIndexingWaitMs = 30 * 60 * 1000; // 30 minutes max
+        const indexingPollIntervalMs = 15000; // 15 seconds
+        let indexingCompleted = false;
+        let indexingJobResult = null;
+        
+        while (!indexingCompleted && (Date.now() - indexingStartTime) < maxIndexingWaitMs) {
+          await new Promise(resolve => setTimeout(resolve, indexingPollIntervalMs));
+          
+          try {
+            const indexingJobs = await doClient.indexing.listForKB(kbId);
+            const jobsArray = Array.isArray(indexingJobs) ? indexingJobs : 
+                              (indexingJobs?.jobs || indexingJobs?.indexing_jobs || indexingJobs?.data || []);
+            
+            const currentJob = jobsArray.find(j => {
+              const currentJobId = j.uuid || j.id || j.indexing_job_id;
+              return currentJobId === indexingJobId;
+            });
+            
+            if (currentJob) {
+              const jobStatus = currentJob.status || currentJob.job_status || currentJob.state;
+              const elapsedSeconds = Math.round((Date.now() - indexingStartTime) / 1000);
+              
+              logProvisioning(userId, `📊 Indexing status: ${jobStatus} (elapsed: ${elapsedSeconds}s)`, 'info');
+              
+              if (jobStatus === 'INDEX_JOB_STATUS_COMPLETED' || jobStatus === 'completed') {
+                indexingCompleted = true;
+                indexingJobResult = currentJob;
+                const indexingDurationSeconds = elapsedSeconds;
+                logProvisioning(userId, `✅ Indexing completed successfully in ${indexingDurationSeconds}s`, 'success');
+                break;
+              } else if (jobStatus === 'INDEX_JOB_STATUS_FAILED' || jobStatus === 'failed') {
+                logProvisioning(userId, `❌ Indexing job failed`, 'error');
+                throw new Error('Indexing job failed');
+              }
+            } else {
+              logProvisioning(userId, `⚠️  Indexing job ${indexingJobId} not found in job list`, 'warning');
+            }
+          } catch (pollError) {
+            logProvisioning(userId, `⚠️  Error polling indexing status: ${pollError.message}`, 'warning');
+          }
+        }
+        
+        if (!indexingCompleted) {
+          logProvisioning(userId, `⚠️  Indexing did not complete within timeout. Continuing provisioning.`, 'warning');
+          // Continue provisioning - background polling will catch completion later
+        } else {
+          // Indexing completed - update user document
+          const indexingDurationSeconds = Math.round((Date.now() - indexingStartTime) / 1000);
+          const indexedFileCount = indexingJobResult?.data_source_jobs?.[0]?.indexed_file_count || 1;
+          const indexedTokens = String(indexingJobResult?.tokens || indexingJobResult?.total_tokens || 0);
+          
+          // Get indexed files from datasource status
+          let indexedFiles = [initialFileBucketKey];
+          try {
+            const dataSources = await doClient.kb.listDataSources(kbId);
+            const fileDataSource = dataSources.find(ds => {
+              const dsUuid = ds.uuid || ds.id;
+              return dsUuid === datasourceUuid;
+            });
+            
+            if (fileDataSource?.last_datasource_indexing_job) {
+              // File is indexed
+              indexedFiles = [initialFileBucketKey];
+            }
+          } catch (dsListError) {
+            // Use default
+          }
+          
+          await updateUserDoc({
+            kbIndexedFiles: indexedFiles,
+            kbPendingFiles: undefined,
+            kbIndexingNeeded: false,
+            kbLastIndexedAt: new Date().toISOString(),
+            kbLastIndexingJobId: indexingJobId,
+            kbIndexingDurationSeconds: indexingDurationSeconds,
+            kbLastIndexingTokens: indexedTokens,
+            workflowStage: 'files_archived'
+          });
+          
+          logProvisioning(userId, `✅ Indexing metadata saved: ${indexedFileCount} file(s), ${indexedTokens} tokens, ${indexingDurationSeconds}s`, 'success');
+          updateStatus('Indexing complete', { 
+            files: indexedFileCount, 
+            tokens: indexedTokens, 
+            duration: `${Math.floor(indexingDurationSeconds / 60)}m ${indexingDurationSeconds % 60}s`
+          });
+          
+          // Generate patient summary (blocking)
+          // Note: We can't generate summary yet because agent doesn't exist
+          // Summary will be generated after agent is created and deployed
+          logProvisioning(userId, `📝 Patient summary will be generated after agent deployment`, 'info');
+        }
+        
+      } catch (initialFileError) {
+        // Log error but don't fail provisioning
+        logProvisioning(userId, `⚠️  Error processing initial file: ${initialFileError.message}. Continuing provisioning.`, 'warning');
+        // Continue with agent creation
+      }
+    } else {
+      logProvisioning(userId, `ℹ️  No initial file provided - skipping indexing step`, 'info');
+    }
+
     // Step 3: Create Agent
     updateStatus('Creating agent...');
     logProvisioning(userId, `🤖 Creating agent with name: ${agentName}`, 'info');
@@ -3410,6 +3675,63 @@ async function provisionUserAsync(userId, token) {
       agentId: newAgent.uuid,
       agentName: agentName
     });
+
+    // Step 7.5: Generate Patient Summary (if initial file was indexed)
+    // This happens after agent is fully deployed and has API key
+    if (userDoc.initialFile && userDoc.initialFile.bucketKey && agentEndpointUrl && apiKey) {
+      try {
+        // Check if indexing completed (kbIndexedFiles should contain the initial file)
+        const currentUserDoc = await cloudant.getDocument('maia_users', userId);
+        const indexedFiles = currentUserDoc?.kbIndexedFiles || [];
+        const initialFileIndexed = indexedFiles.includes(userDoc.initialFile.bucketKey);
+        
+        if (initialFileIndexed) {
+          updateStatus('Generating patient summary...', { fileName: userDoc.initialFile.fileName });
+          logProvisioning(userId, `📝 Generating patient summary from indexed initial file...`, 'info');
+          
+          try {
+            const { DigitalOceanProvider } = await import('../lib/chat-client/providers/digitalocean.js');
+            const agentProvider = new DigitalOceanProvider(apiKey, {
+              baseURL: agentEndpointUrl
+            });
+
+            const summaryPrompt = 'Please generate a comprehensive patient summary based on all available medical records and documents in the knowledge base. Include key medical history, diagnoses, medications, allergies, and important notes.';
+
+            const summaryResponse = await agentProvider.chat(
+              [{ role: 'user', content: summaryPrompt }],
+              { model: agentModelName || 'openai-gpt-oss-120b' }
+            );
+
+            const summary = summaryResponse.content || summaryResponse.text || '';
+
+            if (!summary || summary.trim().length === 0) {
+              logProvisioning(userId, `❌ Patient summary generation returned empty result`, 'error');
+            } else {
+              const summaryUserDoc = await cloudant.getDocument('maia_users', userId);
+              if (summaryUserDoc) {
+                // Use helper function to add new summary (default to 'newest' strategy)
+                addNewSummary(summaryUserDoc, summary, 'newest');
+                summaryUserDoc.workflowStage = 'patient_summary';
+                await cloudant.saveDocument('maia_users', summaryUserDoc);
+                invalidateResourceCache(userId);
+                logProvisioning(userId, `✅ Patient summary generated and saved successfully`, 'success');
+                updateStatus('Patient summary generated', { summaryLength: summary.length });
+              } else {
+                logProvisioning(userId, `❌ Could not load user document to save patient summary`, 'error');
+              }
+            }
+          } catch (summaryError) {
+            logProvisioning(userId, `❌ Error generating patient summary: ${summaryError.message}`, 'error');
+            // Don't fail provisioning if summary generation fails
+          }
+        } else {
+          logProvisioning(userId, `ℹ️  Initial file not yet indexed - summary will be generated when indexing completes`, 'info');
+        }
+      } catch (summaryCheckError) {
+        logProvisioning(userId, `⚠️  Error checking indexing status for summary generation: ${summaryCheckError.message}`, 'warning');
+        // Continue - summary can be generated later
+      }
+    }
 
     // Step 8: Comprehensive Verification (before declaring success/failure)
     updateStatus('Verifying provisioning complete...');
