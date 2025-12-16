@@ -784,7 +784,7 @@ const cleanupMarkdown = async () => {
 };
 
 // Extract unique categories from markdown (lines starting with "### ")
-// Also count observations (lines following "Date + Place of Service" pattern)
+// Also count observations based on category-specific rules
 const extractCategoriesFromMarkdown = (markdown: string) => {
   if (!markdown) {
     categoriesList.value = [];
@@ -799,8 +799,46 @@ const extractCategoriesFromMarkdown = (markdown: string) => {
   
   // Pattern to match "Date + Place of Service" lines
   // Examples: "Nov 21, 2017   Mass General Brigham", "Jan 5, 2018   Boston Medical Center"
-  // Pattern: Month abbreviation (3 letters), day (1-2 digits), comma, year (4 digits), whitespace, location
   const dateLocationPattern = /^[A-Z][a-z]{2}\s+\d{1,2},\s+\d{4}\s+\S+/;
+  
+  // Helper function to find next date+location line starting from index
+  const findNextDateLocation = (startIndex: number): number => {
+    for (let j = startIndex + 1; j < lines.length; j++) {
+      const testLine = lines[j].trim();
+      if (dateLocationPattern.test(testLine)) {
+        return j;
+      }
+    }
+    return -1; // Not found (EOF)
+  };
+  
+  // Helper function to clean observation end (remove lines starting with "## " or "### ")
+  const cleanObservationEnd = (obsLines: string[]): string[] => {
+    // Remove from end: lines starting with "## " or "### "
+    while (obsLines.length > 0) {
+      const lastLine = obsLines[obsLines.length - 1].trim();
+      if (lastLine.startsWith('## ') || lastLine.startsWith('### ')) {
+        obsLines.pop();
+      } else {
+        break;
+      }
+    }
+    return obsLines;
+  };
+  
+  // Helper function to clean observation end for Lab Results/Medication Records
+  const cleanObservationEndSpecific = (obsLines: string[], excludePattern: RegExp): string[] => {
+    // Remove from end: lines matching exclude pattern
+    while (obsLines.length > 0) {
+      const lastLine = obsLines[obsLines.length - 1].trim();
+      if (excludePattern.test(lastLine)) {
+        obsLines.pop();
+      } else {
+        break;
+      }
+    }
+    return obsLines;
+  };
   
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i].trim();
@@ -830,17 +868,152 @@ const extractCategoriesFromMarkdown = (markdown: string) => {
       if (categoryName && !categoryMap.has(categoryName)) {
         categoryMap.set(categoryName, {
           name: categoryName,
-          page: currentPage || 1, // Default to page 1 if no page found yet
+          page: currentPage || 1,
           observationCount: 0
         });
       }
       continue;
     }
     
-    // If we're in a category, check for "Date + Place of Service" pattern
-    // Each line matching this pattern is the start of a new observation
-    if (currentCategory && dateLocationPattern.test(line)) {
-      observationCount++;
+    // Category-specific observation counting
+    if (!currentCategory) continue;
+    
+    const categoryName = currentCategory.toLowerCase();
+    
+    // Allergies: Each line after "## ALLERGY..." counts as one observation
+    if (categoryName.includes('allerg')) {
+      if (line.startsWith('## ALLERGY') || line.startsWith('## Allergy')) {
+        // Count all non-empty lines after this until next category or EOF
+        let j = i + 1;
+        while (j < lines.length) {
+          const nextLine = lines[j].trim();
+          if (nextLine.startsWith('### ') || nextLine.match(/^##\s+Page\s+\d+$/)) {
+            break;
+          }
+          if (nextLine !== '') {
+            observationCount++;
+          }
+          j++;
+        }
+        i = j - 1; // Skip to end of category section
+        continue;
+      }
+    }
+    
+    // Clinical Notes: Each line beginning with "Created: " is line 4 of a 5-line observation
+    else if (categoryName.includes('clinical notes')) {
+      if (line.startsWith('Created: ')) {
+        observationCount++;
+      }
+    }
+    
+    // Clinical Vitals, Conditions, Immunizations, Procedures: Date + Place of Service pattern
+    else if (categoryName.includes('clinical vitals') || 
+             categoryName.includes('conditions') || 
+             categoryName.includes('immunization') ||
+             categoryName.includes('procedures')) {
+      if (dateLocationPattern.test(line)) {
+        observationCount++;
+        // Find next date+location or EOF
+        const nextDateLoc = findNextDateLocation(i);
+        const endIndex = nextDateLoc > 0 ? nextDateLoc : lines.length;
+        
+        // Collect observation lines (excluding the date+location line itself)
+        const obsLines: string[] = [];
+        for (let j = i + 1; j < endIndex; j++) {
+          obsLines.push(lines[j]);
+        }
+        
+        // Clean end: remove lines starting with "## " or "### "
+        cleanObservationEnd(obsLines);
+        
+        // If we reached EOF, remove lines starting with "## Page " from end
+        if (nextDateLoc < 0 && obsLines.length > 0) {
+          while (obsLines.length > 0) {
+            const lastLine = obsLines[obsLines.length - 1].trim();
+            if (lastLine.startsWith('## Page ')) {
+              obsLines.pop();
+            } else {
+              break;
+            }
+          }
+        }
+        
+        // Skip to end of this observation
+        i = endIndex - 1;
+      }
+    }
+    
+    // Lab Results: Date + Place of Service, include "## " table header, exclude "## Page" or "### Lab Results" at end
+    else if (categoryName.includes('lab results')) {
+      if (dateLocationPattern.test(line)) {
+        observationCount++;
+        const nextDateLoc = findNextDateLocation(i);
+        const endIndex = nextDateLoc > 0 ? nextDateLoc : lines.length;
+        
+        const obsLines: string[] = [];
+        for (let j = i + 1; j < endIndex; j++) {
+          obsLines.push(lines[j]);
+        }
+        
+        // Include "## " table header if it follows immediately
+        if (obsLines.length > 0 && obsLines[0].trim().startsWith('## ')) {
+          // Already included, continue
+        }
+        
+        // Clean end: exclude "## Page" or "### Lab Results"
+        cleanObservationEndSpecific(obsLines, /^(##\s+Page\s+\d+|###\s+Lab\s+Results)/i);
+        
+        // If EOF, remove "## Page " lines
+        if (nextDateLoc < 0 && obsLines.length > 0) {
+          while (obsLines.length > 0) {
+            const lastLine = obsLines[obsLines.length - 1].trim();
+            if (lastLine.startsWith('## Page ')) {
+              obsLines.pop();
+            } else {
+              break;
+            }
+          }
+        }
+        
+        i = endIndex - 1;
+      }
+    }
+    
+    // Medication Records: Same as Lab Results but exclude "### Medication Records"
+    else if (categoryName.includes('medication')) {
+      if (dateLocationPattern.test(line)) {
+        observationCount++;
+        const nextDateLoc = findNextDateLocation(i);
+        const endIndex = nextDateLoc > 0 ? nextDateLoc : lines.length;
+        
+        const obsLines: string[] = [];
+        for (let j = i + 1; j < endIndex; j++) {
+          obsLines.push(lines[j]);
+        }
+        
+        // Include "## " table header if it follows immediately
+        if (obsLines.length > 0 && obsLines[0].trim().startsWith('## ')) {
+          // Already included, continue
+        }
+        
+        // Clean end: exclude "## Page" or "### Medication Records"
+        cleanObservationEndSpecific(obsLines, /^(##\s+Page\s+\d+|###\s+Medication\s+Records)/i);
+        
+        // If EOF, remove "## Page " lines
+        if (nextDateLoc < 0 && obsLines.length > 0) {
+          while (obsLines.length > 0) {
+            const lastLine = obsLines[obsLines.length - 1].trim();
+            if (lastLine.startsWith('## Page ')) {
+              obsLines.pop();
+            } else {
+              break;
+            }
+          }
+        }
+        
+        i = endIndex - 1;
+      }
     }
   }
   
