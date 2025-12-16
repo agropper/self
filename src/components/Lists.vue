@@ -897,7 +897,15 @@ const extractCategoriesFromMarkdown = (markdown: string) => {
       const categoryName = line.substring(4).trim();
       currentCategory = categoryName;
       observationCount = 0;
-      console.log(`  🏁 [LISTS] Starting observation counting for category: "${categoryName}"`);
+      const categoryNameLower = categoryName.toLowerCase();
+      console.log(`  🏁 [LISTS] Starting observation counting for category: "${categoryName}" (lowercase: "${categoryNameLower}")`);
+      
+      // Debug: Log if this is one of the missing categories
+      if (categoryNameLower === 'conditions' || categoryNameLower === 'immunizations' || 
+          categoryNameLower === 'procedures' || categoryNameLower === 'lab results' || 
+          categoryNameLower === 'medication records') {
+        console.log(`  🔍 [LISTS] FOUND MISSING CATEGORY in second pass: "${categoryName}" at line ${i}`);
+      }
       continue;
     }
     
