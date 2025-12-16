@@ -641,7 +641,6 @@ const clearCachedLists = async () => {
     });
     
     if (response.ok) {
-      console.log('✅ Cleared cached list files');
       // Reset processing status
       categoryProcessingStatus.value = {};
       currentCategoryDisplay.value = null;
@@ -900,15 +899,6 @@ const extractCategoriesFromMarkdown = (markdown: string) => {
       const categoryName = line.substring(4).trim();
       currentCategory = categoryName;
       observationCount = 0;
-      const categoryNameLower = categoryName.toLowerCase();
-      console.log(`  🏁 [LISTS] Starting observation counting for category: "${categoryName}" (lowercase: "${categoryNameLower}")`);
-      
-      // Debug: Log if this is one of the missing categories
-      if (categoryNameLower === 'conditions' || categoryNameLower === 'immunizations' || 
-          categoryNameLower === 'procedures' || categoryNameLower === 'lab results' || 
-          categoryNameLower === 'medication records') {
-        console.log(`  🔍 [LISTS] FOUND MISSING CATEGORY in second pass: "${categoryName}" at line ${i}`);
-      }
       continue;
     }
     
@@ -1148,8 +1138,16 @@ const extractCategoriesFromMarkdown = (markdown: string) => {
     categoryMap.set(currentCategory, cat);
   }
   
+  // Debug: Compare categories found in first pass vs second pass
+  console.log(`📋 [LISTS] Categories found in FIRST pass:`, Array.from(categoryMap.keys()).join(', '));
+  console.log(`📋 [LISTS] Category headers found in SECOND pass:`, allCategoryHeadersInSecondPass.join(', '));
+  
   // Convert map to array
   categoriesList.value = Array.from(categoryMap.values());
+  console.log(`📋 [LISTS] Extracted ${categoriesList.value.length} unique categories from markdown`);
+  categoriesList.value.forEach(cat => {
+    console.log(`  - ${cat.name}: ${cat.observationCount} observations`);
+  });
 };
 
 // Handle category page link click
@@ -1363,14 +1361,12 @@ onMounted(() => {
 
 // Reload categories when component is activated (if using KeepAlive)
 onActivated(() => {
-  console.log('🔄 [LISTS] Component activated - reloading categories');
   reloadCategories();
 });
 
 // Watch for markdown content changes and reload categories
 watch(markdownContent, (newContent) => {
   if (newContent) {
-    console.log('🔄 [LISTS] Markdown content changed - reloading categories');
     extractCategoriesFromMarkdown(newContent);
   }
 });
