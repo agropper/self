@@ -336,7 +336,7 @@ const isCleaningMarkdown = ref(false);
 const initialFileInfo = ref<{ bucketKey: string; fileName: string } | null>(null);
 const categoriesList = ref<Array<{ name: string; page: number; observationCount: number }>>([]);
 const showPdfViewer = ref(false);
-const viewingPdfFile = ref<{ bucketKey?: string; name?: string } | null>(null);
+const viewingPdfFile = ref<{ bucketKey?: string; name?: string; fileUrl?: string; originalFile?: File } | undefined>(undefined);
 const pdfInitialPage = ref<number | undefined>(undefined);
 
 const checkInitialFile = async () => {
@@ -976,14 +976,9 @@ const extractCategoriesFromMarkdown = (markdown: string) => {
     
     // Conditions: Date + Place of Service pattern
     else if (categoryName.includes('condition')) {
-      // Debug: Check if we're even entering this block
       if (dateLocationPattern.test(line)) {
         observationCount++;
         console.log(`  ✅ [CONDITIONS] Found observation at line ${i}: ${line.substring(0, 50)}`);
-      } else if (i % 50 === 0 && line.length > 0) {
-        // Debug: Log sample lines to see what we're checking
-        console.log(`  🔍 [CONDITIONS] Line ${i} doesn't match pattern: "${line.substring(0, 50)}"`);
-      }
         const nextDateLoc = findNextDateLocation(i);
         const endIndex = nextDateLoc > 0 ? nextDateLoc : lines.length;
         
@@ -1006,6 +1001,9 @@ const extractCategoriesFromMarkdown = (markdown: string) => {
         }
         
         i = endIndex - 1;
+      } else if (i % 50 === 0 && line.length > 0) {
+        // Debug: Log sample lines to see what we're checking
+        console.log(`  🔍 [CONDITIONS] Line ${i} doesn't match pattern: "${line.substring(0, 50)}"`);
       }
     }
     
