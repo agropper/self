@@ -907,11 +907,8 @@ const extractCategoriesFromMarkdown = (markdown: string) => {
       }
     }
     
-    // Clinical Vitals, Conditions, Immunizations, Procedures: Date + Place of Service pattern
-    else if (categoryName.includes('clinical vitals') || 
-             categoryName.includes('conditions') || 
-             categoryName.includes('immunization') ||
-             categoryName.includes('procedures')) {
+    // Clinical Vitals: Date + Place of Service pattern
+    else if (categoryName.includes('clinical vitals') || categoryName.includes('vitals')) {
       if (dateLocationPattern.test(line)) {
         observationCount++;
         // Find next date+location or EOF
@@ -944,8 +941,95 @@ const extractCategoriesFromMarkdown = (markdown: string) => {
       }
     }
     
+    // Conditions: Date + Place of Service pattern
+    else if (categoryName.includes('condition')) {
+      if (dateLocationPattern.test(line)) {
+        observationCount++;
+        const nextDateLoc = findNextDateLocation(i);
+        const endIndex = nextDateLoc > 0 ? nextDateLoc : lines.length;
+        
+        const obsLines: string[] = [];
+        for (let j = i + 1; j < endIndex; j++) {
+          obsLines.push(lines[j]);
+        }
+        
+        cleanObservationEnd(obsLines);
+        
+        if (nextDateLoc < 0 && obsLines.length > 0) {
+          while (obsLines.length > 0) {
+            const lastLine = obsLines[obsLines.length - 1].trim();
+            if (lastLine.startsWith('## Page ')) {
+              obsLines.pop();
+            } else {
+              break;
+            }
+          }
+        }
+        
+        i = endIndex - 1;
+      }
+    }
+    
+    // Immunizations: Date + Place of Service pattern
+    else if (categoryName.includes('immunization')) {
+      if (dateLocationPattern.test(line)) {
+        observationCount++;
+        const nextDateLoc = findNextDateLocation(i);
+        const endIndex = nextDateLoc > 0 ? nextDateLoc : lines.length;
+        
+        const obsLines: string[] = [];
+        for (let j = i + 1; j < endIndex; j++) {
+          obsLines.push(lines[j]);
+        }
+        
+        cleanObservationEnd(obsLines);
+        
+        if (nextDateLoc < 0 && obsLines.length > 0) {
+          while (obsLines.length > 0) {
+            const lastLine = obsLines[obsLines.length - 1].trim();
+            if (lastLine.startsWith('## Page ')) {
+              obsLines.pop();
+            } else {
+              break;
+            }
+          }
+        }
+        
+        i = endIndex - 1;
+      }
+    }
+    
+    // Procedures: Date + Place of Service pattern
+    else if (categoryName.includes('procedure')) {
+      if (dateLocationPattern.test(line)) {
+        observationCount++;
+        const nextDateLoc = findNextDateLocation(i);
+        const endIndex = nextDateLoc > 0 ? nextDateLoc : lines.length;
+        
+        const obsLines: string[] = [];
+        for (let j = i + 1; j < endIndex; j++) {
+          obsLines.push(lines[j]);
+        }
+        
+        cleanObservationEnd(obsLines);
+        
+        if (nextDateLoc < 0 && obsLines.length > 0) {
+          while (obsLines.length > 0) {
+            const lastLine = obsLines[obsLines.length - 1].trim();
+            if (lastLine.startsWith('## Page ')) {
+              obsLines.pop();
+            } else {
+              break;
+            }
+          }
+        }
+        
+        i = endIndex - 1;
+      }
+    }
+    
     // Lab Results: Date + Place of Service, include "## " table header, exclude "## Page" or "### Lab Results" at end
-    else if (categoryName.includes('lab results')) {
+    else if (categoryName.includes('lab results') || categoryName.includes('lab result')) {
       if (dateLocationPattern.test(line)) {
         observationCount++;
         const nextDateLoc = findNextDateLocation(i);
