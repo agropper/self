@@ -559,8 +559,6 @@ const processInitialFile = async () => {
   markdownContent.value = '';
 
   try {
-    console.log('Processing initial file for Lists extraction');
-    
     const response = await fetch('/api/files/lists/process-initial-file', {
       method: 'POST',
       headers: {
@@ -575,11 +573,6 @@ const processInitialFile = async () => {
     }
 
     const data = await response.json();
-    console.log('Initial file processing successful:', {
-      totalPages: data.totalPages,
-      pagesCount: data.pages?.length,
-      markdownSaved: !!data.markdownBucketKey
-    });
     
     pdfData.value = {
       totalPages: data.totalPages,
@@ -749,7 +742,6 @@ const cleanupMarkdown = async () => {
     }
 
     const result = await response.json();
-    console.log(`✅ Markdown cleaned: ${result.pagesCleaned} page(s) cleaned`);
     
     // Reload the markdown to show cleaned version
     const markdownResponse = await fetch('/api/files/lists/markdown', {
@@ -1156,16 +1148,8 @@ const extractCategoriesFromMarkdown = (markdown: string) => {
     categoryMap.set(currentCategory, cat);
   }
   
-  // Debug: Compare categories found in first pass vs second pass
-  console.log(`📋 [LISTS] Categories found in FIRST pass:`, Array.from(categoryMap.keys()).join(', '));
-  console.log(`📋 [LISTS] Category headers found in SECOND pass:`, allCategoryHeadersInSecondPass.join(', '));
-  
   // Convert map to array
   categoriesList.value = Array.from(categoryMap.values());
-  console.log(`📋 [LISTS] Extracted ${categoriesList.value.length} unique categories from markdown`);
-  categoriesList.value.forEach(cat => {
-    console.log(`  - ${cat.name}: ${cat.observationCount} observations`);
-  });
 };
 
 // Handle category page link click
