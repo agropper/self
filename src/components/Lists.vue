@@ -613,6 +613,9 @@ const processInitialFile = async () => {
     // Extract categories from markdown (use original, not marked version)
     extractCategoriesFromMarkdown(fullMarkdown);
     
+    // THIRD PASS: Count [D+P] lines in all categories
+    countDatePlaceInAllCategories(markedMarkdown);
+    
     if (data.markdownBucketKey) {
       savedPdfBucketKey.value = data.markdownBucketKey;
     }
@@ -1290,30 +1293,43 @@ const markDatePlaceLines = (markdown: string): string => {
   return markedLines.join('\n');
 };
 
-// THIRD PASS: Count [D+P] lines in Clinical Notes section
-const countDatePlaceInClinicalNotes = (markdown: string): number => {
+// THIRD PASS: Count [D+P] lines in each category section
+const countDatePlaceInAllCategories = (markdown: string): void => {
   const lines = markdown.split('\n');
-  let inClinicalNotes = false;
-  let count = 0;
+  let currentCategory: string | null = null;
+  const categoryCounts: Record<string, number> = {};
   
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i].trim();
     
-    // Check for Clinical Notes category header
+    // Check for category header
     if (line.startsWith('### ')) {
-      const categoryName = line.substring(4).trim().toLowerCase();
-      inClinicalNotes = categoryName.includes('clinical notes');
+      // Save previous category count if we were tracking one
+      if (currentCategory && categoryCounts[currentCategory] !== undefined) {
+        // Count already saved, continue
+      }
+      
+      // Start tracking new category
+      const categoryName = line.substring(4).trim();
+      currentCategory = categoryName;
+      categoryCounts[categoryName] = 0;
       continue;
     }
     
-    // If we're in Clinical Notes section, count [D+P] lines
-    if (inClinicalNotes && line.startsWith('[D+P] ')) {
-      count++;
+    // If we're in a category section, count [D+P] lines
+    if (currentCategory && line.startsWith('[D+P] ')) {
+      categoryCounts[currentCategory] = (categoryCounts[currentCategory] || 0) + 1;
     }
   }
   
-  console.log(`[LISTS] Clinical Notes: Found ${count} [D+P] lines`);
-  return count;
+  // Report counts for all categories
+  const categoryNames = ['Allergies', 'Clinical Notes', 'Clinical Vitals', 'Conditions', 
+                         'Immunizations', 'Lab Results', 'Medication Records', 'Procedures'];
+  
+  categoryNames.forEach(categoryName => {
+    const count = categoryCounts[categoryName] || 0;
+    console.log(`[LISTS] ${categoryName}: Found ${count} [D+P] lines`);
+  });
 };
 
 // Reload categories and observations whenever markdown content is available
@@ -1325,8 +1341,8 @@ const reloadCategories = async () => {
     const markedMarkdown = markDatePlaceLines(markdownContent.value);
     markdownContent.value = markedMarkdown;
     
-    // THIRD PASS: Count [D+P] lines in Clinical Notes
-    countDatePlaceInClinicalNotes(markdownContent.value);
+    // THIRD PASS: Count [D+P] lines in all categories
+    countDatePlaceInAllCategories(markdownContent.value);
   } else {
     // If no markdown in memory, fetch it
     await loadSavedResults();
