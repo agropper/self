@@ -1686,7 +1686,7 @@ export default function setupFileRoutes(app, cloudant, doClient) {
       // Clean up page footers: Find "Health   Page nn of mm" patterns
       // Remove all lines from footer up to (but not including) next "###" line
       // Also look backward for "Continued on " lines and remove them
-      // Replace with "## Page nn"
+      // Replace with "## Page nn" where nn is the NEXT page (footer is at end of previous page)
       const pageFooterPattern = /^.*[Hh]ealth\s+[Pp]age\s+(\d+)\s+of\s+\d+.*$/;
       const continuedOnPattern = /^.*[Cc]ontinued\s+on\s+.*$/;
       
@@ -1703,7 +1703,11 @@ export default function setupFileRoutes(app, cloudant, doClient) {
         const footerMatch = trimmedLine.match(pageFooterPattern);
         
         if (footerMatch) {
-          const pageNum = footerMatch[1];
+          // Footer "Health   Page 32 of 133" is at the END of page 32
+          // The content that follows is the START of page 33
+          // So we need to use pageNum + 1 for the replacement header
+          const footerPageNum = parseInt(footerMatch[1], 10);
+          const nextPageNum = footerPageNum + 1;
           
           // Look backward a couple of lines for "Continued on " pattern
           let lookBackIndex = cleanedLines.length - 1;
@@ -1753,15 +1757,15 @@ export default function setupFileRoutes(app, cloudant, doClient) {
           
           if (foundNextHeader && nextHeaderIndex > i) {
             // Found footer and next header - remove all lines from footer to (but not including) next header
-            // Replace with "## Page nn"
-            cleanedLines.push(`## Page ${pageNum}`);
+            // Replace with "## Page nn" where nn is the NEXT page (footer was at end of previous page)
+            cleanedLines.push(`## Page ${nextPageNum}`);
             pagesCleaned++;
             // Skip all lines from footer to just before the next header
             i = nextHeaderIndex;
             continue;
           } else {
             // Footer found but no next header - just remove the footer line and replace with page header
-            cleanedLines.push(`## Page ${pageNum}`);
+            cleanedLines.push(`## Page ${nextPageNum}`);
             pagesCleaned++;
             i++;
             continue;
@@ -2039,7 +2043,7 @@ export default function setupFileRoutes(app, cloudant, doClient) {
       // Clean up page footers: Find "Health   Page nn of mm" patterns
       // Remove all lines from footer up to (but not including) next "###" line
       // Also look backward for "Continued on " lines and remove them
-      // Replace with "## Page nn"
+      // Replace with "## Page nn" where nn is the NEXT page (footer is at end of previous page)
       const pageFooterPattern = /^.*[Hh]ealth\s+[Pp]age\s+(\d+)\s+of\s+\d+.*$/;
       const continuedOnPattern = /^.*[Cc]ontinued\s+on\s+.*$/;
 
@@ -2056,7 +2060,11 @@ export default function setupFileRoutes(app, cloudant, doClient) {
         const footerMatch = trimmedLine.match(pageFooterPattern);
         
         if (footerMatch) {
-          const pageNum = footerMatch[1];
+          // Footer "Health   Page 32 of 133" is at the END of page 32
+          // The content that follows is the START of page 33
+          // So we need to use pageNum + 1 for the replacement header
+          const footerPageNum = parseInt(footerMatch[1], 10);
+          const nextPageNum = footerPageNum + 1;
           
           // Look backward a couple of lines for "Continued on " pattern
           let lookBackIndex = cleanedLines.length - 1;
@@ -2106,15 +2114,15 @@ export default function setupFileRoutes(app, cloudant, doClient) {
           
           if (foundNextHeader && nextHeaderIndex > i) {
             // Found footer and next header - remove all lines from footer to (but not including) next header
-            // Replace with "## Page nn"
-            cleanedLines.push(`## Page ${pageNum}`);
+            // Replace with "## Page nn" where nn is the NEXT page (footer was at end of previous page)
+            cleanedLines.push(`## Page ${nextPageNum}`);
             pagesCleaned++;
             // Skip all lines from footer to just before the next header
             i = nextHeaderIndex;
             continue;
           } else {
             // Footer found but no next header - just remove the footer line and replace with page header
-            cleanedLines.push(`## Page ${pageNum}`);
+            cleanedLines.push(`## Page ${nextPageNum}`);
             pagesCleaned++;
             i++;
             continue;

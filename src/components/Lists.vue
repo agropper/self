@@ -88,6 +88,35 @@
         </q-card-section>
       </q-card>
 
+      <!-- Categories Section -->
+      <q-card v-if="categoriesList.length > 0" class="q-mb-md">
+        <q-card-section>
+          <div class="text-h6 q-mb-md">Categories</div>
+          <q-list bordered separator>
+            <q-item 
+              v-for="(category, index) in categoriesList" 
+              :key="index"
+              clickable
+            >
+              <q-item-section>
+                <q-item-label>{{ category.name }}</q-item-label>
+                <q-item-label caption>
+                  starts on 
+                  <a 
+                    href="#" 
+                    @click.prevent="handleCategoryPageClick(category.page)"
+                    class="text-primary"
+                    style="text-decoration: underline; cursor: pointer;"
+                  >
+                    page {{ category.page }}
+                  </a>
+                </q-item-label>
+              </q-item-section>
+            </q-item>
+          </q-list>
+        </q-card-section>
+      </q-card>
+
       <!-- Markdown Display -->
       <q-card v-if="markdownContent" class="q-mb-md">
         <q-card-section>
@@ -100,8 +129,6 @@
           </div>
         </q-card-section>
       </q-card>
-
-      <!-- Categories Section -->
       <q-card v-if="categoriesList.length > 0" class="q-mb-md">
         <q-card-section>
           <div class="text-h6 q-mb-md">Categories</div>
