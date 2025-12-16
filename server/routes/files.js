@@ -1683,10 +1683,10 @@ export default function setupFileRoutes(app, cloudant, doClient) {
       const result = await extractPdfWithPages(pdfBuffer);
       let fullMarkdown = result.pages.map(p => `## Page ${p.page}\n\n${p.markdown}`).join('\n\n---\n\n');
       
-      // Clean up "Continued on Page" and "Continued from Page" lines
-      // Remove all lines between matching pairs and replace with single "## Page nn"
-      const continuedOnPattern = /^.*[Cc]ontinued\s+on\s+[Pp]age\s+(\d+).*$/;
-      const continuedFromPattern = /^.*[Cc]ontinued\s+from\s+[Pp]age\s+(\d+).*$/;
+      // Clean up page footers: Find "Health   Page nn of mm" patterns
+      // Remove all lines from footer up to (but not including) next "###" line
+      // Replace with "## Page nn"
+      const pageFooterPattern = /^.*[Hh]ealth\s+[Pp]age\s+(\d+)\s+of\s+\d+.*$/;
       
       let pagesCleaned = 0;
       const lines = fullMarkdown.split('\n');
@@ -1697,84 +1697,45 @@ export default function setupFileRoutes(app, cloudant, doClient) {
         const line = lines[i];
         const trimmedLine = line.trim();
         
-        // Check if current line is "Continued on Page X"
-        const onMatch = trimmedLine.match(continuedOnPattern);
+        // Check if current line matches "Health   Page nn of mm" pattern
+        const footerMatch = trimmedLine.match(pageFooterPattern);
         
-        if (onMatch) {
-          const onPageNum = parseInt(onMatch[1], 10);
+        if (footerMatch) {
+          const pageNum = footerMatch[1];
           
-          // Look ahead to find the corresponding "Continued from Page" line
-          // Skip empty lines and find the matching "Continued from Page" line
+          // Look ahead to find the next line that starts with "###"
           let j = i + 1;
-          let foundFromMatch = null;
-          let fromLineIndex = -1;
+          let foundNextHeader = false;
+          let nextHeaderIndex = -1;
           
           while (j < lines.length) {
             const nextTrimmed = lines[j].trim();
             
-            // If we hit another "Continued on Page", stop searching
-            if (nextTrimmed.match(continuedOnPattern)) {
+            // Check if this line starts with "###"
+            if (nextTrimmed.startsWith('###')) {
+              foundNextHeader = true;
+              nextHeaderIndex = j;
               break;
-            }
-            
-            // Check if this is the matching "Continued from Page" line
-            const fromMatch = nextTrimmed.match(continuedFromPattern);
-            if (fromMatch) {
-              const fromPageNum = parseInt(fromMatch[1], 10);
-              // Check if the page numbers match (onPageNum should be fromPageNum + 1)
-              // Or they could be the same page number
-              if (fromPageNum === onPageNum - 1 || fromPageNum === onPageNum) {
-                foundFromMatch = fromMatch;
-                fromLineIndex = j;
-                break;
-              }
             }
             
             j++;
           }
           
-          if (foundFromMatch && fromLineIndex > i) {
-            // Found matching pair - remove all lines between (including the markers)
-            // Replace with single "## Page X" where X is the page number from "Continued from Page"
-            const pageNum = foundFromMatch[1];
+          if (foundNextHeader && nextHeaderIndex > i) {
+            // Found footer and next header - remove all lines from footer to (but not including) next header
+            // Replace with "## Page nn"
             cleanedLines.push(`## Page ${pageNum}`);
             pagesCleaned++;
-            // Skip all lines from current "Continued on" to and including "Continued from"
-            i = fromLineIndex + 1;
+            // Skip all lines from footer to just before the next header
+            i = nextHeaderIndex;
             continue;
           } else {
-            // No matching "Continued from" found - just remove the "Continued on" line
+            // Footer found but no next header - just remove the footer line and replace with page header
+            cleanedLines.push(`## Page ${pageNum}`);
+            pagesCleaned++;
             i++;
             continue;
           }
-        }
-        
-        // Check if current line is "Continued from Page X" (standalone, no matching "Continued on" before it)
-        const fromMatch = trimmedLine.match(continuedFromPattern);
-        if (fromMatch) {
-          // Check if previous line was "Continued on Page"
-          let prevLineIndex = cleanedLines.length - 1;
-          while (prevLineIndex >= 0 && cleanedLines[prevLineIndex].trim() === '') {
-            prevLineIndex--;
-          }
-          
-          if (prevLineIndex >= 0) {
-            const prevLine = cleanedLines[prevLineIndex].trim();
-            const prevOnMatch = prevLine.match(continuedOnPattern);
-            
-            if (prevOnMatch) {
-              // Already handled in previous iteration - skip
-              i++;
-              continue;
-            }
-          }
-          
-          // Standalone "Continued from Page" - replace with "## Page X"
-          const pageNum = fromMatch[1];
-          cleanedLines.push(`## Page ${pageNum}`);
-          pagesCleaned++;
-          i++;
-          continue;
         }
         
         // Regular line - keep it
@@ -1785,7 +1746,7 @@ export default function setupFileRoutes(app, cloudant, doClient) {
       fullMarkdown = cleanedLines.join('\n');
       
       if (pagesCleaned > 0) {
-        console.log(`🧹 [LISTS] Cleaned ${pagesCleaned} page(s) by removing continuation markers`);
+        console.log(`🧹 [LISTS] Cleaned ${pagesCleaned} page(s) by removing page footers`);
       }
 
       // Save markdown to Lists folder
@@ -2045,10 +2006,10 @@ export default function setupFileRoutes(app, cloudant, doClient) {
       }
       let markdown = Buffer.concat(chunks).toString('utf-8');
 
-      // Pattern matching for "Continued on Page nn" and "Continued from Page nn"
-      // Remove all lines between matching pairs and replace with single "## Page nn"
-      const continuedOnPattern = /^.*[Cc]ontinued\s+on\s+[Pp]age\s+(\d+).*$/;
-      const continuedFromPattern = /^.*[Cc]ontinued\s+from\s+[Pp]age\s+(\d+).*$/;
+      // Clean up page footers: Find "Health   Page nn of mm" patterns
+      // Remove all lines from footer up to (but not including) next "###" line
+      // Replace with "## Page nn"
+      const pageFooterPattern = /^.*[Hh]ealth\s+[Pp]age\s+(\d+)\s+of\s+\d+.*$/;
 
       let pagesCleaned = 0;
       const lines = markdown.split('\n');
@@ -2059,84 +2020,45 @@ export default function setupFileRoutes(app, cloudant, doClient) {
         const line = lines[i];
         const trimmedLine = line.trim();
         
-        // Check if current line is "Continued on Page X"
-        const onMatch = trimmedLine.match(continuedOnPattern);
+        // Check if current line matches "Health   Page nn of mm" pattern
+        const footerMatch = trimmedLine.match(pageFooterPattern);
         
-        if (onMatch) {
-          const onPageNum = parseInt(onMatch[1], 10);
+        if (footerMatch) {
+          const pageNum = footerMatch[1];
           
-          // Look ahead to find the corresponding "Continued from Page" line
-          // Skip empty lines and find the matching "Continued from Page" line
+          // Look ahead to find the next line that starts with "###"
           let j = i + 1;
-          let foundFromMatch = null;
-          let fromLineIndex = -1;
+          let foundNextHeader = false;
+          let nextHeaderIndex = -1;
           
           while (j < lines.length) {
             const nextTrimmed = lines[j].trim();
             
-            // If we hit another "Continued on Page", stop searching
-            if (nextTrimmed.match(continuedOnPattern)) {
+            // Check if this line starts with "###"
+            if (nextTrimmed.startsWith('###')) {
+              foundNextHeader = true;
+              nextHeaderIndex = j;
               break;
-            }
-            
-            // Check if this is the matching "Continued from Page" line
-            const fromMatch = nextTrimmed.match(continuedFromPattern);
-            if (fromMatch) {
-              const fromPageNum = parseInt(fromMatch[1], 10);
-              // Check if the page numbers match (onPageNum should be fromPageNum + 1)
-              // Or they could be the same page number
-              if (fromPageNum === onPageNum - 1 || fromPageNum === onPageNum) {
-                foundFromMatch = fromMatch;
-                fromLineIndex = j;
-                break;
-              }
             }
             
             j++;
           }
           
-          if (foundFromMatch && fromLineIndex > i) {
-            // Found matching pair - remove all lines between (including the markers)
-            // Replace with single "## Page X" where X is the page number from "Continued from Page"
-            const pageNum = foundFromMatch[1];
+          if (foundNextHeader && nextHeaderIndex > i) {
+            // Found footer and next header - remove all lines from footer to (but not including) next header
+            // Replace with "## Page nn"
             cleanedLines.push(`## Page ${pageNum}`);
             pagesCleaned++;
-            // Skip all lines from current "Continued on" to and including "Continued from"
-            i = fromLineIndex + 1;
+            // Skip all lines from footer to just before the next header
+            i = nextHeaderIndex;
             continue;
           } else {
-            // No matching "Continued from" found - just remove the "Continued on" line
+            // Footer found but no next header - just remove the footer line and replace with page header
+            cleanedLines.push(`## Page ${pageNum}`);
+            pagesCleaned++;
             i++;
             continue;
           }
-        }
-        
-        // Check if current line is "Continued from Page X" (standalone, no matching "Continued on" before it)
-        const fromMatch = trimmedLine.match(continuedFromPattern);
-        if (fromMatch) {
-          // Check if previous line was "Continued on Page"
-          let prevLineIndex = cleanedLines.length - 1;
-          while (prevLineIndex >= 0 && cleanedLines[prevLineIndex].trim() === '') {
-            prevLineIndex--;
-          }
-          
-          if (prevLineIndex >= 0) {
-            const prevLine = cleanedLines[prevLineIndex].trim();
-            const prevOnMatch = prevLine.match(continuedOnPattern);
-            
-            if (prevOnMatch) {
-              // Already handled in previous iteration - skip
-              i++;
-              continue;
-            }
-          }
-          
-          // Standalone "Continued from Page" - replace with "## Page X"
-          const pageNum = fromMatch[1];
-          cleanedLines.push(`## Page ${pageNum}`);
-          pagesCleaned++;
-          i++;
-          continue;
         }
         
         // Regular line - keep it
