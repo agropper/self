@@ -275,11 +275,6 @@ defineEmits<{
   'back-to-chat': [];
 }>();
 
-// Expose method to reload categories (can be called from parent)
-defineExpose({
-  reloadCategories
-});
-
 interface UserFile {
   fileName: string;
   bucketKey: string;
@@ -1327,6 +1322,12 @@ watch(markdownContent, (newContent) => {
     console.log('🔄 [LISTS] Markdown content changed - reloading categories');
     extractCategoriesFromMarkdown(newContent);
   }
+});
+
+// Expose method to reload categories (can be called from parent)
+// Must be after reloadCategories is defined
+defineExpose({
+  reloadCategories
 });
 </script>
 
