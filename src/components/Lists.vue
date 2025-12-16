@@ -796,7 +796,8 @@ const extractCategoriesFromMarkdown = (markdown: string) => {
   
   // Pattern to match "Date + Place of Service" lines
   // Examples: "Nov 21, 2017   Mass General Brigham", "Jan 5, 2018   Boston Medical Center"
-  const dateLocationPattern = /^[A-Z][a-z]{2}\s+\d{1,2},\s+\d{4}\s+\S+/;
+  // Updated to be case-insensitive and handle various whitespace
+  const dateLocationPattern = /^[A-Z][a-z]{2}\s+\d{1,2},\s+\d{4}\s+\S+/i;
   
   // Helper function to find next date+location line starting from index
   const findNextDateLocation = (startIndex: number): number => {
@@ -900,7 +901,16 @@ const extractCategoriesFromMarkdown = (markdown: string) => {
     if (!currentCategory) continue;
     
     const categoryName = currentCategory.toLowerCase();
-    console.log(`🔍 [LISTS] Processing line ${i} in category "${currentCategory}" (lowercase: "${categoryName}")`);
+    
+    // Debug: Log category name matching attempts for categories with 0 observations
+    if (categoryName === 'conditions' || categoryName === 'immunizations' || 
+        categoryName === 'procedures' || categoryName === 'lab results' || 
+        categoryName === 'medication records') {
+      // Only log occasionally to avoid spam
+      if (i % 100 === 0) {
+        console.log(`🔍 [LISTS] Processing line ${i} in category "${currentCategory}" (lowercase: "${categoryName}"), checking for date pattern...`);
+      }
+    }
     
     // Allergies: Each line after "## ALLERGY..." counts as one observation
     if (categoryName.includes('allerg')) {
@@ -966,9 +976,14 @@ const extractCategoriesFromMarkdown = (markdown: string) => {
     
     // Conditions: Date + Place of Service pattern
     else if (categoryName.includes('condition')) {
+      // Debug: Check if we're even entering this block
       if (dateLocationPattern.test(line)) {
         observationCount++;
         console.log(`  ✅ [CONDITIONS] Found observation at line ${i}: ${line.substring(0, 50)}`);
+      } else if (i % 50 === 0 && line.length > 0) {
+        // Debug: Log sample lines to see what we're checking
+        console.log(`  🔍 [CONDITIONS] Line ${i} doesn't match pattern: "${line.substring(0, 50)}"`);
+      }
         const nextDateLoc = findNextDateLocation(i);
         const endIndex = nextDateLoc > 0 ? nextDateLoc : lines.length;
         
