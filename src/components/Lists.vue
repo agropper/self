@@ -793,9 +793,6 @@ const extractCategoriesFromMarkdown = (markdown: string) => {
   
   const lines = markdown.split('\n');
   const categoryMap = new Map<string, { name: string; page: number; observationCount: number }>();
-  let currentPage = 0;
-  let currentCategory: string | null = null;
-  let observationCount = 0;
   
   // Pattern to match "Date + Place of Service" lines
   // Examples: "Nov 21, 2017   Mass General Brigham", "Jan 5, 2018   Boston Medical Center"
@@ -840,6 +837,39 @@ const extractCategoriesFromMarkdown = (markdown: string) => {
     return obsLines;
   };
   
+  // FIRST PASS: Find ALL categories (don't skip any lines)
+  let currentPage = 0;
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i].trim();
+    
+    // Check for page header: "## Page nn"
+    const pageMatch = line.match(/^##\s+Page\s+(\d+)$/);
+    if (pageMatch) {
+      currentPage = parseInt(pageMatch[1], 10);
+      continue;
+    }
+    
+    // Check for category header: "### Category Name"
+    if (line.startsWith('### ')) {
+      const categoryName = line.substring(4).trim();
+      
+      // Add ALL categories to the map
+      if (categoryName && !categoryMap.has(categoryName)) {
+        categoryMap.set(categoryName, {
+          name: categoryName,
+          page: currentPage || 1,
+          observationCount: 0
+        });
+        console.log(`📋 [LISTS] Added category to map: "${categoryName}"`);
+      }
+    }
+  }
+  
+  // SECOND PASS: Count observations for each category (can skip lines now)
+  currentPage = 0;
+  let currentCategory: string | null = null;
+  let observationCount = 0;
+  
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i].trim();
     
@@ -863,15 +893,6 @@ const extractCategoriesFromMarkdown = (markdown: string) => {
       const categoryName = line.substring(4).trim();
       currentCategory = categoryName;
       observationCount = 0;
-      
-      // Add category if we haven't seen it before
-      if (categoryName && !categoryMap.has(categoryName)) {
-        categoryMap.set(categoryName, {
-          name: categoryName,
-          page: currentPage || 1,
-          observationCount: 0
-        });
-      }
       continue;
     }
     
@@ -1108,10 +1129,9 @@ const extractCategoriesFromMarkdown = (markdown: string) => {
     categoryMap.set(currentCategory, cat);
   }
   
-  // Convert map to array - ALL categories should be included regardless of observation count
+  // Convert map to array
   categoriesList.value = Array.from(categoryMap.values());
   console.log(`📋 [LISTS] Extracted ${categoriesList.value.length} unique categories from markdown`);
-  console.log(`📋 [LISTS] All categories found:`, categoriesList.value.map(c => c.name).join(', '));
   categoriesList.value.forEach(cat => {
     console.log(`  - ${cat.name}: ${cat.observationCount} observations`);
   });
