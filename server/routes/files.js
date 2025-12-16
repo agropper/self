@@ -1684,10 +1684,11 @@ export default function setupFileRoutes(app, cloudant, doClient) {
       let fullMarkdown = result.pages.map(p => `## Page ${p.page}\n\n${p.markdown}`).join('\n\n---\n\n');
       
       // Clean up "Continued on Page" and "Continued from Page" lines
+      // Remove all lines between matching pairs and replace with single "## Page nn"
       const continuedOnPattern = /^.*[Cc]ontinued\s+on\s+[Pp]age\s+(\d+).*$/;
       const continuedFromPattern = /^.*[Cc]ontinued\s+from\s+[Pp]age\s+(\d+).*$/;
       
-      let replacementCount = 0;
+      let pagesCleaned = 0;
       const lines = fullMarkdown.split('\n');
       const cleanedLines = [];
       let i = 0;
@@ -1696,13 +1697,62 @@ export default function setupFileRoutes(app, cloudant, doClient) {
         const line = lines[i];
         const trimmedLine = line.trim();
         
-        // Check if current line is "Continued from Page X"
-        const fromMatch = trimmedLine.match(continuedFromPattern);
+        // Check if current line is "Continued on Page X"
+        const onMatch = trimmedLine.match(continuedOnPattern);
         
-        if (fromMatch) {
-          const pageNum = fromMatch[1];
+        if (onMatch) {
+          const onPageNum = parseInt(onMatch[1], 10);
           
-          // Check if previous line was "Continued on Page Y"
+          // Look ahead to find the corresponding "Continued from Page" line
+          // Skip empty lines and find the matching "Continued from Page" line
+          let j = i + 1;
+          let foundFromMatch = null;
+          let fromLineIndex = -1;
+          
+          while (j < lines.length) {
+            const nextTrimmed = lines[j].trim();
+            
+            // If we hit another "Continued on Page", stop searching
+            if (nextTrimmed.match(continuedOnPattern)) {
+              break;
+            }
+            
+            // Check if this is the matching "Continued from Page" line
+            const fromMatch = nextTrimmed.match(continuedFromPattern);
+            if (fromMatch) {
+              const fromPageNum = parseInt(fromMatch[1], 10);
+              // Check if the page numbers match (onPageNum should be fromPageNum + 1)
+              // Or they could be the same page number
+              if (fromPageNum === onPageNum - 1 || fromPageNum === onPageNum) {
+                foundFromMatch = fromMatch;
+                fromLineIndex = j;
+                break;
+              }
+            }
+            
+            j++;
+          }
+          
+          if (foundFromMatch && fromLineIndex > i) {
+            // Found matching pair - remove all lines between (including the markers)
+            // Replace with single "## Page X" where X is the page number from "Continued from Page"
+            const pageNum = foundFromMatch[1];
+            cleanedLines.push(`## Page ${pageNum}`);
+            pagesCleaned++;
+            // Skip all lines from current "Continued on" to and including "Continued from"
+            i = fromLineIndex + 1;
+            continue;
+          } else {
+            // No matching "Continued from" found - just remove the "Continued on" line
+            i++;
+            continue;
+          }
+        }
+        
+        // Check if current line is "Continued from Page X" (standalone, no matching "Continued on" before it)
+        const fromMatch = trimmedLine.match(continuedFromPattern);
+        if (fromMatch) {
+          // Check if previous line was "Continued on Page"
           let prevLineIndex = cleanedLines.length - 1;
           while (prevLineIndex >= 0 && cleanedLines[prevLineIndex].trim() === '') {
             prevLineIndex--;
@@ -1710,52 +1760,19 @@ export default function setupFileRoutes(app, cloudant, doClient) {
           
           if (prevLineIndex >= 0) {
             const prevLine = cleanedLines[prevLineIndex].trim();
-            const onMatch = prevLine.match(continuedOnPattern);
+            const prevOnMatch = prevLine.match(continuedOnPattern);
             
-            if (onMatch) {
-              // Both found - remove the "Continued on Page" line and replace current with "## Page X"
-              cleanedLines.pop();
-              while (cleanedLines.length > 0 && cleanedLines[cleanedLines.length - 1].trim() === '') {
-                cleanedLines.pop();
-              }
-              cleanedLines.push(`## Page ${pageNum}`);
-              replacementCount++;
+            if (prevOnMatch) {
+              // Already handled in previous iteration - skip
               i++;
               continue;
             }
           }
           
-          // Only "Continued from Page" found - replace with "## Page X"
+          // Standalone "Continued from Page" - replace with "## Page X"
+          const pageNum = fromMatch[1];
           cleanedLines.push(`## Page ${pageNum}`);
-          replacementCount++;
-          i++;
-          continue;
-        }
-        
-        // Check if current line is "Continued on Page X"
-        const onMatch = trimmedLine.match(continuedOnPattern);
-        if (onMatch) {
-          // Check if next line is "Continued from Page"
-          if (i + 1 < lines.length) {
-            let nextLineIndex = i + 1;
-            while (nextLineIndex < lines.length && lines[nextLineIndex].trim() === '') {
-              nextLineIndex++;
-            }
-            
-            if (nextLineIndex < lines.length) {
-              const nextLine = lines[nextLineIndex].trim();
-              const nextFromMatch = nextLine.match(continuedFromPattern);
-              
-              if (nextFromMatch) {
-                // Both found - skip current line, will be handled in next iteration
-                i++;
-                continue;
-              }
-            }
-          }
-          
-          // Standalone "Continued on Page" - just remove it
-          replacementCount++;
+          pagesCleaned++;
           i++;
           continue;
         }
@@ -1767,8 +1784,8 @@ export default function setupFileRoutes(app, cloudant, doClient) {
       
       fullMarkdown = cleanedLines.join('\n');
       
-      if (replacementCount > 0) {
-        console.log(`🧹 [LISTS] Cleaned ${replacementCount} continuation marker(s) from markdown`);
+      if (pagesCleaned > 0) {
+        console.log(`🧹 [LISTS] Cleaned ${pagesCleaned} page(s) by removing continuation markers`);
       }
 
       // Save markdown to Lists folder
@@ -2029,11 +2046,11 @@ export default function setupFileRoutes(app, cloudant, doClient) {
       let markdown = Buffer.concat(chunks).toString('utf-8');
 
       // Pattern matching for "Continued on Page nn" and "Continued from Page nn"
-      // These patterns are case-insensitive and may have variations
+      // Remove all lines between matching pairs and replace with single "## Page nn"
       const continuedOnPattern = /^.*[Cc]ontinued\s+on\s+[Pp]age\s+(\d+).*$/;
       const continuedFromPattern = /^.*[Cc]ontinued\s+from\s+[Pp]age\s+(\d+).*$/;
 
-      let replacementCount = 0;
+      let pagesCleaned = 0;
       const lines = markdown.split('\n');
       const cleanedLines = [];
       let i = 0;
@@ -2042,14 +2059,62 @@ export default function setupFileRoutes(app, cloudant, doClient) {
         const line = lines[i];
         const trimmedLine = line.trim();
         
-        // Check if current line is "Continued from Page X"
-        const fromMatch = trimmedLine.match(continuedFromPattern);
+        // Check if current line is "Continued on Page X"
+        const onMatch = trimmedLine.match(continuedOnPattern);
         
-        if (fromMatch) {
-          const pageNum = fromMatch[1];
+        if (onMatch) {
+          const onPageNum = parseInt(onMatch[1], 10);
           
-          // Check if previous line was "Continued on Page Y"
-          // Look backwards through cleanedLines to find the last non-empty line
+          // Look ahead to find the corresponding "Continued from Page" line
+          // Skip empty lines and find the matching "Continued from Page" line
+          let j = i + 1;
+          let foundFromMatch = null;
+          let fromLineIndex = -1;
+          
+          while (j < lines.length) {
+            const nextTrimmed = lines[j].trim();
+            
+            // If we hit another "Continued on Page", stop searching
+            if (nextTrimmed.match(continuedOnPattern)) {
+              break;
+            }
+            
+            // Check if this is the matching "Continued from Page" line
+            const fromMatch = nextTrimmed.match(continuedFromPattern);
+            if (fromMatch) {
+              const fromPageNum = parseInt(fromMatch[1], 10);
+              // Check if the page numbers match (onPageNum should be fromPageNum + 1)
+              // Or they could be the same page number
+              if (fromPageNum === onPageNum - 1 || fromPageNum === onPageNum) {
+                foundFromMatch = fromMatch;
+                fromLineIndex = j;
+                break;
+              }
+            }
+            
+            j++;
+          }
+          
+          if (foundFromMatch && fromLineIndex > i) {
+            // Found matching pair - remove all lines between (including the markers)
+            // Replace with single "## Page X" where X is the page number from "Continued from Page"
+            const pageNum = foundFromMatch[1];
+            cleanedLines.push(`## Page ${pageNum}`);
+            pagesCleaned++;
+            // Skip all lines from current "Continued on" to and including "Continued from"
+            i = fromLineIndex + 1;
+            continue;
+          } else {
+            // No matching "Continued from" found - just remove the "Continued on" line
+            i++;
+            continue;
+          }
+        }
+        
+        // Check if current line is "Continued from Page X" (standalone, no matching "Continued on" before it)
+        const fromMatch = trimmedLine.match(continuedFromPattern);
+        if (fromMatch) {
+          // Check if previous line was "Continued on Page"
           let prevLineIndex = cleanedLines.length - 1;
           while (prevLineIndex >= 0 && cleanedLines[prevLineIndex].trim() === '') {
             prevLineIndex--;
@@ -2057,57 +2122,19 @@ export default function setupFileRoutes(app, cloudant, doClient) {
           
           if (prevLineIndex >= 0) {
             const prevLine = cleanedLines[prevLineIndex].trim();
-            const onMatch = prevLine.match(continuedOnPattern);
+            const prevOnMatch = prevLine.match(continuedOnPattern);
             
-            if (onMatch) {
-              // Both found - remove the "Continued on Page" line and replace current with "## Page X"
-              cleanedLines.pop(); // Remove the "Continued on Page" line
-              // Also remove any empty lines between them
-              while (cleanedLines.length > 0 && cleanedLines[cleanedLines.length - 1].trim() === '') {
-                cleanedLines.pop();
-              }
-              cleanedLines.push(`## Page ${pageNum}`);
-              replacementCount++;
-              console.log(`🔄 [LISTS] Replaced "Continued on Page" + "Continued from Page ${pageNum}" with "## Page ${pageNum}"`);
+            if (prevOnMatch) {
+              // Already handled in previous iteration - skip
               i++;
               continue;
             }
           }
           
-          // Only "Continued from Page" found - replace with "## Page X"
+          // Standalone "Continued from Page" - replace with "## Page X"
+          const pageNum = fromMatch[1];
           cleanedLines.push(`## Page ${pageNum}`);
-          replacementCount++;
-          console.log(`🔄 [LISTS] Replaced "Continued from Page ${pageNum}" with "## Page ${pageNum}"`);
-          i++;
-          continue;
-        }
-        
-        // Check if current line is "Continued on Page X"
-        const onMatch = trimmedLine.match(continuedOnPattern);
-        if (onMatch) {
-          // Check if next line is "Continued from Page"
-          if (i + 1 < lines.length) {
-            let nextLineIndex = i + 1;
-            // Skip empty lines
-            while (nextLineIndex < lines.length && lines[nextLineIndex].trim() === '') {
-              nextLineIndex++;
-            }
-            
-            if (nextLineIndex < lines.length) {
-              const nextLine = lines[nextLineIndex].trim();
-              const nextFromMatch = nextLine.match(continuedFromPattern);
-              
-              if (nextFromMatch) {
-                // Both found - skip current line, will be handled in next iteration
-                i++;
-                continue;
-              }
-            }
-          }
-          
-          // Standalone "Continued on Page" - just remove it
-          replacementCount++;
-          console.log(`🔄 [LISTS] Removed standalone "Continued on Page" line`);
+          pagesCleaned++;
           i++;
           continue;
         }
@@ -2133,11 +2160,11 @@ export default function setupFileRoutes(app, cloudant, doClient) {
       }));
 
       console.log(`🧹 [LISTS] Cleaned markdown file: ${markdownKey}`);
-      console.log(`📊 [LISTS] Made ${replacementCount} replacement(s)`);
+      console.log(`📊 [LISTS] Cleaned ${pagesCleaned} page(s) by removing continuation markers`);
 
       res.json({
         success: true,
-        replacementsMade: replacementCount,
+        pagesCleaned: pagesCleaned,
         markdownBucketKey: markdownKey
       });
     } catch (error) {

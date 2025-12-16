@@ -657,7 +657,7 @@ const cleanupMarkdown = async () => {
     }
 
     const result = await response.json();
-    console.log(`✅ Markdown cleaned: ${result.replacementsMade} replacement(s) made`);
+    console.log(`✅ Markdown cleaned: ${result.pagesCleaned} page(s) cleaned`);
     
     // Reload the markdown to show cleaned version
     const markdownResponse = await fetch('/api/files/lists/markdown', {
@@ -674,7 +674,7 @@ const cleanupMarkdown = async () => {
     
     if ($q && typeof $q.notify === 'function') {
       $q.notify({
-        message: `Markdown cleaned: ${result.replacementsMade} replacement(s) made`,
+        message: `Markdown cleaned: ${result.pagesCleaned} page(s) cleaned`,
         type: 'positive',
         position: 'top',
         timeout: 3000
