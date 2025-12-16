@@ -900,10 +900,11 @@ const extractCategoriesFromMarkdown = (markdown: string) => {
     if (!currentCategory) continue;
     
     const categoryName = currentCategory.toLowerCase();
+    console.log(`🔍 [LISTS] Processing line ${i} in category "${currentCategory}" (lowercase: "${categoryName}")`);
     
     // Allergies: Each line after "## ALLERGY..." counts as one observation
     if (categoryName.includes('allerg')) {
-      if (line.startsWith('## ALLERGY') || line.startsWith('## Allergy')) {
+      if (line.startsWith('## ALLERGY') || line.startsWith('## Allergy') || line.startsWith('## allergy')) {
         // Count all non-empty lines after this until next category or EOF
         let j = i + 1;
         while (j < lines.length) {
@@ -913,6 +914,7 @@ const extractCategoriesFromMarkdown = (markdown: string) => {
           }
           if (nextLine !== '') {
             observationCount++;
+            console.log(`  ✅ [ALLERGIES] Found observation at line ${j}`);
           }
           j++;
         }
@@ -966,6 +968,7 @@ const extractCategoriesFromMarkdown = (markdown: string) => {
     else if (categoryName.includes('condition')) {
       if (dateLocationPattern.test(line)) {
         observationCount++;
+        console.log(`  ✅ [CONDITIONS] Found observation at line ${i}: ${line.substring(0, 50)}`);
         const nextDateLoc = findNextDateLocation(i);
         const endIndex = nextDateLoc > 0 ? nextDateLoc : lines.length;
         
@@ -995,6 +998,7 @@ const extractCategoriesFromMarkdown = (markdown: string) => {
     else if (categoryName.includes('immunization')) {
       if (dateLocationPattern.test(line)) {
         observationCount++;
+        console.log(`  ✅ [IMMUNIZATIONS] Found observation at line ${i}: ${line.substring(0, 50)}`);
         const nextDateLoc = findNextDateLocation(i);
         const endIndex = nextDateLoc > 0 ? nextDateLoc : lines.length;
         
@@ -1024,6 +1028,7 @@ const extractCategoriesFromMarkdown = (markdown: string) => {
     else if (categoryName.includes('procedure')) {
       if (dateLocationPattern.test(line)) {
         observationCount++;
+        console.log(`  ✅ [PROCEDURES] Found observation at line ${i}: ${line.substring(0, 50)}`);
         const nextDateLoc = findNextDateLocation(i);
         const endIndex = nextDateLoc > 0 ? nextDateLoc : lines.length;
         
@@ -1053,6 +1058,7 @@ const extractCategoriesFromMarkdown = (markdown: string) => {
     else if (categoryName.includes('lab results') || categoryName.includes('lab result')) {
       if (dateLocationPattern.test(line)) {
         observationCount++;
+        console.log(`  ✅ [LAB RESULTS] Found observation at line ${i}: ${line.substring(0, 50)}`);
         const nextDateLoc = findNextDateLocation(i);
         const endIndex = nextDateLoc > 0 ? nextDateLoc : lines.length;
         
@@ -1089,6 +1095,7 @@ const extractCategoriesFromMarkdown = (markdown: string) => {
     else if (categoryName.includes('medication')) {
       if (dateLocationPattern.test(line)) {
         observationCount++;
+        console.log(`  ✅ [MEDICATION RECORDS] Found observation at line ${i}: ${line.substring(0, 50)}`);
         const nextDateLoc = findNextDateLocation(i);
         const endIndex = nextDateLoc > 0 ? nextDateLoc : lines.length;
         
