@@ -399,7 +399,9 @@ const loadSavedResults = async () => {
       
       // Markdown file exists - load it
       if (markdownResult.markdown) {
-        markdownContent.value = markdownResult.markdown;
+        // Debug: Mark all Date + Place of Service lines first
+        const markedMarkdown = markDatePlaceLines(markdownResult.markdown);
+        markdownContent.value = markedMarkdown;
         markdownBucketKey.value = markdownResult.markdownBucketKey || null;
         hasSavedResults.value = true;
         
@@ -408,7 +410,7 @@ const loadSavedResults = async () => {
           await checkInitialFile();
         }
         
-        // Extract categories from markdown
+        // Extract categories from markdown (use original, not marked version)
         extractCategoriesFromMarkdown(markdownResult.markdown);
         
         // Also try to load results.json if it exists
@@ -582,7 +584,11 @@ const processInitialFile = async () => {
       categories: [],
       fullMarkdown: data.fullMarkdown || ''
     };
-    markdownContent.value = data.fullMarkdown || '';
+    
+    // Debug: Mark all Date + Place of Service lines before displaying
+    const fullMarkdown = data.fullMarkdown || '';
+    const markedMarkdown = markDatePlaceLines(fullMarkdown);
+    markdownContent.value = markedMarkdown;
     markdownBucketKey.value = data.markdownBucketKey || null;
     selectedFileName.value = data.fileName || 'Initial File';
     hasSavedResults.value = true;
@@ -608,8 +614,8 @@ const processInitialFile = async () => {
       }
     }
     
-    // Extract categories from markdown
-    extractCategoriesFromMarkdown(data.fullMarkdown || '');
+    // Extract categories from markdown (use original, not marked version)
+    extractCategoriesFromMarkdown(fullMarkdown);
     
     if (data.markdownBucketKey) {
       savedPdfBucketKey.value = data.markdownBucketKey;
@@ -750,9 +756,11 @@ const cleanupMarkdown = async () => {
     if (markdownResponse.ok) {
       const markdownResult = await markdownResponse.json();
       if (markdownResult.hasMarkdown && markdownResult.markdown) {
-        markdownContent.value = markdownResult.markdown;
+        // Debug: Mark all Date + Place of Service lines
+        const markedMarkdown = markDatePlaceLines(markdownResult.markdown);
+        markdownContent.value = markedMarkdown;
         markdownBucketKey.value = markdownResult.markdownBucketKey || null;
-        // Re-extract categories after cleanup
+        // Re-extract categories after cleanup (use original, not marked version)
         extractCategoriesFromMarkdown(markdownResult.markdown);
       }
     }
@@ -1312,15 +1320,45 @@ const copyNoteToClipboard = async (note: ClinicalNote) => {
   }
 };
 
+// Debug: Mark all Date + Place of Service lines with [D+P] prefix
+const markDatePlaceLines = (markdown: string): string => {
+  const lines = markdown.split('\n');
+  const dateLocationPattern = /^[A-Z][a-z]{2}\s+\d{1,2},\s+\d{4}\s+\S+/i;
+  let markedCount = 0;
+  
+  const markedLines = lines.map((line, index) => {
+    const trimmed = line.trim();
+    if (dateLocationPattern.test(trimmed)) {
+      markedCount++;
+      console.log(`  ✅ [D+P] Line ${index + 1}: ${trimmed.substring(0, 60)}`);
+      return `[D+P] ${line}`;
+    }
+    return line;
+  });
+  
+  console.log(`📊 [LISTS] Marked ${markedCount} Date + Place of Service lines with [D+P] prefix`);
+  return markedLines.join('\n');
+};
+
 // Reload categories and observations whenever markdown content is available
 const reloadCategories = async () => {
   if (markdownContent.value) {
     console.log('🔄 [LISTS] Reloading categories from existing markdown content');
     extractCategoriesFromMarkdown(markdownContent.value);
+    
+    // Debug: Mark Date + Place lines and update display
+    const markedMarkdown = markDatePlaceLines(markdownContent.value);
+    markdownContent.value = markedMarkdown;
   } else {
     // If no markdown in memory, fetch it
     console.log('🔄 [LISTS] Fetching markdown to reload categories');
     await loadSavedResults();
+    
+    // After loading, mark the lines
+    if (markdownContent.value) {
+      const markedMarkdown = markDatePlaceLines(markdownContent.value);
+      markdownContent.value = markedMarkdown;
+    }
   }
 };
 
