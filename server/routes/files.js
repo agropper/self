@@ -1685,8 +1685,10 @@ export default function setupFileRoutes(app, cloudant, doClient) {
       
       // Clean up page footers: Find "Health   Page nn of mm" patterns
       // Remove all lines from footer up to (but not including) next "###" line
+      // Also look backward for "Continued on " lines and remove them
       // Replace with "## Page nn"
       const pageFooterPattern = /^.*[Hh]ealth\s+[Pp]age\s+(\d+)\s+of\s+\d+.*$/;
+      const continuedOnPattern = /^.*[Cc]ontinued\s+on\s+.*$/;
       
       let pagesCleaned = 0;
       const lines = fullMarkdown.split('\n');
@@ -1702,6 +1704,34 @@ export default function setupFileRoutes(app, cloudant, doClient) {
         
         if (footerMatch) {
           const pageNum = footerMatch[1];
+          
+          // Look backward a couple of lines for "Continued on " pattern
+          let lookBackIndex = cleanedLines.length - 1;
+          let foundContinuedOn = false;
+          let continuedOnIndex = -1;
+          let linesChecked = 0;
+          
+          while (lookBackIndex >= 0 && linesChecked < 3) {
+            const prevTrimmed = cleanedLines[lookBackIndex].trim();
+            
+            if (prevTrimmed.match(continuedOnPattern)) {
+              foundContinuedOn = true;
+              continuedOnIndex = lookBackIndex;
+              break;
+            }
+            
+            // Skip empty lines when counting
+            if (prevTrimmed !== '') {
+              linesChecked++;
+            }
+            
+            lookBackIndex--;
+          }
+          
+          // Remove "Continued on " line if found
+          if (foundContinuedOn && continuedOnIndex >= 0) {
+            cleanedLines.splice(continuedOnIndex, 1);
+          }
           
           // Look ahead to find the next line that starts with "###"
           let j = i + 1;
@@ -2008,8 +2038,10 @@ export default function setupFileRoutes(app, cloudant, doClient) {
 
       // Clean up page footers: Find "Health   Page nn of mm" patterns
       // Remove all lines from footer up to (but not including) next "###" line
+      // Also look backward for "Continued on " lines and remove them
       // Replace with "## Page nn"
       const pageFooterPattern = /^.*[Hh]ealth\s+[Pp]age\s+(\d+)\s+of\s+\d+.*$/;
+      const continuedOnPattern = /^.*[Cc]ontinued\s+on\s+.*$/;
 
       let pagesCleaned = 0;
       const lines = markdown.split('\n');
@@ -2025,6 +2057,34 @@ export default function setupFileRoutes(app, cloudant, doClient) {
         
         if (footerMatch) {
           const pageNum = footerMatch[1];
+          
+          // Look backward a couple of lines for "Continued on " pattern
+          let lookBackIndex = cleanedLines.length - 1;
+          let foundContinuedOn = false;
+          let continuedOnIndex = -1;
+          let linesChecked = 0;
+          
+          while (lookBackIndex >= 0 && linesChecked < 3) {
+            const prevTrimmed = cleanedLines[lookBackIndex].trim();
+            
+            if (prevTrimmed.match(continuedOnPattern)) {
+              foundContinuedOn = true;
+              continuedOnIndex = lookBackIndex;
+              break;
+            }
+            
+            // Skip empty lines when counting
+            if (prevTrimmed !== '') {
+              linesChecked++;
+            }
+            
+            lookBackIndex--;
+          }
+          
+          // Remove "Continued on " line if found
+          if (foundContinuedOn && continuedOnIndex >= 0) {
+            cleanedLines.splice(continuedOnIndex, 1);
+          }
           
           // Look ahead to find the next line that starts with "###"
           let j = i + 1;
