@@ -413,8 +413,8 @@ const loadSavedResults = async () => {
         // Extract categories from markdown (use original, not marked version)
         extractCategoriesFromMarkdown(markdownResult.markdown);
         
-        // THIRD PASS: Count [D+P] lines in Clinical Notes
-        countDatePlaceInClinicalNotes(markdownContent.value);
+        // THIRD PASS: Count [D+P] lines in all categories
+        countDatePlaceInAllCategories(markdownContent.value);
         
         // Also try to load results.json if it exists
         const resultsResponse = await fetch('/api/files/lists/results', {
@@ -1352,8 +1352,8 @@ const reloadCategories = async () => {
       const markedMarkdown = markDatePlaceLines(markdownContent.value);
       markdownContent.value = markedMarkdown;
       
-      // THIRD PASS: Count [D+P] lines in Clinical Notes
-      countDatePlaceInClinicalNotes(markdownContent.value);
+      // THIRD PASS: Count [D+P] lines in all categories
+      countDatePlaceInAllCategories(markdownContent.value);
     }
   }
 };
