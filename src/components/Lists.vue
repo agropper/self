@@ -400,6 +400,11 @@ const loadSavedResults = async () => {
         markdownBucketKey.value = markdownResult.markdownBucketKey || null;
         hasSavedResults.value = true;
         
+        // Load initial file info if not already loaded
+        if (!initialFileInfo.value) {
+          await checkInitialFile();
+        }
+        
         // Extract categories from markdown
         extractCategoriesFromMarkdown(markdownResult.markdown);
         
