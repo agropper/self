@@ -1165,6 +1165,10 @@ const extractCategoriesFromMarkdown = (markdown: string) => {
     categoryMap.set(currentCategory, cat);
   }
   
+  // Debug: Compare categories found in first pass vs second pass
+  console.log(`📋 [LISTS] Categories found in FIRST pass:`, Array.from(categoryMap.keys()).join(', '));
+  console.log(`📋 [LISTS] Category headers found in SECOND pass:`, allCategoryHeadersInSecondPass.join(', '));
+  
   // Convert map to array
   categoriesList.value = Array.from(categoryMap.values());
   console.log(`📋 [LISTS] Extracted ${categoriesList.value.length} unique categories from markdown`);
