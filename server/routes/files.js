@@ -1681,7 +1681,95 @@ export default function setupFileRoutes(app, cloudant, doClient) {
 
       // Extract PDF with page boundaries (Step 3.1)
       const result = await extractPdfWithPages(pdfBuffer);
-      const fullMarkdown = result.pages.map(p => `## Page ${p.page}\n\n${p.markdown}`).join('\n\n---\n\n');
+      let fullMarkdown = result.pages.map(p => `## Page ${p.page}\n\n${p.markdown}`).join('\n\n---\n\n');
+      
+      // Clean up "Continued on Page" and "Continued from Page" lines
+      const continuedOnPattern = /^.*[Cc]ontinued\s+on\s+[Pp]age\s+(\d+).*$/;
+      const continuedFromPattern = /^.*[Cc]ontinued\s+from\s+[Pp]age\s+(\d+).*$/;
+      
+      let replacementCount = 0;
+      const lines = fullMarkdown.split('\n');
+      const cleanedLines = [];
+      let i = 0;
+
+      while (i < lines.length) {
+        const line = lines[i];
+        const trimmedLine = line.trim();
+        
+        // Check if current line is "Continued from Page X"
+        const fromMatch = trimmedLine.match(continuedFromPattern);
+        
+        if (fromMatch) {
+          const pageNum = fromMatch[1];
+          
+          // Check if previous line was "Continued on Page Y"
+          let prevLineIndex = cleanedLines.length - 1;
+          while (prevLineIndex >= 0 && cleanedLines[prevLineIndex].trim() === '') {
+            prevLineIndex--;
+          }
+          
+          if (prevLineIndex >= 0) {
+            const prevLine = cleanedLines[prevLineIndex].trim();
+            const onMatch = prevLine.match(continuedOnPattern);
+            
+            if (onMatch) {
+              // Both found - remove the "Continued on Page" line and replace current with "## Page X"
+              cleanedLines.pop();
+              while (cleanedLines.length > 0 && cleanedLines[cleanedLines.length - 1].trim() === '') {
+                cleanedLines.pop();
+              }
+              cleanedLines.push(`## Page ${pageNum}`);
+              replacementCount++;
+              i++;
+              continue;
+            }
+          }
+          
+          // Only "Continued from Page" found - replace with "## Page X"
+          cleanedLines.push(`## Page ${pageNum}`);
+          replacementCount++;
+          i++;
+          continue;
+        }
+        
+        // Check if current line is "Continued on Page X"
+        const onMatch = trimmedLine.match(continuedOnPattern);
+        if (onMatch) {
+          // Check if next line is "Continued from Page"
+          if (i + 1 < lines.length) {
+            let nextLineIndex = i + 1;
+            while (nextLineIndex < lines.length && lines[nextLineIndex].trim() === '') {
+              nextLineIndex++;
+            }
+            
+            if (nextLineIndex < lines.length) {
+              const nextLine = lines[nextLineIndex].trim();
+              const nextFromMatch = nextLine.match(continuedFromPattern);
+              
+              if (nextFromMatch) {
+                // Both found - skip current line, will be handled in next iteration
+                i++;
+                continue;
+              }
+            }
+          }
+          
+          // Standalone "Continued on Page" - just remove it
+          replacementCount++;
+          i++;
+          continue;
+        }
+        
+        // Regular line - keep it
+        cleanedLines.push(line);
+        i++;
+      }
+      
+      fullMarkdown = cleanedLines.join('\n');
+      
+      if (replacementCount > 0) {
+        console.log(`🧹 [LISTS] Cleaned ${replacementCount} continuation marker(s) from markdown`);
+      }
 
       // Save markdown to Lists folder
       const listsFolder = `${userId}/Lists/`;
