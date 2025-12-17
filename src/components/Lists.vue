@@ -1359,187 +1359,36 @@ const countDatePlaceInAllCategories = (markdown: string): void => {
   });
 };
 
-// FOURTH PASS: Count observations based on [D+P] lines within page ranges
+// FOURTH PASS: Count observations - Clinical Notes only
 const countObservationsByPageRange = (markedMarkdown: string): void => {
   const lines = markedMarkdown.split('\n');
-  const dateLocationPattern = /^[A-Z][a-z]{2}\s+\d{1,2},\s+\d{4}\s+\S+/i;
   
-  // Build page boundary map: page number -> line index
-  const pageBoundaries = new Map<number, number>();
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i].trim();
-    const pageMatch = line.match(/^##\s+Page\s+(\d+)$/);
-    if (pageMatch) {
-      const pageNum = parseInt(pageMatch[1], 10);
-      pageBoundaries.set(pageNum, i);
-    }
-  }
-  
-  // Helper to find next page boundary after a given line index
-  const findNextPageBoundary = (startIndex: number): number => {
-    for (let j = startIndex + 1; j < lines.length; j++) {
-      const line = lines[j].trim();
-      if (line.match(/^##\s+Page\s+\d+$/)) {
-        return j;
-      }
-    }
-    return lines.length; // EOF
-  };
-  
-  // Process each category
+  // Process each category - ONLY Clinical Notes
   categoriesList.value = categoriesList.value.map(category => {
     const categoryName = category.name.toLowerCase();
+    
+    // Only process Clinical Notes
+    if (!categoryName.includes('clinical notes')) {
+      return category; // Return unchanged for other categories
+    }
+    
+    // Process ALL pages, not just the starting page
     let observationCount = 0;
     let firstObservation: string[] | null = null;
     let lastObservation: string[] | null = null;
     
-    // Allergies: Count lines after "## ALLERGY..." across all pages
-    if (categoryName.includes('allerg')) {
-      for (let i = 0; i < lines.length; i++) {
-        const line = lines[i].trim();
-        if (line.startsWith('## ALLERGY') || line.startsWith('## Allergy') || line.startsWith('## allergy')) {
-          // Count all non-empty lines after this until next category or page boundary
-          let j = i + 1;
-          const obsLines: string[] = [line];
-          while (j < lines.length) {
-            const nextLine = lines[j].trim();
-            if (nextLine.startsWith('### ') || nextLine.match(/^##\s+Page\s+\d+$/)) {
-              break;
-            }
-            if (nextLine !== '') {
-              obsLines.push(nextLine);
-              observationCount++;
-            }
-            j++;
-          }
-          if (obsLines.length > 0) {
-            if (firstObservation === null) firstObservation = obsLines;
-            lastObservation = obsLines;
-          }
-        }
-      }
-    }
-    
     // Clinical Notes: Count lines starting with "Created: " across all pages
-    else if (categoryName.includes('clinical notes')) {
-      for (let i = 0; i < lines.length; i++) {
-        const line = lines[i].trim();
-        if (line.startsWith('Created: ')) {
-          observationCount++;
-          // Get the observation lines (5 lines: Type, Author, Category, Created, Status)
-          const obsLines: string[] = [];
-          for (let j = Math.max(0, i - 3); j < Math.min(lines.length, i + 2); j++) {
-            obsLines.push(lines[j].trim());
-          }
-          if (firstObservation === null) firstObservation = obsLines;
-          lastObservation = obsLines;
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i].trim();
+      if (line.startsWith('Created: ')) {
+        observationCount++;
+        // Get the observation lines (5 lines: Type, Author, Category, Created, Status)
+        const obsLines: string[] = [];
+        for (let j = Math.max(0, i - 3); j < Math.min(lines.length, i + 2); j++) {
+          obsLines.push(lines[j].trim());
         }
-      }
-    }
-    
-    // Clinical Vitals: Count [D+P] lines, collect all lines until next [D+P] line
-    // Only process [D+P] lines within this category's page range
-    else if (categoryName.includes('clinical vitals') || categoryName.includes('vitals')) {
-      const startPage = category.page;
-      const startLineIndex = pageBoundaries.get(startPage) ?? 0;
-      const endLineIndex = findNextPageBoundary(startLineIndex);
-      
-      let observationsToLog = 10; // First 10 observations
-      for (let i = startLineIndex; i < endLineIndex; i++) {
-        const line = lines[i].trim();
-        if (line.startsWith('[D+P] ')) {
-          const lineWithoutPrefix = line.substring(6).trim();
-          if (dateLocationPattern.test(lineWithoutPrefix)) {
-            observationCount++;
-            // Find next [D+P] line within page range or end of page
-            let endIndex = endLineIndex;
-            for (let j = i + 1; j < endLineIndex; j++) {
-              const nextLine = lines[j].trim();
-              if (nextLine.startsWith('[D+P] ')) {
-                const nextLineWithoutPrefix = nextLine.substring(6).trim();
-                if (dateLocationPattern.test(nextLineWithoutPrefix)) {
-                  endIndex = j;
-                  break;
-                }
-              }
-            }
-            // Collect observation lines from [D+P] line until next [D+P] line
-            const obsLines: string[] = [line];
-            for (let j = i + 1; j < endIndex; j++) {
-              obsLines.push(lines[j].trim());
-            }
-            // Clean end: remove lines starting with "## " or "### "
-            while (obsLines.length > 0) {
-              const lastLine = obsLines[obsLines.length - 1].trim();
-              if (lastLine.startsWith('## ') || lastLine.startsWith('### ')) {
-                obsLines.pop();
-              } else {
-                break;
-              }
-            }
-            if (obsLines.length > 0) {
-              if (firstObservation === null) firstObservation = obsLines;
-              lastObservation = obsLines;
-              
-              // Log first 10 observations
-              if (observationsToLog > 0) {
-                const observationNumber = 11 - observationsToLog; // 1, 2, 3, ..., 10
-                console.log(`[LISTS] FOURTH PASS - Clinical Vitals observation ${observationNumber}:`);
-                console.log('  Lines:', obsLines.join(' | '));
-                observationsToLog--;
-              }
-            }
-          }
-        }
-      }
-    }
-    
-    // Conditions, Immunizations, Procedures: Count [D+P] lines
-    else if (categoryName.includes('condition') ||
-             categoryName.includes('immunization') ||
-             categoryName.includes('procedure')) {
-      for (let i = 0; i < lines.length; i++) {
-        const line = lines[i].trim();
-        if (line.startsWith('[D+P] ')) {
-          const lineWithoutPrefix = line.substring(6).trim();
-          if (dateLocationPattern.test(lineWithoutPrefix)) {
-            observationCount++;
-            // Observation is just the [D+P] line and the next line
-            const obsLines: string[] = [line];
-            if (i + 1 < lines.length) {
-              obsLines.push(lines[i + 1].trim());
-            }
-            if (obsLines.length > 0) {
-              if (firstObservation === null) firstObservation = obsLines;
-              lastObservation = obsLines;
-            }
-          }
-        }
-      }
-    }
-    
-    // Lab Results, Medication Records: Count [D+P] lines, include "## " table headers
-    else if (categoryName.includes('lab results') || categoryName.includes('lab result') ||
-             categoryName.includes('medication')) {
-      for (let i = 0; i < lines.length; i++) {
-        const line = lines[i].trim();
-        if (line.startsWith('[D+P] ')) {
-          const lineWithoutPrefix = line.substring(6).trim();
-          if (dateLocationPattern.test(lineWithoutPrefix)) {
-            observationCount++;
-            // Observation is the [D+P] line and the next line
-            // If the next line starts with "## ", it's a table header and part of the observation
-            const obsLines: string[] = [line];
-            if (i + 1 < lines.length) {
-              const nextLine = lines[i + 1].trim();
-              obsLines.push(nextLine);
-            }
-            if (obsLines.length > 0) {
-              if (firstObservation === null) firstObservation = obsLines;
-              lastObservation = obsLines;
-            }
-          }
-        }
+        if (firstObservation === null) firstObservation = obsLines;
+        lastObservation = obsLines;
       }
     }
     
