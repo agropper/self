@@ -16,22 +16,79 @@
     </div>
 
     <!-- Current Medications -->
-    <q-card v-if="currentMedications" class="q-mb-md">
+    <q-card v-if="currentMedications !== null" class="q-mb-md">
       <q-card-section>
         <div class="text-h6 q-mb-md">Current Medications</div>
-        <div class="text-body2" style="white-space: pre-wrap;">{{ currentMedications }}</div>
-        <q-btn
-          v-if="hasMedicationRecords"
-          flat
-          dense
-          icon="refresh"
-          label="Refresh"
-          @click="loadCurrentMedications"
-          :loading="isLoadingCurrentMedications"
-          class="q-mt-sm"
-        />
+        
+        <!-- Display Mode -->
+        <div v-if="!isEditingCurrentMedications" class="text-body2" style="white-space: pre-wrap;">{{ currentMedications }}</div>
+        
+        <!-- Edit Mode -->
+        <div v-else>
+          <textarea 
+            v-model="editingCurrentMedications" 
+            rows="8"
+            class="full-width q-pa-sm"
+            style="border: 1px solid #ccc; border-radius: 4px; resize: vertical; font-family: inherit;"
+          />
+          <div class="q-mt-sm">
+            <q-btn
+              size="sm"
+              icon="save"
+              color="primary"
+              label="Save"
+              @click="saveCurrentMedications"
+              :loading="isSavingCurrentMedications"
+            />
+            <q-btn
+              size="sm"
+              icon="close"
+              color="grey-7"
+              label="Cancel"
+              @click="cancelEditingCurrentMedications"
+              class="q-ml-sm"
+            />
+          </div>
+        </div>
+        
+        <div class="q-mt-sm">
+          <q-btn
+            v-if="!isEditingCurrentMedications"
+            flat
+            dense
+            icon="edit"
+            label="Edit"
+            @click="startEditingCurrentMedications"
+            class="q-mr-sm"
+          />
+          <q-btn
+            v-if="hasMedicationRecords && !isEditingCurrentMedications"
+            flat
+            dense
+            icon="refresh"
+            label="Refresh"
+            @click="handleRefreshCurrentMedications"
+            :loading="isLoadingCurrentMedications"
+          />
+        </div>
       </q-card-section>
     </q-card>
+
+    <!-- Refresh Confirmation Dialog -->
+    <q-dialog v-model="showRefreshConfirmDialog" persistent>
+      <q-card style="min-width: 350px">
+        <q-card-section>
+          <div class="text-h6">Confirm Refresh</div>
+        </q-card-section>
+        <q-card-section>
+          You will need to review and edit your current medications again.
+        </q-card-section>
+        <q-card-actions align="right">
+          <q-btn flat label="CANCEL" color="grey-7" v-close-popup />
+          <q-btn flat label="REFRESH" color="primary" @click="confirmRefreshCurrentMedications" />
+        </q-card-actions>
+      </q-card>
+    </q-dialog>
 
     <!-- Update Lists from Initial File -->
     <q-card v-if="!hasSavedResults" class="q-mb-md">
@@ -404,6 +461,12 @@ const viewingPdfFile = ref<{ bucketKey?: string; name?: string; fileUrl?: string
 const pdfInitialPage = ref<number | undefined>(undefined);
 const currentMedications = ref<string | null>(null);
 const isLoadingCurrentMedications = ref(false);
+const isEditingCurrentMedications = ref(false);
+const editingCurrentMedications = ref('');
+const editingOriginalCurrentMedications = ref('');
+const isSavingCurrentMedications = ref(false);
+const isCurrentMedicationsEdited = ref(false);
+const showRefreshConfirmDialog = ref(false);
 
 const checkInitialFile = async () => {
   try {
@@ -1487,12 +1550,14 @@ const countObservationsByPageRange = (markedMarkdown: string): void => {
     };
   });
   
-  // After processing categories, load current medications if Medication Records exist
-  const medicationCategory = categoriesList.value.find(cat => 
-    cat.name.toLowerCase().includes('medication')
-  );
-  if (medicationCategory && medicationCategory.observations && medicationCategory.observations.length > 0) {
-    loadCurrentMedications();
+  // After processing categories, load current medications if Medication Records exist (only if not already edited)
+  if (!isCurrentMedicationsEdited.value) {
+    const medicationCategory = categoriesList.value.find(cat => 
+      cat.name.toLowerCase().includes('medication')
+    );
+    if (medicationCategory && medicationCategory.observations && medicationCategory.observations.length > 0) {
+      loadCurrentMedications();
+    }
   }
 };
 
@@ -1528,8 +1593,32 @@ onMounted(() => {
   loadSavedResults(); // Check for saved results first
 });
 
-// Load current medications from Medication Records
-const loadCurrentMedications = async () => {
+// Load current medications from user document or Medication Records
+const loadCurrentMedications = async (forceRefresh = false) => {
+  // If already edited and not forcing refresh, don't overwrite
+  if (isCurrentMedicationsEdited.value && !forceRefresh) {
+    return;
+  }
+
+  // First try to load from user document
+  if (!forceRefresh) {
+    try {
+      const statusResponse = await fetch(`/api/user-status?userId=${encodeURIComponent(props.userId)}`, {
+        credentials: 'include'
+      });
+      if (statusResponse.ok) {
+        const statusResult = await statusResponse.json();
+        if (statusResult.currentMedications) {
+          currentMedications.value = statusResult.currentMedications;
+          isCurrentMedicationsEdited.value = true; // Mark as edited since it came from user doc
+          return;
+        }
+      }
+    } catch (err) {
+      console.warn('Error loading current medications from user document:', err);
+    }
+  }
+
   // Find Medication Records category
   const medicationCategory = categoriesList.value.find(cat => 
     cat.name.toLowerCase().includes('medication')
@@ -1561,6 +1650,7 @@ const loadCurrentMedications = async () => {
     const result = await response.json();
     if (result.success && result.currentMedications) {
       currentMedications.value = result.currentMedications;
+      isCurrentMedicationsEdited.value = false; // Reset edited flag when loading from AI
     } else {
       currentMedications.value = null;
     }
@@ -1570,6 +1660,76 @@ const loadCurrentMedications = async () => {
   } finally {
     isLoadingCurrentMedications.value = false;
   }
+};
+
+// Start editing current medications
+const startEditingCurrentMedications = () => {
+  isEditingCurrentMedications.value = true;
+  editingCurrentMedications.value = currentMedications.value || '';
+  editingOriginalCurrentMedications.value = currentMedications.value || '';
+};
+
+// Cancel editing current medications
+const cancelEditingCurrentMedications = () => {
+  isEditingCurrentMedications.value = false;
+  editingCurrentMedications.value = '';
+  editingOriginalCurrentMedications.value = '';
+};
+
+// Save current medications to user document
+const saveCurrentMedications = async () => {
+  isSavingCurrentMedications.value = true;
+  try {
+    const response = await fetch('/api/user-current-medications', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      credentials: 'include',
+      body: JSON.stringify({
+        userId: props.userId,
+        currentMedications: editingCurrentMedications.value
+      })
+    });
+
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({ error: `HTTP ${response.status}` }));
+      throw new Error(errorData.error || 'Failed to save current medications');
+    }
+
+    currentMedications.value = editingCurrentMedications.value;
+    isCurrentMedicationsEdited.value = true;
+    isEditingCurrentMedications.value = false;
+    editingCurrentMedications.value = '';
+    editingOriginalCurrentMedications.value = '';
+  } catch (err) {
+    console.error('Error saving current medications:', err);
+    if ($q && typeof $q.notify === 'function') {
+      $q.notify({
+        type: 'negative',
+        message: err instanceof Error ? err.message : 'Failed to save current medications',
+        timeout: 3000
+      });
+    }
+  } finally {
+    isSavingCurrentMedications.value = false;
+  }
+};
+
+// Handle refresh click - show confirmation if edited
+const handleRefreshCurrentMedications = () => {
+  if (isCurrentMedicationsEdited.value) {
+    showRefreshConfirmDialog.value = true;
+  } else {
+    loadCurrentMedications(true);
+  }
+};
+
+// Confirm refresh - proceed with refresh
+const confirmRefreshCurrentMedications = () => {
+  showRefreshConfirmDialog.value = false;
+  isCurrentMedicationsEdited.value = false;
+  loadCurrentMedications(true);
 };
 
 // Computed property to check if we have medication records
