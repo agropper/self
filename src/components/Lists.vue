@@ -963,6 +963,12 @@ const replaceListsSourceFile = () => {
       
       const uploadResult = await uploadResponse.json();
       
+      // Extract bucketKey from fileInfo
+      const bucketKey = uploadResult.fileInfo?.bucketKey || uploadResult.bucketKey;
+      if (!bucketKey) {
+        throw new Error('Upload succeeded but no bucketKey returned');
+      }
+      
       // Process the uploaded file directly by passing bucketKey (no need to wait for document update)
       const processResponse = await fetch('/api/files/lists/process-initial-file', {
         method: 'POST',
@@ -971,7 +977,7 @@ const replaceListsSourceFile = () => {
         },
         credentials: 'include',
         body: JSON.stringify({
-          bucketKey: uploadResult.bucketKey,
+          bucketKey: bucketKey,
           fileName: file.name
         })
       });
@@ -1021,7 +1027,7 @@ const replaceListsSourceFile = () => {
       // Store initial file info
       if (processResult.fileName) {
         initialFileInfo.value = {
-          bucketKey: uploadResult.bucketKey,
+          bucketKey: bucketKey,
           fileName: processResult.fileName
         };
       }
