@@ -1400,7 +1400,7 @@ const countObservationsByPageRange = (markedMarkdown: string): void => {
     const endLineIndex = findNextPageBoundary(startLineIndex);
     
     let observationCount = 0;
-    let firstObservationFound = false;
+    let observationsToLog = 11; // First observation + next 10
     
     // Clinical Notes: Count lines starting with "Created: " within page range
     for (let i = startLineIndex; i < endLineIndex; i++) {
@@ -1408,16 +1408,17 @@ const countObservationsByPageRange = (markedMarkdown: string): void => {
       if (line.startsWith('Created: ')) {
         observationCount++;
         
-        // Log description of first observation
-        if (!firstObservationFound) {
-          firstObservationFound = true;
+        // Log first 11 observations
+        if (observationsToLog > 0) {
           // Get the observation lines (typically 5 lines: Type, Author, Category, Created, Status)
           const obsLines: string[] = [];
           for (let j = Math.max(0, i - 3); j < Math.min(lines.length, i + 2); j++) {
             obsLines.push(lines[j].trim());
           }
-          console.log('[LISTS] FOURTH PASS - First Clinical Notes observation:');
+          const observationNumber = 12 - observationsToLog; // 1, 2, 3, ..., 11
+          console.log(`[LISTS] FOURTH PASS - Clinical Notes observation ${observationNumber}:`);
           console.log('  Lines:', obsLines.join(' | '));
+          observationsToLog--;
         }
       }
     }
@@ -1426,12 +1427,6 @@ const countObservationsByPageRange = (markedMarkdown: string): void => {
       ...category,
       observationCount
     };
-  });
-  
-  // Debug: Log observation counts
-  console.log('[LISTS] Observation counts from countObservationsByPageRange:');
-  categoriesList.value.forEach(cat => {
-    console.log(`  ${cat.name}: ${cat.observationCount} observations`);
   });
 };
 
