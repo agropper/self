@@ -315,7 +315,7 @@
 
 <script setup lang="ts">
 import PdfViewerModal from './PdfViewerModal.vue';
-import { ref, onMounted, watch, onActivated } from 'vue';
+import { ref, computed, onMounted, watch, onActivated } from 'vue';
 import { useQuasar } from 'quasar';
 
 const $q = useQuasar();
