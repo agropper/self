@@ -1097,6 +1097,12 @@ const extractObservationsForCategory = (
   
   console.log(`[LISTS] extractObservationsForCategory: "${categoryName}" (${categoryLower.includes('allerg') ? 'ALLERGIES' : 'other'}), startLine: ${startLine}, endLine: ${endLine}`);
   
+  // Debug: Show lines in range for Allergies
+  if (categoryLower.includes('allerg')) {
+    console.log(`[LISTS] Allergies: Lines in range ${startLine}-${endLine}:`, 
+      lines.slice(startLine, Math.min(endLine + 1, lines.length)).map((l, idx) => `${startLine + idx}: ${l.substring(0, 80)}`));
+  }
+  
   let currentObservationStart = -1;
   let currentDate = '';
   let dPlusCount = 0;
@@ -1140,6 +1146,24 @@ const extractObservationsForCategory = (
       if (categoryLower.includes('allerg')) {
         console.log(`[LISTS] Allergies: Added last observation with date ${currentDate}, ${obsLines.length} lines`);
       }
+    }
+  }
+  
+  // Special handling for Allergies: if no [D+P] lines found, treat entire category as one observation
+  if (categoryLower.includes('allerg') && dPlusCount === 0 && endLine > startLine) {
+    console.log(`[LISTS] Allergies: No [D+P] lines found, treating entire category as one observation`);
+    const allLines = lines.slice(startLine, endLine + 1);
+    // Use a placeholder date or extract from first line if possible
+    let allergyDate = 'Unknown';
+    const firstLine = allLines[0]?.trim() || '';
+    const dateMatch = firstLine.match(/([A-Z][a-z]{2}\s+\d{1,2},\s+\d{4})/);
+    if (dateMatch) {
+      allergyDate = dateMatch[1];
+    }
+    const display = formatObservation(categoryName, allergyDate, allLines, lines, endLine + 1);
+    if (display && allLines.length > 1) {
+      observations.push({ date: allergyDate, display });
+      console.log(`[LISTS] Allergies: Added observation from entire category, ${allLines.length} lines`);
     }
   }
   
