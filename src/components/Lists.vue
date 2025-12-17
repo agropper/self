@@ -367,7 +367,7 @@ const categoriesList = ref<Array<{
   observationCount: number; 
   startLine?: number; 
   endLine?: number;
-  observations?: Array<{ date: string; display: string; page?: number }>;
+  observations?: Array<{ date: string; display: string; page?: number; lineCount?: number }>;
   expanded?: boolean;
 }>>([]);
 const expandedCategories = ref<Set<string>>(new Set());
@@ -1117,9 +1117,12 @@ const extractObservationsForCategory = (
   startLine: number,
   endLine: number,
   lines: string[]
-): Array<{ date: string; display: string; page?: number }> => {
-  const observations: Array<{ date: string; display: string; page?: number }> = [];
+): Array<{ date: string; display: string; page?: number; lineCount?: number }> => {
+  const observations: Array<{ date: string; display: string; page?: number; lineCount?: number }> = [];
   const categoryLower = categoryName.toLowerCase();
+  
+  // For Clinical Vitals, track observations by date to merge duplicates
+  const vitalsByDate = new Map<string, { lineCount: number; page?: number }>();
   
   let currentObservationStart = -1;
   let currentDate = '';
@@ -1135,9 +1138,22 @@ const extractObservationsForCategory = (
       if (currentObservationStart >= 0 && currentDate) {
         const obsLines = lines.slice(currentObservationStart, i);
         const page = findPageForLine(currentObservationStart, lines);
-        const display = formatObservation(categoryName, currentDate, obsLines, lines, i, page);
-        if (display) {
-          observations.push({ date: currentDate, display, page });
+        
+        if (categoryLower.includes('clinical vitals')) {
+          // For Clinical Vitals, merge observations with same date
+          const existing = vitalsByDate.get(currentDate);
+          if (existing) {
+            existing.lineCount += obsLines.length;
+            // Keep the first page encountered for this date
+          } else {
+            vitalsByDate.set(currentDate, { lineCount: obsLines.length, page });
+          }
+        } else {
+          // For other categories, create separate observations
+          const display = formatObservation(categoryName, currentDate, obsLines, lines, i, page);
+          if (display) {
+            observations.push({ date: currentDate, display, page, lineCount: obsLines.length });
+          }
         }
       }
       
@@ -1154,9 +1170,31 @@ const extractObservationsForCategory = (
   if (currentObservationStart >= 0 && currentDate) {
     const obsLines = lines.slice(currentObservationStart, endLine + 1);
     const page = findPageForLine(currentObservationStart, lines);
-    const display = formatObservation(categoryName, currentDate, obsLines, lines, endLine + 1, page);
-    if (display) {
-      observations.push({ date: currentDate, display, page });
+    
+    if (categoryLower.includes('clinical vitals')) {
+      // For Clinical Vitals, merge observations with same date
+      const existing = vitalsByDate.get(currentDate);
+      if (existing) {
+        existing.lineCount += obsLines.length;
+      } else {
+        vitalsByDate.set(currentDate, { lineCount: obsLines.length, page });
+      }
+    } else {
+      // For other categories, create separate observations
+      const display = formatObservation(categoryName, currentDate, obsLines, lines, endLine + 1, page);
+      if (display) {
+        observations.push({ date: currentDate, display, page, lineCount: obsLines.length });
+      }
+    }
+  }
+  
+  // For Clinical Vitals, convert merged dates to observations
+  if (categoryLower.includes('clinical vitals')) {
+    for (const [date, data] of vitalsByDate.entries()) {
+      const display = formatObservation(categoryName, date, [], lines, 0, data.page, data.lineCount);
+      if (display) {
+        observations.push({ date, display, page: data.page, lineCount: data.lineCount });
+      }
     }
   }
   
@@ -1182,7 +1220,8 @@ const formatObservation = (
   obsLines: string[],
   allLines: string[],
   nextDPlusIndex: number,
-  page?: number
+  page?: number,
+  lineCount?: number
 ): string => {
   const categoryLower = categoryName.toLowerCase();
   
@@ -1274,12 +1313,13 @@ const formatObservation = (
   } else if (categoryLower.includes('clinical vitals') || 
              categoryLower.includes('lab result')) {
     // Clinical Vitals, Lab Results: Date + total number of lines in observation (clickable if page available)
-    const lineCount = obsLines.length;
+    // Use provided lineCount if available (for merged Clinical Vitals), otherwise use obsLines.length
+    const count = lineCount ?? obsLines.length;
     if (page && categoryLower.includes('clinical vitals')) {
       // Make line count clickable for Clinical Vitals
-      return `${date} (<a href="#" class="text-primary" style="text-decoration: underline; cursor: pointer;" data-page="${page}">${lineCount} line${lineCount !== 1 ? 's' : ''}</a>)`;
+      return `${date} (<a href="#" class="text-primary" style="text-decoration: underline; cursor: pointer;" data-page="${page}">${count} line${count !== 1 ? 's' : ''}</a>)`;
     }
-    return `${date} (${lineCount} line${lineCount !== 1 ? 's' : ''})`;
+    return `${date} (${count} line${count !== 1 ? 's' : ''})`;
   }
   
   // Default: just show date
