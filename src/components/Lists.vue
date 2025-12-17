@@ -803,7 +803,10 @@ const extractCategoriesFromMarkdown = (markdown: string) => {
   // For categories that appear multiple times, track the first start and last end
   const categoryBoundaries = new Map<string, { startLine: number; endLine: number }>();
   
-  // FIRST PASS: Find ALL categories, label ALL [D+P] lines, and track category boundaries
+  // Track which categories have had their first [D+P] line labeled
+  const categoryFirstDPlusLabeled = new Map<string, boolean>();
+  
+  // FIRST PASS: Find ALL categories, label first [D+P] line in each category, and track category boundaries
   let currentPage = 0;
   let currentCategory: string | null = null;
   let currentCategoryStartLine = -1;
@@ -841,6 +844,12 @@ const extractCategoriesFromMarkdown = (markdown: string) => {
       currentCategory = categoryName;
       currentCategoryStartLine = i;
       
+      // Reset first [D+P] labeled flag when we encounter a new category header
+      // (in case same category appears multiple times)
+      if (categoryName && !categoryFirstDPlusLabeled.has(categoryName)) {
+        categoryFirstDPlusLabeled.set(categoryName, false);
+      }
+      
       // Add ALL categories to the map (only once per unique category name)
       if (categoryName && !categoryMap.has(categoryName)) {
         categoryMap.set(categoryName, {
@@ -855,22 +864,34 @@ const extractCategoriesFromMarkdown = (markdown: string) => {
           startLine: i,
           endLine: lines.length - 1
         });
+        categoryFirstDPlusLabeled.set(categoryName, false);
       } else if (categoryName && categoryMap.has(categoryName)) {
         // Category already exists - update start line if this is earlier
         const existing = categoryBoundaries.get(categoryName);
         if (existing && i < existing.startLine) {
           existing.startLine = i;
         }
+        // Reset flag for this occurrence
+        categoryFirstDPlusLabeled.set(categoryName, false);
       }
       continue;
     }
     
-    // Label ALL [D+P] lines in current category
+    // Label first [D+P] line in current category with category name
+    // Label all other [D+P] lines with just [D+P] prefix
     if (currentCategory) {
       // Check if this line matches Date + Place pattern (and not already marked)
       if (!line.startsWith('[D+P] ') && dateLocationPattern.test(line)) {
-        // Label this line with category name
-        lines[i] = `[D+P] ${currentCategory} ${originalLine}`;
+        const isFirstDPlus = !categoryFirstDPlusLabeled.get(currentCategory);
+        if (isFirstDPlus) {
+          // Label first [D+P] line with category name
+          lines[i] = `[D+P] ${currentCategory} ${originalLine}`;
+          categoryFirstDPlusLabeled.set(currentCategory, true);
+          console.log(`[LISTS] FIRST PASS: Found initial [D+P] for "${currentCategory}" at line ${i + 1}`);
+        } else {
+          // Label all other [D+P] lines with just [D+P] prefix
+          lines[i] = `[D+P] ${originalLine}`;
+        }
       }
     }
   }
@@ -1059,17 +1080,38 @@ const countObservationsByPageRange = (markedMarkdown: string): void => {
     for (let i = startLine; i <= endLine && i < lines.length; i++) {
       const line = lines[i].trim();
       
-      // Check if this is a [D+P] line for this category
-      if (line.startsWith(`[D+P] ${categoryName} `)) {
-        dPlusCount++;
-        
-        // Extract date from first [D+P] line
-        if (firstDPlusLine === null) {
-          firstDPlusLine = line;
-          // Extract date (format: "Mon DD, YYYY")
-          const dateMatch = line.match(/([A-Z][a-z]{2}\s+\d{1,2},\s+\d{4})/);
-          if (dateMatch) {
-            firstDPlusDate = dateMatch[1];
+      // Check if this is a [D+P] line (either with category label or just [D+P])
+      // First [D+P] line will have category name, others will just have [D+P]
+      if (line.startsWith(`[D+P] ${categoryName} `) || 
+          (line.startsWith('[D+P] ') && !line.startsWith('[D+P] ') || line.match(/^\[D\+P\]\s+[A-Z][a-z]{2}\s+\d{1,2},\s+\d{4}/))) {
+        // More precise check: if it starts with [D+P] and matches date pattern, count it
+        // But exclude if it's labeled with a different category
+        if (line.startsWith(`[D+P] ${categoryName} `)) {
+          // This is the first [D+P] line with category label
+          dPlusCount++;
+          
+          // Extract date from first [D+P] line
+          if (firstDPlusLine === null) {
+            firstDPlusLine = line;
+            // Extract date (format: "Mon DD, YYYY")
+            const dateMatch = line.match(/([A-Z][a-z]{2}\s+\d{1,2},\s+\d{4})/);
+            if (dateMatch) {
+              firstDPlusDate = dateMatch[1];
+            }
+          }
+        } else if (line.startsWith('[D+P] ') && !line.match(/^\[D\+P\]\s+[A-Z][a-z]{2}\s+\d{1,2},\s+\d{4}\s+\S+/)) {
+          // This is a [D+P] line without category label (subsequent ones)
+          // Check if it's within this category's boundaries
+          dPlusCount++;
+          
+          // Extract date from first [D+P] line if not already found
+          if (firstDPlusLine === null) {
+            firstDPlusLine = line;
+            // Extract date (format: "Mon DD, YYYY")
+            const dateMatch = line.match(/([A-Z][a-z]{2}\s+\d{1,2},\s+\d{4})/);
+            if (dateMatch) {
+              firstDPlusDate = dateMatch[1];
+            }
           }
         }
       }
