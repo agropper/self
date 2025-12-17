@@ -93,29 +93,53 @@
         <q-card-section>
           <div class="text-h6 q-mb-md">Categories</div>
           <q-list bordered separator>
-            <q-item 
+            <q-expansion-item
               v-for="(category, index) in categoriesList" 
               :key="index"
-              clickable
+              :label="category.name"
+              :default-opened="category.expanded"
+              @show="expandedCategories.add(category.name)"
+              @hide="expandedCategories.delete(category.name)"
+              header-class="text-primary"
             >
-              <q-item-section>
-                <q-item-label>{{ category.name }}</q-item-label>
-                <q-item-label caption>
-                  starts on 
-                  <a 
-                    href="#" 
-                    @click.prevent="handleCategoryPageClick(category.page)"
-                    class="text-primary"
-                    style="text-decoration: underline; cursor: pointer;"
-                  >
-                    page {{ category.page }}
-                  </a>
-                  <span v-if="category.observationCount > 0" class="q-ml-sm">
-                    • {{ category.observationCount }} Observation{{ category.observationCount !== 1 ? 's' : '' }}
-                  </span>
-                </q-item-label>
-              </q-item-section>
-            </q-item>
+              <template v-slot:header>
+                <q-item-section>
+                  <q-item-label>{{ category.name }}</q-item-label>
+                  <q-item-label caption>
+                    starts on 
+                    <a 
+                      href="#" 
+                      @click.stop.prevent="handleCategoryPageClick(category.page)"
+                      class="text-primary"
+                      style="text-decoration: underline; cursor: pointer;"
+                    >
+                      page {{ category.page }}
+                    </a>
+                    <span v-if="category.observationCount > 0" class="q-ml-sm">
+                      • {{ category.observationCount }} Observation{{ category.observationCount !== 1 ? 's' : '' }}
+                    </span>
+                  </q-item-label>
+                </q-item-section>
+              </template>
+              
+              <q-card>
+                <q-card-section>
+                  <q-list dense>
+                    <q-item 
+                      v-for="(obs, obsIndex) in category.observations" 
+                      :key="obsIndex"
+                      class="q-px-sm"
+                    >
+                      <q-item-section>
+                        <q-item-label class="text-body2">
+                          <span v-html="obs.display.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')"></span>
+                        </q-item-label>
+                      </q-item-section>
+                    </q-item>
+                  </q-list>
+                </q-card-section>
+              </q-card>
+            </q-expansion-item>
           </q-list>
         </q-card-section>
       </q-card>
@@ -334,7 +358,16 @@ const markdownContent = ref<string>('');
 const markdownBucketKey = ref<string | null>(null);
 const isCleaningMarkdown = ref(false);
 const initialFileInfo = ref<{ bucketKey: string; fileName: string } | null>(null);
-const categoriesList = ref<Array<{ name: string; page: number; observationCount: number; startLine?: number; endLine?: number }>>([]);
+const categoriesList = ref<Array<{ 
+  name: string; 
+  page: number; 
+  observationCount: number; 
+  startLine?: number; 
+  endLine?: number;
+  observations?: Array<{ date: string; display: string }>;
+  expanded?: boolean;
+}>>([]);
+const expandedCategories = ref<Set<string>>(new Set());
 const showPdfViewer = ref(false);
 const viewingPdfFile = ref<{ bucketKey?: string; name?: string; fileUrl?: string; originalFile?: File } | undefined>(undefined);
 const pdfInitialPage = ref<number | undefined>(undefined);
@@ -844,12 +877,6 @@ const extractCategoriesFromMarkdown = (markdown: string) => {
       currentCategory = categoryName;
       currentCategoryStartLine = i;
       
-      // Reset first [D+P] labeled flag when we encounter a new category header
-      // (in case same category appears multiple times)
-      if (categoryName && !categoryFirstDPlusLabeled.has(categoryName)) {
-        categoryFirstDPlusLabeled.set(categoryName, false);
-      }
-      
       // Add ALL categories to the map (only once per unique category name)
       if (categoryName && !categoryMap.has(categoryName)) {
         categoryMap.set(categoryName, {
@@ -864,6 +891,7 @@ const extractCategoriesFromMarkdown = (markdown: string) => {
           startLine: i,
           endLine: lines.length - 1
         });
+        // Initialize first [D+P] labeled flag (only once per unique category)
         categoryFirstDPlusLabeled.set(categoryName, false);
       } else if (categoryName && categoryMap.has(categoryName)) {
         // Category already exists - update start line if this is earlier
@@ -871,23 +899,21 @@ const extractCategoriesFromMarkdown = (markdown: string) => {
         if (existing && i < existing.startLine) {
           existing.startLine = i;
         }
-        // Reset flag for this occurrence
-        categoryFirstDPlusLabeled.set(categoryName, false);
+        // Don't reset flag - we only want to label the FIRST [D+P] line once per category
       }
       continue;
     }
     
-    // Label first [D+P] line in current category with category name
+    // Label ONLY the first [D+P] line in each unique category with category name
     // Label all other [D+P] lines with just [D+P] prefix
     if (currentCategory) {
       // Check if this line matches Date + Place pattern (and not already marked)
       if (!line.startsWith('[D+P] ') && dateLocationPattern.test(line)) {
         const isFirstDPlus = !categoryFirstDPlusLabeled.get(currentCategory);
         if (isFirstDPlus) {
-          // Label first [D+P] line with category name
+          // Label ONLY the first [D+P] line with category name (once per unique category)
           lines[i] = `[D+P] ${currentCategory} ${originalLine}`;
           categoryFirstDPlusLabeled.set(currentCategory, true);
-          console.log(`[LISTS] FIRST PASS: Found initial [D+P] for "${currentCategory}" at line ${i + 1}`);
         } else {
           // Label all other [D+P] lines with just [D+P] prefix
           lines[i] = `[D+P] ${originalLine}`;
@@ -1059,7 +1085,119 @@ const copyNoteToClipboard = async (note: ClinicalNote) => {
   }
 };
 
+// Extract observations for a category based on its type
+const extractObservationsForCategory = (
+  categoryName: string,
+  startLine: number,
+  endLine: number,
+  lines: string[]
+): Array<{ date: string; display: string }> => {
+  const observations: Array<{ date: string; display: string }> = [];
+  
+  let currentObservationStart = -1;
+  let currentDate = '';
+  
+  for (let i = startLine; i <= endLine && i < lines.length; i++) {
+    const line = lines[i].trim();
+    
+    // Check if this is a [D+P] line (start of new observation)
+    if (line.startsWith('[D+P] ')) {
+      // Save previous observation if exists
+      if (currentObservationStart >= 0 && currentDate) {
+        const obsLines = lines.slice(currentObservationStart, i);
+        const display = formatObservation(categoryName, currentDate, obsLines, lines, i);
+        if (display) {
+          observations.push({ date: currentDate, display });
+        }
+      }
+      
+      // Extract date from [D+P] line
+      const dateMatch = line.match(/([A-Z][a-z]{2}\s+\d{1,2},\s+\d{4})/);
+      if (dateMatch) {
+        currentDate = dateMatch[1];
+        currentObservationStart = i;
+      }
+    }
+  }
+  
+  // Save last observation
+  if (currentObservationStart >= 0 && currentDate) {
+    const obsLines = lines.slice(currentObservationStart, endLine + 1);
+    const display = formatObservation(categoryName, currentDate, obsLines, lines, endLine + 1);
+    if (display) {
+      observations.push({ date: currentDate, display });
+    }
+  }
+  
+  return observations;
+};
 
+// Format observation display based on category type
+const formatObservation = (
+  categoryName: string,
+  date: string,
+  obsLines: string[],
+  allLines: string[],
+  nextDPlusIndex: number
+): string => {
+  const categoryLower = categoryName.toLowerCase();
+  
+  if (categoryLower.includes('medication')) {
+    // Medications: Date + medication name + dose (both in bold)
+    if (obsLines.length > 1) {
+      const nextLine = obsLines[1]?.trim() || '';
+      const parts = nextLine.split(/\s+/);
+      if (parts.length >= 2) {
+        const medicationName = parts[0];
+        const dose = parts.slice(1).join(' ');
+        return `${date} **${medicationName}** **${dose}**`;
+      }
+      return `${date} **${nextLine}**`;
+    }
+    return date;
+  } else if (categoryLower.includes('clinical notes')) {
+    // Clinical Notes: Date + observation name (Line 1 of 5) + Author (Line 2 of 5) both in bold
+    if (obsLines.length >= 2) {
+      const typeLine = obsLines.find(l => l.includes('Type:') || l.includes('Encounter'))?.trim() || '';
+      const authorLine = obsLines.find(l => l.includes('Author:') || l.includes('MD') || l.includes('RN'))?.trim() || '';
+      
+      let type = '';
+      let author = '';
+      
+      if (typeLine) {
+        const typeMatch = typeLine.match(/Type:\s*(.+)/i) || typeLine.match(/(.+?)\s*\|/);
+        type = typeMatch ? typeMatch[1].trim() : typeLine;
+      }
+      
+      if (authorLine) {
+        const authorMatch = authorLine.match(/Author:\s*(.+)/i) || authorLine.match(/(.+?)\s*\|/);
+        author = authorMatch ? authorMatch[1].trim() : authorLine;
+      }
+      
+      if (type || author) {
+        return `${date} **${type || 'N/A'}** **${author || 'N/A'}**`;
+      }
+    }
+    return date;
+  } else if (categoryLower.includes('procedure') || 
+             categoryLower.includes('condition') || 
+             categoryLower.includes('immunization')) {
+    // Procedures, Conditions, Immunizations: Date + entire line following [D+P] (in bold)
+    if (obsLines.length > 1) {
+      const nextLine = obsLines[1]?.trim() || '';
+      return `${date} **${nextLine}**`;
+    }
+    return date;
+  } else if (categoryLower.includes('clinical vitals') || 
+             categoryLower.includes('lab result')) {
+    // Clinical Vitals, Lab Results: Date + total number of lines in observation
+    const lineCount = obsLines.length;
+    return `${date} (${lineCount} line${lineCount !== 1 ? 's' : ''})`;
+  }
+  
+  // Default: just show date
+  return date;
+};
 
 // SECOND PASS: Count [D+P] lines for each category using category boundaries from FIRST PASS
 const countObservationsByPageRange = (markedMarkdown: string): void => {
@@ -1080,34 +1218,34 @@ const countObservationsByPageRange = (markedMarkdown: string): void => {
     for (let i = startLine; i <= endLine && i < lines.length; i++) {
       const line = lines[i].trim();
       
-      // Check if this is a [D+P] line (either with category label or just [D+P])
-      // First [D+P] line will have category name, others will just have [D+P]
-      if (line.startsWith(`[D+P] ${categoryName} `) || 
-          (line.startsWith('[D+P] ') && !line.startsWith('[D+P] ') || line.match(/^\[D\+P\]\s+[A-Z][a-z]{2}\s+\d{1,2},\s+\d{4}/))) {
-        // More precise check: if it starts with [D+P] and matches date pattern, count it
-        // But exclude if it's labeled with a different category
-        if (line.startsWith(`[D+P] ${categoryName} `)) {
-          // This is the first [D+P] line with category label
-          dPlusCount++;
-          
-          // Extract date from first [D+P] line
-          if (firstDPlusLine === null) {
-            firstDPlusLine = line;
-            // Extract date (format: "Mon DD, YYYY")
-            const dateMatch = line.match(/([A-Z][a-z]{2}\s+\d{1,2},\s+\d{4})/);
-            if (dateMatch) {
-              firstDPlusDate = dateMatch[1];
-            }
+      // Check if this is a [D+P] line
+      // First [D+P] line will have category name: "[D+P] <category name> <date and place>"
+      // Other [D+P] lines will just have: "[D+P] <date and place>"
+      if (line.startsWith(`[D+P] ${categoryName} `)) {
+        // This is the first [D+P] line with category label
+        dPlusCount++;
+        
+        // Extract date from first [D+P] line
+        if (firstDPlusLine === null) {
+          firstDPlusLine = line;
+          // Extract date (format: "Mon DD, YYYY")
+          // Pattern: after category name, find date
+          const dateMatch = line.match(/\[D\+P\]\s+\S+\s+([A-Z][a-z]{2}\s+\d{1,2},\s+\d{4})/);
+          if (dateMatch) {
+            firstDPlusDate = dateMatch[1];
           }
-        } else if (line.startsWith('[D+P] ') && !line.match(/^\[D\+P\]\s+[A-Z][a-z]{2}\s+\d{1,2},\s+\d{4}\s+\S+/)) {
-          // This is a [D+P] line without category label (subsequent ones)
-          // Check if it's within this category's boundaries
+        }
+      } else if (line.startsWith('[D+P] ') && !line.startsWith(`[D+P] ${categoryName} `)) {
+        // Check if this is a [D+P] line without category label (subsequent ones)
+        // Pattern: "[D+P] <date and place>" - date pattern after [D+P]
+        const datePattern = /^\[D\+P\]\s+([A-Z][a-z]{2}\s+\d{1,2},\s+\d{4}\s+\S+)/;
+        if (datePattern.test(line)) {
+          // This is a [D+P] line without category label (subsequent ones in this category)
           dPlusCount++;
           
           // Extract date from first [D+P] line if not already found
           if (firstDPlusLine === null) {
             firstDPlusLine = line;
-            // Extract date (format: "Mon DD, YYYY")
             const dateMatch = line.match(/([A-Z][a-z]{2}\s+\d{1,2},\s+\d{4})/);
             if (dateMatch) {
               firstDPlusDate = dateMatch[1];
@@ -1117,16 +1255,14 @@ const countObservationsByPageRange = (markedMarkdown: string): void => {
       }
     }
     
-    // Debug message
-    if (firstDPlusDate) {
-      console.log(`[LISTS] SECOND PASS: "${categoryName}" - First [D+P] date: ${firstDPlusDate}, Total [D+P] lines: ${dPlusCount}`);
-    } else {
-      console.log(`[LISTS] SECOND PASS: "${categoryName}" - No [D+P] lines found`);
-    }
+    // Extract observations for this category
+    const observations = extractObservationsForCategory(categoryName, startLine, endLine, lines);
     
     return {
       ...category,
-      observationCount: dPlusCount
+      observationCount: dPlusCount,
+      observations: observations,
+      expanded: expandedCategories.value.has(categoryName)
     };
   });
 };
