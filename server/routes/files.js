@@ -1642,6 +1642,9 @@ export default function setupFileRoutes(app, cloudant, doClient) {
       console.log(`✅ [LISTS] Authenticated user: ${userId}`);
 
       const { bucketKey: providedBucketKey, fileName: providedFileName } = req.body || {};
+      console.log(`📋 [LISTS] Request body:`, JSON.stringify(req.body));
+      console.log(`📋 [LISTS] Provided bucketKey:`, providedBucketKey);
+      console.log(`📋 [LISTS] Provided fileName:`, providedFileName);
       
       let initialFileBucketKey;
       let initialFileName;
@@ -1652,6 +1655,7 @@ export default function setupFileRoutes(app, cloudant, doClient) {
         initialFileName = providedFileName || 'Replaced File';
         console.log(`📄 [LISTS] Using provided file: ${initialFileName} (${initialFileBucketKey})`);
       } else {
+        console.log(`📄 [LISTS] No bucketKey provided, checking user document...`);
         // Otherwise, get from user document (original flow)
         const userDoc = await cloudant.getDocument('maia_users', userId);
         if (!userDoc) {
