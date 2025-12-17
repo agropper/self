@@ -227,7 +227,7 @@
                   color="primary"
                   icon="visibility"
                   :label="showMarkdownContent ? 'HIDE FILE MARKDOWN' : 'SHOW FILE MARKDOWN'"
-                  @click="showMarkdownContent = !showMarkdownContent"
+                  @click="toggleMarkdownContent"
                 />
                 <q-btn
                   color="primary"
@@ -910,6 +910,11 @@ const cleanupMarkdown = async () => {
   } finally {
     isCleaningMarkdown.value = false;
   }
+};
+
+// Toggle markdown content visibility
+const toggleMarkdownContent = () => {
+  showMarkdownContent.value = !showMarkdownContent.value;
 };
 
 // Replace the Lists source file
