@@ -1426,31 +1426,10 @@ const countObservationsByPageRange = (markedMarkdown: string): void => {
           const lineWithoutPrefix = line.substring(6).trim();
           if (dateLocationPattern.test(lineWithoutPrefix)) {
             observationCount++;
-            // Find next [D+P] line or EOF
-            let endIndex = lines.length;
-            for (let j = i + 1; j < lines.length; j++) {
-              const nextLine = lines[j].trim();
-              if (nextLine.startsWith('[D+P] ')) {
-                const nextLineWithoutPrefix = nextLine.substring(6).trim();
-                if (dateLocationPattern.test(nextLineWithoutPrefix)) {
-                  endIndex = j;
-                  break;
-                }
-              }
-            }
-            // Collect observation lines
+            // Observation is just the [D+P] line and the next line
             const obsLines: string[] = [line];
-            for (let j = i + 1; j < endIndex; j++) {
-              obsLines.push(lines[j].trim());
-            }
-            // Clean end: remove lines starting with "## " or "### "
-            while (obsLines.length > 0) {
-              const lastLine = obsLines[obsLines.length - 1].trim();
-              if (lastLine.startsWith('## ') || lastLine.startsWith('### ')) {
-                obsLines.pop();
-              } else {
-                break;
-              }
+            if (i + 1 < lines.length) {
+              obsLines.push(lines[i + 1].trim());
             }
             if (obsLines.length > 0) {
               if (firstObservation === null) firstObservation = obsLines;
@@ -1470,38 +1449,12 @@ const countObservationsByPageRange = (markedMarkdown: string): void => {
           const lineWithoutPrefix = line.substring(6).trim();
           if (dateLocationPattern.test(lineWithoutPrefix)) {
             observationCount++;
-            // Find next [D+P] line or EOF
-            let endIndex = lines.length;
-            for (let j = i + 1; j < lines.length; j++) {
-              const nextLine = lines[j].trim();
-              if (nextLine.startsWith('[D+P] ')) {
-                const nextLineWithoutPrefix = nextLine.substring(6).trim();
-                if (dateLocationPattern.test(nextLineWithoutPrefix)) {
-                  endIndex = j;
-                  break;
-                }
-              }
-            }
-            // Collect observation lines
+            // Observation is the [D+P] line and the next line
+            // If the next line starts with "## ", it's a table header and part of the observation
             const obsLines: string[] = [line];
-            for (let j = i + 1; j < endIndex; j++) {
-              obsLines.push(lines[j].trim());
-            }
-            // Include "## " table header if it follows immediately
-            if (obsLines.length > 0 && obsLines[0].trim().startsWith('## ')) {
-              // Already included, continue
-            }
-            // Clean end: exclude "## Page" or category header
-            const excludePattern = categoryName.includes('lab') 
-              ? /^(##\s+Page\s+\d+|###\s+Lab\s+Results)/i
-              : /^(##\s+Page\s+\d+|###\s+Medication\s+Records)/i;
-            while (obsLines.length > 0) {
-              const lastLine = obsLines[obsLines.length - 1].trim();
-              if (excludePattern.test(lastLine)) {
-                obsLines.pop();
-              } else {
-                break;
-              }
+            if (i + 1 < lines.length) {
+              const nextLine = lines[i + 1].trim();
+              obsLines.push(nextLine);
             }
             if (obsLines.length > 0) {
               if (firstObservation === null) firstObservation = obsLines;
