@@ -3787,19 +3787,19 @@ async function provisionUserAsync(userId, token) {
               secretAccessKey: process.env.DIGITALOCEAN_AWS_SECRET_ACCESS_KEY || ''
             }
           });
-        
-        let markdownExists = false;
-        try {
-          await s3Client.send(new HeadObjectCommand({
-            Bucket: bucketName,
-            Key: markdownBucketKey
-          }));
-          markdownExists = true;
-        } catch (headErr) {
-          logProvisioning(userId, `ℹ️  [CURRENT MEDICATIONS] Lists markdown not found: ${markdownBucketKey}. Skipping Current Medications generation.`, 'info');
-        }
-        
-        if (markdownExists) {
+          
+          let markdownExists = false;
+          try {
+            await s3Client.send(new HeadObjectCommand({
+              Bucket: bucketName,
+              Key: markdownBucketKey
+            }));
+            markdownExists = true;
+          } catch (headErr) {
+            logProvisioning(userId, `ℹ️  [CURRENT MEDICATIONS] Lists markdown not found: ${markdownBucketKey}. Skipping Current Medications generation.`, 'info');
+          }
+          
+          if (markdownExists) {
           updateStatus('Generating Current Medications...', { fileName: initialFileName });
           logProvisioning(userId, `💊 [CURRENT MEDICATIONS] Generating current medications from Lists markdown...`, 'info');
           
@@ -3911,6 +3911,7 @@ async function provisionUserAsync(userId, token) {
           } catch (medError) {
             logProvisioning(userId, `⚠️  [CURRENT MEDICATIONS] Error generating current medications: ${medError.message}. Continuing provisioning.`, 'warning');
             // Don't fail provisioning if Current Medications generation fails
+          }
           }
         }
       } catch (currentMedsError) {
