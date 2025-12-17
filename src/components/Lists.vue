@@ -983,11 +983,43 @@ const replaceListsSourceFile = () => {
       });
       
       if (!updateResponse.ok) {
-        console.warn('Failed to update user document with new file');
+        const errorData = await updateResponse.json().catch(() => ({ error: 'Failed to update user document' }));
+        throw new Error(errorData.error || errorData.message || 'Failed to update user document with new file');
       }
       
-      // Wait a moment for the document to be saved
-      await new Promise(resolve => setTimeout(resolve, 500));
+      const updateResult = await updateResponse.json();
+      if (!updateResult.success) {
+        throw new Error(updateResult.message || 'Failed to update user document');
+      }
+      
+      // Wait a moment for Cloudant to propagate the document update
+      await new Promise(resolve => setTimeout(resolve, 1000));
+      
+      // Verify the document was updated by checking user status
+      let retries = 3;
+      let verified = false;
+      while (retries > 0 && !verified) {
+        const statusResponse = await fetch(`/api/user-status?userId=${encodeURIComponent(props.userId)}`, {
+          credentials: 'include'
+        });
+        
+        if (statusResponse.ok) {
+          const statusData = await statusResponse.json();
+          if (statusData.initialFile && statusData.initialFile.bucketKey === uploadResult.bucketKey) {
+            verified = true;
+            break;
+          }
+        }
+        
+        retries--;
+        if (retries > 0) {
+          await new Promise(resolve => setTimeout(resolve, 500));
+        }
+      }
+      
+      if (!verified) {
+        console.warn('Could not verify document update, proceeding anyway...');
+      }
       
       // Process the uploaded file (similar to processInitialFile)
       const processResponse = await fetch('/api/files/lists/process-initial-file', {
