@@ -616,9 +616,6 @@ const processInitialFile = async () => {
     // THIRD PASS: Count [D+P] lines in all categories
     countDatePlaceInAllCategories(markedMarkdown);
     
-    // FOURTH PASS: Count observations according to category-specific rules
-    countObservationsByCategory(markedMarkdown);
-    
     if (data.markdownBucketKey) {
       savedPdfBucketKey.value = data.markdownBucketKey;
     }
