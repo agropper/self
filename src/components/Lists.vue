@@ -1142,7 +1142,32 @@ const formatObservation = (
 ): string => {
   const categoryLower = categoryName.toLowerCase();
   
-  if (categoryLower.includes('medication')) {
+  if (categoryLower.includes('allerg')) {
+    // Allergies: Date + Line 2 and all subsequent lines until next [D+P] or category
+    // Only the first word of each line should be bold
+    if (obsLines.length >= 2) {
+      // Start from Line 2 (index 1, since [D+P] is at index 0)
+      const observationLines = obsLines.slice(1);
+      const formattedLines = observationLines.map(line => {
+        const trimmed = line.trim();
+        if (!trimmed) return '';
+        // Get first word and rest of line
+        const firstSpaceIndex = trimmed.indexOf(' ');
+        if (firstSpaceIndex > 0) {
+          const firstWord = trimmed.substring(0, firstSpaceIndex);
+          const rest = trimmed.substring(firstSpaceIndex + 1);
+          return `**${firstWord}** ${rest}`;
+        }
+        // If no space, just bold the whole line
+        return `**${trimmed}**`;
+      }).filter(line => line.length > 0);
+      
+      if (formattedLines.length > 0) {
+        return `${date} ${formattedLines.join(' ')}`;
+      }
+    }
+    return date;
+  } else if (categoryLower.includes('medication')) {
     // Medications: Date + medication name + dose (both in bold)
     if (obsLines.length > 1) {
       const nextLine = obsLines[1]?.trim() || '';
