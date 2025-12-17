@@ -198,6 +198,18 @@
         </q-card-section>
       </q-card>
 
+      <!-- Markdown Display (hidden by default) -->
+      <q-card v-if="markdownContent && showMarkdownContent" class="q-mb-md">
+        <q-card-section>
+          <div class="text-h6 q-mb-md">Markdown Content</div>
+          <div v-if="markdownBucketKey" class="text-caption text-grey q-mb-sm">
+            <q-icon name="folder" size="xs" /> Saved to: <code>{{ markdownBucketKey }}</code>
+          </div>
+          <div class="markdown-preview q-pa-md" style="background: #f5f5f5; border-radius: 4px; max-height: 600px; overflow-y: auto;">
+            <pre style="white-space: pre-wrap; font-family: monospace; font-size: 12px; margin: 0;">{{ markdownContent }}</pre>
+          </div>
+        </q-card-section>
+      </q-card>
 
       <!-- LISTS SOURCE FILE (moved to bottom) -->
       <q-card v-if="pdfData || markdownBucketKey" class="q-mb-md">
