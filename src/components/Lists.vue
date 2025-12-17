@@ -1421,7 +1421,12 @@ const countObservationsByCategory = (markdown: string): void => {
       const categoryName = line.substring(4).trim();
       currentCategory = categoryName;
       const standardName = mapToStandardCategory(categoryName);
-      console.log(`[LISTS] FOURTH PASS: Counting observations for "${standardName}"`);
+      // Only log if it's one of the categories we're tracking
+      const categoryNames = ['Allergies', 'Clinical Notes', 'Clinical Vitals', 'Conditions', 
+                             'Immunizations', 'Lab Results', 'Medication Records', 'Procedures'];
+      if (categoryNames.includes(standardName)) {
+        console.log(`[LISTS] FOURTH PASS: Counting observations for "${standardName}"`);
+      }
       continue;
     }
     
@@ -1615,7 +1620,6 @@ const countObservationsByCategory = (markdown: string): void => {
     // Medication Records: Same as Lab Results but exclude "### Medication Records"
     else if (categoryNameLower.includes('medication')) {
       if (dateLocationPattern.test(lineWithoutPrefix)) {
-        console.log(`[LISTS] FOURTH PASS: Medication Records - Found observation at line ${i}: ${lineWithoutPrefix.substring(0, 50)}`);
         observationCounts[standardCategoryName] = (observationCounts[standardCategoryName] || 0) + 1;
         const nextDateLoc = findNextDateLocation(i);
         const endIndex = nextDateLoc > 0 ? nextDateLoc : lines.length;
@@ -1649,18 +1653,11 @@ const countObservationsByCategory = (markdown: string): void => {
     }
   }
   
-  // Report observation counts for all categories and update categoriesList
-  console.log('[LISTS] FOURTH PASS: Completed processing, reporting counts');
-  console.log('[LISTS] FOURTH PASS: Full observationCounts object:', observationCounts);
-  console.log('[LISTS] FOURTH PASS: Current categoriesList before update:', categoriesList.value);
-  
   // Update categoriesList with observation counts
   categoriesList.value = categoriesList.value.map(category => {
     // Find matching standard category name
     const standardName = mapToStandardCategory(category.name);
     const count = observationCounts[standardName] || 0;
-    
-    console.log(`[LISTS] FOURTH PASS: Updating ${category.name} (mapped to ${standardName}) with ${count} observations`);
     
     return {
       ...category,
@@ -1668,9 +1665,7 @@ const countObservationsByCategory = (markdown: string): void => {
     };
   });
   
-  console.log('[LISTS] FOURTH PASS: Updated categoriesList:', categoriesList.value);
-  
-  // Also log individual counts
+  // Report observation counts for all categories
   categoryNames.forEach(categoryName => {
     const count = observationCounts[categoryName] || 0;
     console.log(`[LISTS] ${categoryName}: ${count} observations`);
