@@ -1349,7 +1349,6 @@ const countDatePlaceInAllCategories = (markdown: string): void => {
 
 // FOURTH PASS: Count observations according to category-specific rules
 const countObservationsByCategory = (markdown: string): void => {
-  console.log('[LISTS] FOURTH PASS: Starting observation count by category');
   const lines = markdown.split('\n');
   let currentCategory: string | null = null;
   const observationCounts: Record<string, number> = {};
@@ -1422,7 +1421,7 @@ const countObservationsByCategory = (markdown: string): void => {
       const categoryName = line.substring(4).trim();
       currentCategory = categoryName;
       const standardName = mapToStandardCategory(categoryName);
-      console.log(`[LISTS] FOURTH PASS: Entering category "${categoryName}" (mapped to "${standardName}") at line ${i}`);
+      console.log(`[LISTS] FOURTH PASS: Counting observations for "${standardName}"`);
       continue;
     }
     
@@ -1433,14 +1432,6 @@ const countObservationsByCategory = (markdown: string): void => {
     
     // Map current category to standard name for counting
     const standardCategoryName = mapToStandardCategory(currentCategory);
-    
-    // Debug: Log when we're in a category and encounter a [D+P] line
-    if (line.startsWith('[D+P] ')) {
-      const matchesPattern = dateLocationPattern.test(lineWithoutPrefix);
-      if (matchesPattern) {
-        console.log(`[LISTS] FOURTH PASS DEBUG: Line ${i} in category "${currentCategory}" (${standardCategoryName}): [D+P] line found, pattern match: ${matchesPattern}`);
-      }
-    }
     
     // Allergies: Each line after "## ALLERGY..." counts as one observation
     if (categoryNameLower.includes('allerg')) {
@@ -1501,7 +1492,6 @@ const countObservationsByCategory = (markdown: string): void => {
     // Conditions: Date + Place of Service pattern
     else if (categoryNameLower.includes('condition')) {
       if (dateLocationPattern.test(lineWithoutPrefix)) {
-        console.log(`[LISTS] FOURTH PASS: Conditions - Found observation at line ${i}: ${lineWithoutPrefix.substring(0, 50)}`);
         observationCounts[standardCategoryName] = (observationCounts[standardCategoryName] || 0) + 1;
         const nextDateLoc = findNextDateLocation(i);
         const endIndex = nextDateLoc > 0 ? nextDateLoc : lines.length;
@@ -1561,7 +1551,6 @@ const countObservationsByCategory = (markdown: string): void => {
     // Procedures: Date + Place of Service pattern
     else if (categoryNameLower.includes('procedure')) {
       if (dateLocationPattern.test(lineWithoutPrefix)) {
-        console.log(`[LISTS] FOURTH PASS: Procedures - Found observation at line ${i}: ${lineWithoutPrefix.substring(0, 50)}`);
         observationCounts[standardCategoryName] = (observationCounts[standardCategoryName] || 0) + 1;
         const nextDateLoc = findNextDateLocation(i);
         const endIndex = nextDateLoc > 0 ? nextDateLoc : lines.length;
@@ -1591,7 +1580,6 @@ const countObservationsByCategory = (markdown: string): void => {
     // Lab Results: Date + Place of Service, include "## " table header, exclude "## Page" or "### Lab Results" at end
     else if (categoryNameLower.includes('lab results') || categoryNameLower.includes('lab result')) {
       if (dateLocationPattern.test(lineWithoutPrefix)) {
-        console.log(`[LISTS] FOURTH PASS: Lab Results - Found observation at line ${i}: ${lineWithoutPrefix.substring(0, 50)}`);
         observationCounts[standardCategoryName] = (observationCounts[standardCategoryName] || 0) + 1;
         const nextDateLoc = findNextDateLocation(i);
         const endIndex = nextDateLoc > 0 ? nextDateLoc : lines.length;
