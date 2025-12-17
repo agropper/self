@@ -291,20 +291,22 @@ When a user registers and uploads an initial PDF file, the provisioning process 
 - Wait for status: `STATUS_RUNNING`
 - Set `workflowStage: 'agent_deployed'`
 
-#### Phase 7: Current Medications Generation (NOT YET AUTOMATED)
+#### Phase 7: Current Medications Generation
 
 **Step 7.1: Generate Current Medications**
-- **Status**: ⚠️ **NOT CURRENTLY PART OF AUTOMATION**
-- **Current Behavior**: Only runs when user opens "My Lists" tab in frontend
+- **Status**: ✅ **IMPLEMENTED IN AUTOMATION**
+- **Location**: `server/index.js` - `provisionUserAsync()` function, Step 7.5
 - **Requirements**:
   - Agent must be deployed (`assignedAgentId`, `agentEndpoint`, `agentApiKey`)
   - Lists processing must be complete (markdown file exists in `userId/Lists/`)
   - Medication Records category must have observations
-- **Process** (when implemented):
-  1. Read markdown file from `userId/Lists/{fileName}.md`
-  2. Extract Medication Records observations (already done during Lists processing)
-  3. Format observations for AI prompt
-  4. Call Private AI agent with prompt:
+- **Process**:
+  1. Check if Lists markdown file exists in `userId/Lists/{fileName}.md`
+  2. Read markdown file from S3
+  3. Extract Medication Records category boundaries
+  4. Extract all `[D+P]` lines within Medication Records category
+  5. Format observations for AI prompt
+  6. Call Private AI agent with prompt:
      ```
      "What are the current medications from this list?
      
@@ -313,9 +315,9 @@ When a user registers and uploads an initial PDF file, the provisioning process 
      Please list only the medications that are currently active or being taken. 
      Format your response as a clear, readable list."
      ```
-  5. Save result to `userDoc.currentMedications`
-- **Implementation Location**: Should be added to `server/index.js` - `provisionUserAsync()` function
-- **Timing**: Should run after agent deployment (Phase 6) and can run in parallel with Patient Summary
+  7. Save result to `userDoc.currentMedications`
+- **Timing**: Runs after agent deployment (Phase 6) and before Patient Summary generation
+- **Error Handling**: Non-blocking - errors are logged but don't fail provisioning
 
 **Step 7.2: Current Medications Storage**
 - Stored in user document:
@@ -424,11 +426,12 @@ When a user registers and uploads an initial PDF file, the provisioning process 
    - Blocks provisioning until complete (with timeout)
 
 3. **Current Medications**:
-   - **NOT YET AUTOMATED** - Currently only runs when user opens Lists tab
-   - Should be generated **after** agent deployment
+   - **AUTOMATED** - Generated during provisioning after agent deployment
+   - Generated **after** agent deployment (Phase 6)
    - Requires Lists processing to be complete (to extract Medication Records)
    - Uses Private AI to identify current medications from full medication list
-   - Should be added to automation flow after Phase 6 (agent deployment)
+   - Runs before Patient Summary generation
+   - Can also be manually refreshed from frontend Lists tab
 
 4. **Patient Summary**:
    - Generated **after** both Lists processing and indexing are complete
@@ -453,11 +456,10 @@ When a user registers and uploads an initial PDF file, the provisioning process 
   - Implementation: `server/index.js` - `provisionUserAsync()` function
   - Uses: DigitalOcean KB and Indexing APIs
 
-- **Current Medications** (NOT YET AUTOMATED):
-  - Endpoint: `POST /api/files/lists/current-medications`
-  - Implementation: `server/routes/files.js`
-  - Frontend: `src/components/Lists.vue` - `loadCurrentMedications()`
-  - **Needs**: Integration into `provisionUserAsync()` after agent deployment
+- **Current Medications**:
+  - Endpoint: `POST /api/files/lists/current-medications` (for manual generation)
+  - Automation: `server/index.js` - `provisionUserAsync()` function, Step 7.5
+  - Frontend: `src/components/Lists.vue` - `loadCurrentMedications()` (for manual refresh)
   - Uses: Private AI agent via DigitalOcean Provider
 
 - **Patient Summary**:
