@@ -416,9 +416,6 @@ const loadSavedResults = async () => {
         // THIRD PASS: Count [D+P] lines in all categories
         countDatePlaceInAllCategories(markdownContent.value);
         
-        // FOURTH PASS: Count observations according to category-specific rules
-        countObservationsByCategory(markdownContent.value);
-        
         // Also try to load results.json if it exists
         const resultsResponse = await fetch('/api/files/lists/results', {
           credentials: 'include'
@@ -768,9 +765,6 @@ const cleanupMarkdown = async () => {
         
         // THIRD PASS: Count [D+P] lines in all categories
         countDatePlaceInAllCategories(markdownContent.value);
-        
-        // FOURTH PASS: Count observations according to category-specific rules
-        countObservationsByCategory(markdownContent.value);
       }
     }
     
@@ -816,10 +810,15 @@ const extractCategoriesFromMarkdown = (markdown: string) => {
   // Updated to be case-insensitive and handle various whitespace
   const dateLocationPattern = /^[A-Z][a-z]{2}\s+\d{1,2},\s+\d{4}\s+\S+/i;
   
-  // Helper function to find next date+location line starting from index
+  // Helper function to find next date+location line or page boundary starting from index
   const findNextDateLocation = (startIndex: number): number => {
     for (let j = startIndex + 1; j < lines.length; j++) {
       const testLine = lines[j].trim();
+      // Stop at page boundaries
+      if (testLine.match(/^##\s+Page\s+\d+$/)) {
+        return j;
+      }
+      // Stop at next date+location line
       if (dateLocationPattern.test(testLine)) {
         return j;
       }
@@ -1110,7 +1109,6 @@ const extractCategoriesFromMarkdown = (markdown: string) => {
     else if (categoryName.includes('medication')) {
       if (dateLocationPattern.test(line)) {
         observationCount++;
-        console.log(`  ✅ [MEDICATION RECORDS] Found observation at line ${i}: ${line.substring(0, 50)}`);
         const nextDateLoc = findNextDateLocation(i);
         const endIndex = nextDateLoc > 0 ? nextDateLoc : lines.length;
         
@@ -1355,332 +1353,6 @@ const countDatePlaceInAllCategories = (markdown: string): void => {
   });
 };
 
-// FOURTH PASS: Count observations according to category-specific rules
-const countObservationsByCategory = (markdown: string): void => {
-  const lines = markdown.split('\n');
-  let currentCategory: string | null = null;
-  const observationCounts: Record<string, number> = {};
-  
-  // Initialize all category observation counts to 0
-  const categoryNames = ['Allergies', 'Clinical Notes', 'Clinical Vitals', 'Conditions', 
-                         'Immunizations', 'Lab Results', 'Medication Records', 'Procedures'];
-  categoryNames.forEach(name => {
-    observationCounts[name] = 0;
-  });
-  
-  // Pattern to match "Date + Place of Service" lines (without [D+P] prefix)
-  const dateLocationPattern = /^[A-Z][a-z]{2}\s+\d{1,2},\s+\d{4}\s+\S+/i;
-  
-  // Helper function to find next date+location line starting from index
-  const findNextDateLocation = (startIndex: number): number => {
-    for (let j = startIndex + 1; j < lines.length; j++) {
-      const testLine = lines[j].trim();
-      // Remove [D+P] prefix if present for pattern matching
-      const testLineWithoutPrefix = testLine.replace(/^\[D\+P\]\s+/, '');
-      if (dateLocationPattern.test(testLineWithoutPrefix)) {
-        return j;
-      }
-    }
-    return -1; // Not found (EOF)
-  };
-  
-  // Helper function to clean observation end (remove lines starting with "## " or "### ")
-  const cleanObservationEnd = (obsLines: string[]): string[] => {
-    while (obsLines.length > 0) {
-      const lastLine = obsLines[obsLines.length - 1].trim();
-      if (lastLine.startsWith('## ') || lastLine.startsWith('### ')) {
-        obsLines.pop();
-      } else {
-        break;
-      }
-    }
-    return obsLines;
-  };
-  
-  // Helper function to clean observation end for Lab Results/Medication Records
-  const cleanObservationEndSpecific = (obsLines: string[], excludePattern: RegExp): string[] => {
-    while (obsLines.length > 0) {
-      const lastLine = obsLines[obsLines.length - 1].trim();
-      if (excludePattern.test(lastLine)) {
-        obsLines.pop();
-      } else {
-        break;
-      }
-    }
-    return obsLines;
-  };
-  
-  // Helper to map category name to standard name
-  const mapToStandardCategory = (categoryName: string): string => {
-    const lower = categoryName.toLowerCase();
-    for (const standardName of categoryNames) {
-      if (lower.includes(standardName.toLowerCase()) || standardName.toLowerCase().includes(lower)) {
-        return standardName;
-      }
-    }
-    return categoryName; // Return as-is if no match
-  };
-  
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i].trim();
-    
-    // Check for category header
-    if (line.startsWith('### ')) {
-      const categoryName = line.substring(4).trim();
-      currentCategory = categoryName;
-      const standardName = mapToStandardCategory(categoryName);
-      const categoryNames = ['Allergies', 'Clinical Notes', 'Clinical Vitals', 'Conditions', 
-                             'Immunizations', 'Lab Results', 'Medication Records', 'Procedures'];
-      if (categoryNames.includes(standardName)) {
-        console.log(`[LISTS] FOURTH PASS: Counting observations for "${standardName}" (from "${categoryName}")`);
-      } else {
-        // Log unmatched category headers to help debug
-        console.log(`[LISTS] FOURTH PASS: Unmatched category header "${categoryName}" (mapped to "${standardName}")`);
-      }
-      continue;
-    }
-    
-    if (!currentCategory) continue;
-    
-    const categoryNameLower = currentCategory.toLowerCase();
-    const lineWithoutPrefix = line.replace(/^\[D\+P\]\s+/, '');
-    
-    // Map current category to standard name for counting
-    const standardCategoryName = mapToStandardCategory(currentCategory);
-    
-    // Allergies: Each line after "## ALLERGY..." counts as one observation
-    if (categoryNameLower.includes('allerg')) {
-      if (line.startsWith('## ALLERGY') || line.startsWith('## Allergy') || line.startsWith('## allergy')) {
-        // Count all non-empty lines after this until next category or EOF
-        let j = i + 1;
-        while (j < lines.length) {
-          const nextLine = lines[j].trim();
-          if (nextLine.startsWith('### ') || nextLine.match(/^##\s+Page\s+\d+$/)) {
-            break;
-          }
-          if (nextLine !== '') {
-            observationCounts[standardCategoryName] = (observationCounts[standardCategoryName] || 0) + 1;
-          }
-          j++;
-        }
-        i = j - 1; // Skip to end of category section
-        continue;
-      }
-    }
-    
-    // Clinical Notes: Each line beginning with "Created: " is line 4 of a 5-line observation
-    else if (categoryNameLower.includes('clinical notes')) {
-      if (line.startsWith('Created: ')) {
-        observationCounts[standardCategoryName] = (observationCounts[standardCategoryName] || 0) + 1;
-      }
-    }
-    
-    // Clinical Vitals: Date + Place of Service pattern
-    else if (categoryNameLower.includes('clinical vitals') || categoryNameLower.includes('vitals')) {
-      if (dateLocationPattern.test(lineWithoutPrefix)) {
-        observationCounts[standardCategoryName] = (observationCounts[standardCategoryName] || 0) + 1;
-        const nextDateLoc = findNextDateLocation(i);
-        const endIndex = nextDateLoc > 0 ? nextDateLoc : lines.length;
-        
-        const obsLines: string[] = [];
-        for (let j = i + 1; j < endIndex; j++) {
-          obsLines.push(lines[j]);
-        }
-        
-        cleanObservationEnd(obsLines);
-        
-        if (nextDateLoc < 0 && obsLines.length > 0) {
-          while (obsLines.length > 0) {
-            const lastLine = obsLines[obsLines.length - 1].trim();
-            if (lastLine.startsWith('## Page ')) {
-              obsLines.pop();
-            } else {
-              break;
-            }
-          }
-        }
-        
-        i = endIndex - 1;
-      }
-    }
-    
-    // Conditions: Date + Place of Service pattern
-    else if (categoryNameLower.includes('condition')) {
-      if (dateLocationPattern.test(lineWithoutPrefix)) {
-        observationCounts[standardCategoryName] = (observationCounts[standardCategoryName] || 0) + 1;
-        const nextDateLoc = findNextDateLocation(i);
-        const endIndex = nextDateLoc > 0 ? nextDateLoc : lines.length;
-        
-        const obsLines: string[] = [];
-        for (let j = i + 1; j < endIndex; j++) {
-          obsLines.push(lines[j]);
-        }
-        
-        cleanObservationEnd(obsLines);
-        
-        if (nextDateLoc < 0 && obsLines.length > 0) {
-          while (obsLines.length > 0) {
-            const lastLine = obsLines[obsLines.length - 1].trim();
-            if (lastLine.startsWith('## Page ')) {
-              obsLines.pop();
-            } else {
-              break;
-            }
-          }
-        }
-        
-        i = endIndex - 1;
-      }
-    }
-    
-    // Immunizations: Date + Place of Service pattern
-    else if (categoryNameLower.includes('immunization')) {
-      if (dateLocationPattern.test(lineWithoutPrefix)) {
-        console.log(`[LISTS] FOURTH PASS: Immunizations - Found observation at line ${i}: ${lineWithoutPrefix.substring(0, 50)}`);
-        observationCounts[standardCategoryName] = (observationCounts[standardCategoryName] || 0) + 1;
-        const nextDateLoc = findNextDateLocation(i);
-        const endIndex = nextDateLoc > 0 ? nextDateLoc : lines.length;
-        
-        const obsLines: string[] = [];
-        for (let j = i + 1; j < endIndex; j++) {
-          obsLines.push(lines[j]);
-        }
-        
-        cleanObservationEnd(obsLines);
-        
-        if (nextDateLoc < 0 && obsLines.length > 0) {
-          while (obsLines.length > 0) {
-            const lastLine = obsLines[obsLines.length - 1].trim();
-            if (lastLine.startsWith('## Page ')) {
-              obsLines.pop();
-            } else {
-              break;
-            }
-          }
-        }
-        
-        i = endIndex - 1;
-      }
-    }
-    
-    // Procedures: Date + Place of Service pattern
-    else if (categoryNameLower.includes('procedure')) {
-      if (dateLocationPattern.test(lineWithoutPrefix)) {
-        observationCounts[standardCategoryName] = (observationCounts[standardCategoryName] || 0) + 1;
-        const nextDateLoc = findNextDateLocation(i);
-        const endIndex = nextDateLoc > 0 ? nextDateLoc : lines.length;
-        
-        const obsLines: string[] = [];
-        for (let j = i + 1; j < endIndex; j++) {
-          obsLines.push(lines[j]);
-        }
-        
-        cleanObservationEnd(obsLines);
-        
-        if (nextDateLoc < 0 && obsLines.length > 0) {
-          while (obsLines.length > 0) {
-            const lastLine = obsLines[obsLines.length - 1].trim();
-            if (lastLine.startsWith('## Page ')) {
-              obsLines.pop();
-            } else {
-              break;
-            }
-          }
-        }
-        
-        i = endIndex - 1;
-      }
-    }
-    
-    // Lab Results: Date + Place of Service, include "## " table header, exclude "## Page" or "### Lab Results" at end
-    else if (categoryNameLower.includes('lab results') || categoryNameLower.includes('lab result')) {
-      if (dateLocationPattern.test(lineWithoutPrefix)) {
-        observationCounts[standardCategoryName] = (observationCounts[standardCategoryName] || 0) + 1;
-        const nextDateLoc = findNextDateLocation(i);
-        const endIndex = nextDateLoc > 0 ? nextDateLoc : lines.length;
-        
-        const obsLines: string[] = [];
-        for (let j = i + 1; j < endIndex; j++) {
-          obsLines.push(lines[j]);
-        }
-        
-        // Include "## " table header if it follows immediately
-        if (obsLines.length > 0 && obsLines[0].trim().startsWith('## ')) {
-          // Already included, continue
-        }
-        
-        // Clean end: exclude "## Page" or "### Lab Results"
-        cleanObservationEndSpecific(obsLines, /^(##\s+Page\s+\d+|###\s+Lab\s+Results)/i);
-        
-        if (nextDateLoc < 0 && obsLines.length > 0) {
-          while (obsLines.length > 0) {
-            const lastLine = obsLines[obsLines.length - 1].trim();
-            if (lastLine.startsWith('## Page ')) {
-              obsLines.pop();
-            } else {
-              break;
-            }
-          }
-        }
-        
-        i = endIndex - 1;
-      }
-    }
-    
-    // Medication Records: Same as Lab Results but exclude "### Medication Records"
-    else if (categoryNameLower.includes('medication')) {
-      if (dateLocationPattern.test(lineWithoutPrefix)) {
-        observationCounts[standardCategoryName] = (observationCounts[standardCategoryName] || 0) + 1;
-        const nextDateLoc = findNextDateLocation(i);
-        const endIndex = nextDateLoc > 0 ? nextDateLoc : lines.length;
-        
-        const obsLines: string[] = [];
-        for (let j = i + 1; j < endIndex; j++) {
-          obsLines.push(lines[j]);
-        }
-        
-        // Include "## " table header if it follows immediately
-        if (obsLines.length > 0 && obsLines[0].trim().startsWith('## ')) {
-          // Already included, continue
-        }
-        
-        // Clean end: exclude "## Page" or "### Medication Records"
-        cleanObservationEndSpecific(obsLines, /^(##\s+Page\s+\d+|###\s+Medication\s+Records)/i);
-        
-        if (nextDateLoc < 0 && obsLines.length > 0) {
-          while (obsLines.length > 0) {
-            const lastLine = obsLines[obsLines.length - 1].trim();
-            if (lastLine.startsWith('## Page ')) {
-              obsLines.pop();
-            } else {
-              break;
-            }
-          }
-        }
-        
-        i = endIndex - 1;
-      }
-    }
-  }
-  
-  // Update categoriesList with observation counts
-  categoriesList.value = categoriesList.value.map(category => {
-    // Find matching standard category name
-    const standardName = mapToStandardCategory(category.name);
-    const count = observationCounts[standardName] || 0;
-    
-    return {
-      ...category,
-      observationCount: count
-    };
-  });
-  
-  // Report observation counts for all categories
-  categoryNames.forEach(categoryName => {
-    const count = observationCounts[categoryName] || 0;
-    console.log(`[LISTS] ${categoryName}: ${count} observations`);
-  });
-};
 
 // Reload categories and observations whenever markdown content is available
 const reloadCategories = async () => {
@@ -1707,9 +1379,6 @@ const reloadCategories = async () => {
       
       // THIRD PASS: Count [D+P] lines in all categories
       countDatePlaceInAllCategories(markdownContent.value);
-      
-      // FOURTH PASS: Count observations according to category-specific rules
-      countObservationsByCategory(markdownContent.value);
     }
   }
 };
