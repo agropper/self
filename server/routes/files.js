@@ -1783,6 +1783,14 @@ export default function setupFileRoutes(app, cloudant, doClient) {
         console.log(`🧹 [LISTS] Cleaned ${pagesCleaned} page(s) by removing page footers`);
       }
 
+      // Remove last 4 lines from markdown
+      const markdownLines = fullMarkdown.split('\n');
+      if (markdownLines.length > 4) {
+        markdownLines.splice(-4);
+        fullMarkdown = markdownLines.join('\n');
+        console.log(`✂️ [LISTS] Removed last 4 lines from markdown`);
+      }
+
       // Save markdown to Lists folder
       const listsFolder = `${userId}/Lists/`;
       const cleanFileName = initialFileName.replace(/[^a-zA-Z0-9.-]/g, '_');
