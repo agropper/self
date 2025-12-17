@@ -1005,13 +1005,6 @@ const replaceListsSourceFile = () => {
         console.warn('Failed to update user document (non-critical):', err);
       });
       
-      if (!processResponse.ok) {
-        const errorData = await processResponse.json().catch(() => ({ error: `HTTP ${processResponse.status}` }));
-        throw new Error(errorData.error || 'Failed to process file');
-      }
-      
-      const processResult = await processResponse.json();
-      
       // Update state
       pdfData.value = {
         totalPages: processResult.totalPages,
