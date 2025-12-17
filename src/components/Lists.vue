@@ -1360,64 +1360,166 @@ const countDatePlaceInAllCategories = (markdown: string): void => {
 };
 
 // FOURTH PASS: Count observations based on [D+P] lines within page ranges
-// Currently only handles Clinical Notes
 const countObservationsByPageRange = (markedMarkdown: string): void => {
   const lines = markedMarkdown.split('\n');
+  const dateLocationPattern = /^[A-Z][a-z]{2}\s+\d{1,2},\s+\d{4}\s+\S+/i;
   
-  // Build page boundary map: page number -> line index
-  const pageBoundaries = new Map<number, number>();
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i].trim();
-    const pageMatch = line.match(/^##\s+Page\s+(\d+)$/);
-    if (pageMatch) {
-      const pageNum = parseInt(pageMatch[1], 10);
-      pageBoundaries.set(pageNum, i);
-    }
-  }
-  
-  // Helper to find next page boundary after a given line index
-  const findNextPageBoundary = (startIndex: number): number => {
-    for (let j = startIndex + 1; j < lines.length; j++) {
-      const line = lines[j].trim();
-      if (line.match(/^##\s+Page\s+\d+$/)) {
-        return j;
-      }
-    }
-    return lines.length; // EOF
-  };
-  
-  // Process each category - ONLY Clinical Notes
+  // Process each category
   categoriesList.value = categoriesList.value.map(category => {
     const categoryName = category.name.toLowerCase();
+    let observationCount = 0;
+    let firstObservation: string[] | null = null;
+    let lastObservation: string[] | null = null;
     
-    // Only process Clinical Notes
-    if (!categoryName.includes('clinical notes')) {
-      return category; // Return unchanged for other categories
+    // Allergies: Count lines after "## ALLERGY..." across all pages
+    if (categoryName.includes('allerg')) {
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i].trim();
+        if (line.startsWith('## ALLERGY') || line.startsWith('## Allergy') || line.startsWith('## allergy')) {
+          // Count all non-empty lines after this until next category or page boundary
+          let j = i + 1;
+          const obsLines: string[] = [line];
+          while (j < lines.length) {
+            const nextLine = lines[j].trim();
+            if (nextLine.startsWith('### ') || nextLine.match(/^##\s+Page\s+\d+$/)) {
+              break;
+            }
+            if (nextLine !== '') {
+              obsLines.push(nextLine);
+              observationCount++;
+            }
+            j++;
+          }
+          if (obsLines.length > 0) {
+            if (firstObservation === null) firstObservation = obsLines;
+            lastObservation = obsLines;
+          }
+        }
+      }
     }
     
-    // Process ALL pages, not just the starting page
-    let observationCount = 0;
-    let observationsToLog = 11; // First observation + next 10
-    
     // Clinical Notes: Count lines starting with "Created: " across all pages
-    for (let i = 0; i < lines.length; i++) {
-      const line = lines[i].trim();
-      if (line.startsWith('Created: ')) {
-        observationCount++;
-        
-        // Log first 11 observations
-        if (observationsToLog > 0) {
-          // Get the observation lines (typically 5 lines: Type, Author, Category, Created, Status)
+    else if (categoryName.includes('clinical notes')) {
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i].trim();
+        if (line.startsWith('Created: ')) {
+          observationCount++;
+          // Get the observation lines (5 lines: Type, Author, Category, Created, Status)
           const obsLines: string[] = [];
           for (let j = Math.max(0, i - 3); j < Math.min(lines.length, i + 2); j++) {
             obsLines.push(lines[j].trim());
           }
-          const observationNumber = 12 - observationsToLog; // 1, 2, 3, ..., 11
-          console.log(`[LISTS] FOURTH PASS - Clinical Notes observation ${observationNumber}:`);
-          console.log('  Lines:', obsLines.join(' | '));
-          observationsToLog--;
+          if (firstObservation === null) firstObservation = obsLines;
+          lastObservation = obsLines;
         }
       }
+    }
+    
+    // Clinical Vitals, Conditions, Immunizations, Procedures: Count [D+P] lines
+    else if (categoryName.includes('clinical vitals') || categoryName.includes('vitals') ||
+             categoryName.includes('condition') ||
+             categoryName.includes('immunization') ||
+             categoryName.includes('procedure')) {
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i].trim();
+        if (line.startsWith('[D+P] ')) {
+          const lineWithoutPrefix = line.substring(6).trim();
+          if (dateLocationPattern.test(lineWithoutPrefix)) {
+            observationCount++;
+            // Find next [D+P] line or EOF
+            let endIndex = lines.length;
+            for (let j = i + 1; j < lines.length; j++) {
+              const nextLine = lines[j].trim();
+              if (nextLine.startsWith('[D+P] ')) {
+                const nextLineWithoutPrefix = nextLine.substring(6).trim();
+                if (dateLocationPattern.test(nextLineWithoutPrefix)) {
+                  endIndex = j;
+                  break;
+                }
+              }
+            }
+            // Collect observation lines
+            const obsLines: string[] = [line];
+            for (let j = i + 1; j < endIndex; j++) {
+              obsLines.push(lines[j].trim());
+            }
+            // Clean end: remove lines starting with "## " or "### "
+            while (obsLines.length > 0) {
+              const lastLine = obsLines[obsLines.length - 1].trim();
+              if (lastLine.startsWith('## ') || lastLine.startsWith('### ')) {
+                obsLines.pop();
+              } else {
+                break;
+              }
+            }
+            if (obsLines.length > 0) {
+              if (firstObservation === null) firstObservation = obsLines;
+              lastObservation = obsLines;
+            }
+          }
+        }
+      }
+    }
+    
+    // Lab Results, Medication Records: Count [D+P] lines, include "## " table headers
+    else if (categoryName.includes('lab results') || categoryName.includes('lab result') ||
+             categoryName.includes('medication')) {
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i].trim();
+        if (line.startsWith('[D+P] ')) {
+          const lineWithoutPrefix = line.substring(6).trim();
+          if (dateLocationPattern.test(lineWithoutPrefix)) {
+            observationCount++;
+            // Find next [D+P] line or EOF
+            let endIndex = lines.length;
+            for (let j = i + 1; j < lines.length; j++) {
+              const nextLine = lines[j].trim();
+              if (nextLine.startsWith('[D+P] ')) {
+                const nextLineWithoutPrefix = nextLine.substring(6).trim();
+                if (dateLocationPattern.test(nextLineWithoutPrefix)) {
+                  endIndex = j;
+                  break;
+                }
+              }
+            }
+            // Collect observation lines
+            const obsLines: string[] = [line];
+            for (let j = i + 1; j < endIndex; j++) {
+              obsLines.push(lines[j].trim());
+            }
+            // Include "## " table header if it follows immediately
+            if (obsLines.length > 0 && obsLines[0].trim().startsWith('## ')) {
+              // Already included, continue
+            }
+            // Clean end: exclude "## Page" or category header
+            const excludePattern = categoryName.includes('lab') 
+              ? /^(##\s+Page\s+\d+|###\s+Lab\s+Results)/i
+              : /^(##\s+Page\s+\d+|###\s+Medication\s+Records)/i;
+            while (obsLines.length > 0) {
+              const lastLine = obsLines[obsLines.length - 1].trim();
+              if (excludePattern.test(lastLine)) {
+                obsLines.pop();
+              } else {
+                break;
+              }
+            }
+            if (obsLines.length > 0) {
+              if (firstObservation === null) firstObservation = obsLines;
+              lastObservation = obsLines;
+            }
+          }
+        }
+      }
+    }
+    
+    // Log first and last observations
+    if (firstObservation !== null) {
+      console.log(`[LISTS] FOURTH PASS - ${category.name} FIRST observation:`);
+      console.log('  Lines:', firstObservation.join(' | '));
+    }
+    if (lastObservation !== null && lastObservation !== firstObservation) {
+      console.log(`[LISTS] FOURTH PASS - ${category.name} LAST observation:`);
+      console.log('  Lines:', lastObservation.join(' | '));
     }
     
     return {
