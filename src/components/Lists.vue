@@ -1157,26 +1157,26 @@ const formatObservation = (
     return date;
   } else if (categoryLower.includes('clinical notes')) {
     // Clinical Notes: Date + observation name (Line 1 of 5) + Author (Line 2 of 5) both in bold
-    if (obsLines.length >= 2) {
-      const typeLine = obsLines.find(l => l.includes('Type:') || l.includes('Encounter'))?.trim() || '';
-      const authorLine = obsLines.find(l => l.includes('Author:') || l.includes('MD') || l.includes('RN'))?.trim() || '';
+    // Structure: [D+P] line (index 0), Line 1 = Type, Line 2 = Author, Line 3 = Category, Line 4 = Created, Line 5 = Status
+    if (obsLines.length >= 3) {
+      // Line 1 of 5 is at index 1 (after [D+P] line at index 0)
+      const typeLine = obsLines[1]?.trim() || '';
+      // Line 2 of 5 is at index 2
+      const authorLine = obsLines[2]?.trim() || '';
       
-      let type = '';
-      let author = '';
+      // Clean up the lines - remove any "Type:" or "Author:" prefixes if present
+      let type = typeLine.replace(/^Type:\s*/i, '').trim();
+      let author = authorLine.replace(/^Author:\s*/i, '').trim();
       
-      if (typeLine) {
-        const typeMatch = typeLine.match(/Type:\s*(.+)/i) || typeLine.match(/(.+?)\s*\|/);
-        type = typeMatch ? typeMatch[1].trim() : typeLine;
-      }
+      // If still empty, use the raw line
+      if (!type) type = typeLine;
+      if (!author) author = authorLine;
       
-      if (authorLine) {
-        const authorMatch = authorLine.match(/Author:\s*(.+)/i) || authorLine.match(/(.+?)\s*\|/);
-        author = authorMatch ? authorMatch[1].trim() : authorLine;
-      }
-      
-      if (type || author) {
-        return `${date} **${type || 'N/A'}** **${author || 'N/A'}**`;
-      }
+      return `${date} **${type || 'N/A'}** **${author || 'N/A'}**`;
+    } else if (obsLines.length >= 2) {
+      // Fallback if structure is different - at least try to get first line
+      const typeLine = obsLines[1]?.trim() || '';
+      return `${date} **${typeLine || 'N/A'}** **N/A**`;
     }
     return date;
   } else if (categoryLower.includes('procedure') || 
