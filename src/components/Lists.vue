@@ -1421,6 +1421,7 @@ const countObservationsByCategory = (markdown: string): void => {
     if (line.startsWith('### ')) {
       const categoryName = line.substring(4).trim();
       currentCategory = categoryName;
+      console.log(`[LISTS] FOURTH PASS: Entering category "${categoryName}" at line ${i}`);
       continue;
     }
     
@@ -1431,6 +1432,14 @@ const countObservationsByCategory = (markdown: string): void => {
     
     // Map current category to standard name for counting
     const standardCategoryName = mapToStandardCategory(currentCategory);
+    
+    // Debug: Log when we're in a category and encounter a [D+P] line
+    if (line.startsWith('[D+P] ')) {
+      const matchesPattern = dateLocationPattern.test(lineWithoutPrefix);
+      if (matchesPattern) {
+        console.log(`[LISTS] FOURTH PASS DEBUG: Line ${i} in category "${currentCategory}" (${standardCategoryName}): [D+P] line found, pattern match: ${matchesPattern}`);
+      }
+    }
     
     // Allergies: Each line after "## ALLERGY..." counts as one observation
     if (categoryNameLower.includes('allerg')) {
@@ -1491,6 +1500,7 @@ const countObservationsByCategory = (markdown: string): void => {
     // Conditions: Date + Place of Service pattern
     else if (categoryNameLower.includes('condition')) {
       if (dateLocationPattern.test(lineWithoutPrefix)) {
+        console.log(`[LISTS] FOURTH PASS: Conditions - Found observation at line ${i}: ${lineWithoutPrefix.substring(0, 50)}`);
         observationCounts[standardCategoryName] = (observationCounts[standardCategoryName] || 0) + 1;
         const nextDateLoc = findNextDateLocation(i);
         const endIndex = nextDateLoc > 0 ? nextDateLoc : lines.length;
@@ -1520,6 +1530,7 @@ const countObservationsByCategory = (markdown: string): void => {
     // Immunizations: Date + Place of Service pattern
     else if (categoryNameLower.includes('immunization')) {
       if (dateLocationPattern.test(lineWithoutPrefix)) {
+        console.log(`[LISTS] FOURTH PASS: Immunizations - Found observation at line ${i}: ${lineWithoutPrefix.substring(0, 50)}`);
         observationCounts[standardCategoryName] = (observationCounts[standardCategoryName] || 0) + 1;
         const nextDateLoc = findNextDateLocation(i);
         const endIndex = nextDateLoc > 0 ? nextDateLoc : lines.length;
@@ -1549,6 +1560,7 @@ const countObservationsByCategory = (markdown: string): void => {
     // Procedures: Date + Place of Service pattern
     else if (categoryNameLower.includes('procedure')) {
       if (dateLocationPattern.test(lineWithoutPrefix)) {
+        console.log(`[LISTS] FOURTH PASS: Procedures - Found observation at line ${i}: ${lineWithoutPrefix.substring(0, 50)}`);
         observationCounts[standardCategoryName] = (observationCounts[standardCategoryName] || 0) + 1;
         const nextDateLoc = findNextDateLocation(i);
         const endIndex = nextDateLoc > 0 ? nextDateLoc : lines.length;
@@ -1578,6 +1590,7 @@ const countObservationsByCategory = (markdown: string): void => {
     // Lab Results: Date + Place of Service, include "## " table header, exclude "## Page" or "### Lab Results" at end
     else if (categoryNameLower.includes('lab results') || categoryNameLower.includes('lab result')) {
       if (dateLocationPattern.test(lineWithoutPrefix)) {
+        console.log(`[LISTS] FOURTH PASS: Lab Results - Found observation at line ${i}: ${lineWithoutPrefix.substring(0, 50)}`);
         observationCounts[standardCategoryName] = (observationCounts[standardCategoryName] || 0) + 1;
         const nextDateLoc = findNextDateLocation(i);
         const endIndex = nextDateLoc > 0 ? nextDateLoc : lines.length;
@@ -1613,6 +1626,7 @@ const countObservationsByCategory = (markdown: string): void => {
     // Medication Records: Same as Lab Results but exclude "### Medication Records"
     else if (categoryNameLower.includes('medication')) {
       if (dateLocationPattern.test(lineWithoutPrefix)) {
+        console.log(`[LISTS] FOURTH PASS: Medication Records - Found observation at line ${i}: ${lineWithoutPrefix.substring(0, 50)}`);
         observationCounts[standardCategoryName] = (observationCounts[standardCategoryName] || 0) + 1;
         const nextDateLoc = findNextDateLocation(i);
         const endIndex = nextDateLoc > 0 ? nextDateLoc : lines.length;
