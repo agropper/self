@@ -144,7 +144,7 @@
                       >
                         <q-item-section>
                           <q-item-label class="text-body2 text-negative">
-                            {{ oorLine.trim() }}
+                            {{ fixOutOfRangeText(oorLine.trim()) }}
                           </q-item-label>
                         </q-item-section>
                       </q-item>
@@ -1119,6 +1119,13 @@ const findPageForLine = (lineIndex: number, lines: string[]): number => {
     }
   }
   return currentPage;
+};
+
+// Fix "OUT OF RANGE" text that may have encoding issues with the E in RANGE
+const fixOutOfRangeText = (text: string): string => {
+  // Replace variations of "RANG" followed by any character with "RANGE"
+  // This handles cases where "RANGE" is displayed as "RANG*" or "RANG?" etc.
+  return text.replace(/RANG[^\s]/gi, 'RANGE');
 };
 
 // Extract observations for a category based on its type
