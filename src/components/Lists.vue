@@ -929,7 +929,7 @@ const replaceListsSourceFile = () => {
     error.value = '';
     
     try {
-      // Upload file (will go to user root, then we'll process it)
+      // Upload file to user root folder
       const formData = new FormData();
       formData.append('file', file);
       
