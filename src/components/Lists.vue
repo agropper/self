@@ -1315,8 +1315,8 @@ const formatObservation = (
     // Clinical Vitals, Lab Results: Date + total number of lines in observation (clickable if page available)
     // Use provided lineCount if available (for merged Clinical Vitals), otherwise use obsLines.length
     const count = lineCount ?? obsLines.length;
-    if (page && categoryLower.includes('clinical vitals')) {
-      // Make line count clickable for Clinical Vitals
+    if (page && (categoryLower.includes('clinical vitals') || categoryLower.includes('lab result'))) {
+      // Make line count clickable for Clinical Vitals and Lab Results
       return `${date} (<a href="#" class="text-primary" style="text-decoration: underline; cursor: pointer;" data-page="${page}">${count} line${count !== 1 ? 's' : ''}</a>)`;
     }
     return `${date} (${count} line${count !== 1 ? 's' : ''})`;
