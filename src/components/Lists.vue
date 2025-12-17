@@ -1095,14 +1095,6 @@ const extractObservationsForCategory = (
   const observations: Array<{ date: string; display: string }> = [];
   const categoryLower = categoryName.toLowerCase();
   
-  console.log(`[LISTS] extractObservationsForCategory: "${categoryName}" (${categoryLower.includes('allerg') ? 'ALLERGIES' : 'other'}), startLine: ${startLine}, endLine: ${endLine}`);
-  
-  // Debug: Show lines in range for Allergies
-  if (categoryLower.includes('allerg')) {
-    console.log(`[LISTS] Allergies: Lines in range ${startLine}-${endLine}:`, 
-      lines.slice(startLine, Math.min(endLine + 1, lines.length)).map((l, idx) => `${startLine + idx}: ${l.substring(0, 80)}`));
-  }
-  
   let currentObservationStart = -1;
   let currentDate = '';
   let dPlusCount = 0;
@@ -1119,9 +1111,6 @@ const extractObservationsForCategory = (
         const display = formatObservation(categoryName, currentDate, obsLines, lines, i);
         if (display) {
           observations.push({ date: currentDate, display });
-          if (categoryLower.includes('allerg')) {
-            console.log(`[LISTS] Allergies: Added observation with date ${currentDate}, ${obsLines.length} lines`);
-          }
         }
       }
       
@@ -1130,9 +1119,6 @@ const extractObservationsForCategory = (
       if (dateMatch) {
         currentDate = dateMatch[1];
         currentObservationStart = i;
-        if (categoryLower.includes('allerg')) {
-          console.log(`[LISTS] Allergies: Found [D+P] line at index ${i}, date: ${currentDate}`);
-        }
       }
     }
   }
@@ -1143,15 +1129,11 @@ const extractObservationsForCategory = (
     const display = formatObservation(categoryName, currentDate, obsLines, lines, endLine + 1);
     if (display) {
       observations.push({ date: currentDate, display });
-      if (categoryLower.includes('allerg')) {
-        console.log(`[LISTS] Allergies: Added last observation with date ${currentDate}, ${obsLines.length} lines`);
-      }
     }
   }
   
   // Special handling for Allergies: if no [D+P] lines found, treat entire category as one observation
   if (categoryLower.includes('allerg') && dPlusCount === 0 && endLine > startLine) {
-    console.log(`[LISTS] Allergies: No [D+P] lines found, treating entire category as one observation`);
     const allLines = lines.slice(startLine, endLine + 1);
     // Use a placeholder date or extract from first line if possible
     let allergyDate = 'Unknown';
@@ -1163,11 +1145,8 @@ const extractObservationsForCategory = (
     const display = formatObservation(categoryName, allergyDate, allLines, lines, endLine + 1);
     if (display && allLines.length > 1) {
       observations.push({ date: allergyDate, display });
-      console.log(`[LISTS] Allergies: Added observation from entire category, ${allLines.length} lines`);
     }
   }
-  
-  console.log(`[LISTS] extractObservationsForCategory: "${categoryName}" found ${dPlusCount} [D+P] lines, extracted ${observations.length} observations`);
   
   return observations;
 };
@@ -1185,34 +1164,36 @@ const formatObservation = (
   if (categoryLower.includes('allerg')) {
     // Allergies: Date + Line 2 and all subsequent lines until next [D+P] or category
     // Only the first word of each line should be bold
-    console.log(`[LISTS] formatObservation Allergies: ${obsLines.length} lines, date: ${date}`);
-    if (obsLines.length >= 2) {
-      // Start from Line 2 (index 1, since [D+P] is at index 0)
-      const observationLines = obsLines.slice(1);
-      console.log(`[LISTS] Allergies: observationLines (${observationLines.length}):`, observationLines.slice(0, 3).map(l => l.substring(0, 50)));
-      const formattedLines = observationLines.map(line => {
-        const trimmed = line.trim();
-        if (!trimmed) return '';
-        // Get first word and rest of line
-        const firstSpaceIndex = trimmed.indexOf(' ');
-        if (firstSpaceIndex > 0) {
-          const firstWord = trimmed.substring(0, firstSpaceIndex);
-          const rest = trimmed.substring(firstSpaceIndex + 1);
-          return `**${firstWord}** ${rest}`;
+    // Skip first line if it starts with "## " (page header)
+    if (obsLines.length >= 1) {
+      let startIndex = 0;
+      // Skip first line if it's a page header (starts with "## ")
+      if (obsLines[0]?.trim().startsWith('## ')) {
+        startIndex = 1;
+      }
+      
+      if (obsLines.length > startIndex) {
+        // Start from after the page header (or Line 2 if no page header)
+        const observationLines = obsLines.slice(startIndex);
+        const formattedLines = observationLines.map(line => {
+          const trimmed = line.trim();
+          if (!trimmed) return '';
+          // Get first word and rest of line
+          const firstSpaceIndex = trimmed.indexOf(' ');
+          if (firstSpaceIndex > 0) {
+            const firstWord = trimmed.substring(0, firstSpaceIndex);
+            const rest = trimmed.substring(firstSpaceIndex + 1);
+            return `**${firstWord}** ${rest}`;
+          }
+          // If no space, just bold the whole line
+          return `**${trimmed}**`;
+        }).filter(line => line.length > 0);
+        
+        if (formattedLines.length > 0) {
+          return `${date} ${formattedLines.join(' ')}`;
         }
-        // If no space, just bold the whole line
-        return `**${trimmed}**`;
-      }).filter(line => line.length > 0);
-      
-      console.log(`[LISTS] Allergies: formattedLines (${formattedLines.length}):`, formattedLines.slice(0, 2));
-      
-      if (formattedLines.length > 0) {
-        const result = `${date} ${formattedLines.join(' ')}`;
-        console.log(`[LISTS] Allergies: returning formatted result (${result.length} chars)`);
-        return result;
       }
     }
-    console.log(`[LISTS] Allergies: returning just date (no lines to format)`);
     return date;
   } else if (categoryLower.includes('medication')) {
     // Medications: Date + medication name + dose (both in bold)
@@ -1275,17 +1256,11 @@ const formatObservation = (
 const countObservationsByPageRange = (markedMarkdown: string): void => {
   const lines = markedMarkdown.split('\n');
   
-  console.log(`[LISTS] SECOND PASS: Processing ${categoriesList.value.length} categories`);
-  
   // Process each category using boundaries calculated in FIRST PASS
   categoriesList.value = categoriesList.value.map(category => {
     const categoryName = category.name;
     const startLine = category.startLine ?? 0;
     const endLine = category.endLine ?? lines.length - 1;
-    
-    if (categoryName.toLowerCase().includes('allerg')) {
-      console.log(`[LISTS] Processing Allergies category: startLine=${startLine}, endLine=${endLine}`);
-    }
     
     // Count [D+P] lines in this category's range
     let dPlusCount = 0;
@@ -1336,10 +1311,6 @@ const countObservationsByPageRange = (markedMarkdown: string): void => {
     // Extract observations for this category
     const observations = extractObservationsForCategory(categoryName, startLine, endLine, lines);
     
-    if (categoryName.toLowerCase().includes('allerg')) {
-      console.log(`[LISTS] Allergies category result: ${dPlusCount} [D+P] lines, ${observations.length} observations extracted`);
-    }
-    
     return {
       ...category,
       observationCount: dPlusCount,
@@ -1347,9 +1318,6 @@ const countObservationsByPageRange = (markedMarkdown: string): void => {
       expanded: expandedCategories.value.has(categoryName)
     };
   });
-  
-  console.log(`[LISTS] SECOND PASS complete. Categories with observations:`, 
-    categoriesList.value.filter(c => c.observations && c.observations.length > 0).map(c => `${c.name} (${c.observations?.length})`));
 };
 
 
