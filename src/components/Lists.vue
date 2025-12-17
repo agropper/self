@@ -372,7 +372,6 @@ const loadSavedResults = async () => {
       
       // If Lists folder doesn't exist or is empty, reset state
       if (!markdownResult.hasMarkdown) {
-        console.log('[LISTS] No markdown file found - resetting state');
         hasSavedResults.value = false;
         pdfData.value = null;
         markdownContent.value = '';
@@ -412,9 +411,6 @@ const loadSavedResults = async () => {
         
         // Extract categories from markdown (use original, not marked version)
         extractCategoriesFromMarkdown(markdownResult.markdown);
-        
-        // THIRD PASS: Count [D+P] lines in all categories
-        countDatePlaceInAllCategories(markdownContent.value);
         
         // FOURTH PASS: Count observations (Clinical Notes only for now)
         countObservationsByPageRange(markdownContent.value);
@@ -763,9 +759,6 @@ const cleanupMarkdown = async () => {
         // Re-extract categories after cleanup (use original, not marked version)
         extractCategoriesFromMarkdown(markdownResult.markdown);
         
-        // THIRD PASS: Count [D+P] lines in all categories
-        countDatePlaceInAllCategories(markdownContent.value);
-        
         // FOURTH PASS: Count observations (Clinical Notes only for now)
         countObservationsByPageRange(markdownContent.value);
       }
@@ -1022,15 +1015,6 @@ const countObservationsByPageRange = (markedMarkdown: string): void => {
       }
     }
     
-    // Log first and last observations
-    if (firstObservation !== null) {
-      console.log(`[LISTS] FOURTH PASS - ${category.name} FIRST observation:`);
-      console.log('  Lines:', firstObservation.join(' | '));
-    }
-    if (lastObservation !== null && lastObservation !== firstObservation) {
-      console.log(`[LISTS] FOURTH PASS - ${category.name} LAST observation:`);
-      console.log('  Lines:', lastObservation.join(' | '));
-    }
     
     return {
       ...category,
