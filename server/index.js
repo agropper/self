@@ -3761,7 +3761,165 @@ async function provisionUserAsync(userId, token) {
       agentName: agentName
     });
 
-    // Step 7.5: Verify KB Contents and Generate Patient Summary (if initial file was indexed)
+    // Step 7.5: Generate Current Medications (if Lists processing was done and agent is ready)
+    if (userDoc.initialFile && userDoc.initialFile.bucketKey && agentEndpointUrl && apiKey) {
+      try {
+        const initialFileName = userDoc.initialFile.fileName;
+        const listsFolder = `${userId}/Lists/`;
+        const markdownFileName = initialFileName.replace(/\.pdf$/i, '.md');
+        const markdownBucketKey = `${listsFolder}${markdownFileName}`;
+        
+        // Check if Lists markdown file exists
+        const { S3Client, GetObjectCommand, HeadObjectCommand } = await import('@aws-sdk/client-s3');
+        
+        // Get S3 client (same pattern as in files.js)
+        const bucketUrl = process.env.DIGITALOCEAN_BUCKET;
+        if (!bucketUrl) {
+          logProvisioning(userId, `⚠️  [CURRENT MEDICATIONS] DigitalOcean bucket not configured. Skipping.`, 'warning');
+        } else {
+          const bucketName = bucketUrl.split('//')[1]?.split('.')[0] || 'maia';
+          const s3Client = new S3Client({
+            endpoint: process.env.DIGITALOCEAN_ENDPOINT_URL || 'https://tor1.digitaloceanspaces.com',
+            region: 'us-east-1',
+            forcePathStyle: false,
+            credentials: {
+              accessKeyId: process.env.DIGITALOCEAN_AWS_ACCESS_KEY_ID || '',
+              secretAccessKey: process.env.DIGITALOCEAN_AWS_SECRET_ACCESS_KEY || ''
+            }
+          });
+        
+        let markdownExists = false;
+        try {
+          await s3Client.send(new HeadObjectCommand({
+            Bucket: bucketName,
+            Key: markdownBucketKey
+          }));
+          markdownExists = true;
+        } catch (headErr) {
+          logProvisioning(userId, `ℹ️  [CURRENT MEDICATIONS] Lists markdown not found: ${markdownBucketKey}. Skipping Current Medications generation.`, 'info');
+        }
+        
+        if (markdownExists) {
+          updateStatus('Generating Current Medications...', { fileName: initialFileName });
+          logProvisioning(userId, `💊 [CURRENT MEDICATIONS] Generating current medications from Lists markdown...`, 'info');
+          
+          try {
+            // Read markdown file
+            const getCommand = new GetObjectCommand({
+              Bucket: bucketName,
+              Key: markdownBucketKey
+            });
+            const markdownResponse = await s3Client.send(getCommand);
+            
+            const chunks = [];
+            for await (const chunk of markdownResponse.Body) {
+              chunks.push(chunk);
+            }
+            const markdownContent = Buffer.concat(chunks).toString('utf-8');
+            
+            // Extract Medication Records observations
+            const lines = markdownContent.split('\n');
+            let inMedicationCategory = false;
+            let medicationStartLine = -1;
+            let medicationEndLine = -1;
+            const medicationObservations = [];
+            
+            // Find Medication Records category boundaries
+            for (let i = 0; i < lines.length; i++) {
+              const line = lines[i].trim();
+              
+              // Check for Medication Records category
+              if (line.startsWith('### ') && line.toLowerCase().includes('medication')) {
+                if (line.toLowerCase().includes('record')) {
+                  inMedicationCategory = true;
+                  medicationStartLine = i;
+                } else if (inMedicationCategory) {
+                  // Next category found - end of Medication Records
+                  medicationEndLine = i - 1;
+                  break;
+                }
+              } else if (inMedicationCategory && line.startsWith('### ')) {
+                // Another category found - end of Medication Records
+                medicationEndLine = i - 1;
+                break;
+              }
+            }
+            
+            // If we found the category, extract [D+P] lines
+            if (inMedicationCategory && medicationStartLine >= 0) {
+              if (medicationEndLine < 0) {
+                medicationEndLine = lines.length - 1;
+              }
+              
+              for (let i = medicationStartLine; i <= medicationEndLine; i++) {
+                const line = lines[i];
+                if (line.includes('[D+P]')) {
+                  // Extract the observation text (everything after [D+P])
+                  const observationText = line.replace(/^.*?\[D\+P\](?:\s+\w+)?\s*/, '').trim();
+                  if (observationText) {
+                    medicationObservations.push({
+                      display: observationText,
+                      date: observationText.split(/\s+/)[0] || ''
+                    });
+                  }
+                }
+              }
+            }
+            
+            if (medicationObservations.length > 0) {
+              logProvisioning(userId, `💊 [CURRENT MEDICATIONS] Found ${medicationObservations.length} medication observations`, 'info');
+              
+              // Format observations for AI prompt
+              const medicationsText = medicationObservations.map((obs, idx) => {
+                return `${idx + 1}. ${obs.display || obs.date || 'Unknown medication'}`;
+              }).join('\n');
+              
+              // Call Private AI to generate current medications
+              const { DigitalOceanProvider } = await import('../lib/chat-client/providers/digitalocean.js');
+              const agentProvider = new DigitalOceanProvider(apiKey, {
+                baseURL: agentEndpointUrl
+              });
+              
+              const prompt = `What are the current medications from this list?\n\n${medicationsText}\n\nPlease list only the medications that are currently active or being taken. Format your response as a clear, readable list.`;
+              
+              logProvisioning(userId, `🤖 [CURRENT MEDICATIONS] Calling Private AI to identify current medications...`, 'info');
+              
+              const response = await agentProvider.chat(
+                [{ role: 'user', content: prompt }],
+                { 
+                  model: agentModelName || 'openai-gpt-oss-120b',
+                  stream: false
+                }
+              );
+              
+              const currentMedications = (response.content || response.text || '').trim();
+              
+              if (currentMedications && currentMedications.length > 0) {
+                // Save to user document
+                await updateUserDoc({
+                  currentMedications: currentMedications
+                });
+                
+                logProvisioning(userId, `✅ [CURRENT MEDICATIONS] Current medications generated and saved successfully`, 'success');
+                updateStatus('Current Medications generated', { medicationsGenerated: true });
+              } else {
+                logProvisioning(userId, `⚠️  [CURRENT MEDICATIONS] Empty response from Private AI`, 'warning');
+              }
+            } else {
+              logProvisioning(userId, `ℹ️  [CURRENT MEDICATIONS] No medication observations found in Lists markdown`, 'info');
+            }
+          } catch (medError) {
+            logProvisioning(userId, `⚠️  [CURRENT MEDICATIONS] Error generating current medications: ${medError.message}. Continuing provisioning.`, 'warning');
+            // Don't fail provisioning if Current Medications generation fails
+          }
+        }
+      } catch (currentMedsError) {
+        logProvisioning(userId, `⚠️  [CURRENT MEDICATIONS] Error in Current Medications step: ${currentMedsError.message}. Continuing provisioning.`, 'warning');
+        // Don't fail provisioning
+      }
+    }
+
+    // Step 7.6: Verify KB Contents and Generate Patient Summary (if initial file was indexed)
     // This happens after agent is fully deployed and has API key
     if (userDoc.initialFile && userDoc.initialFile.bucketKey && agentEndpointUrl && apiKey) {
       try {
