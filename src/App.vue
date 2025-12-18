@@ -361,6 +361,28 @@ onMounted(async () => {
   
   const params = new URLSearchParams(window.location.search);
   
+  // Check for Current Medications editor deep link
+  const editMedicationsToken = params.get('editMedications');
+  const editMedicationsUserId = params.get('userId');
+  
+  // Store for later use after authentication
+  if (editMedicationsToken && editMedicationsUserId) {
+    // Store in sessionStorage for later retrieval after authentication
+    sessionStorage.setItem('pendingMedicationsEdit', JSON.stringify({
+      token: editMedicationsToken,
+      userId: editMedicationsUserId
+    }));
+    
+    // Remove from URL to clean it up
+    params.delete('editMedications');
+    params.delete('userId');
+    const newSearch = params.toString();
+    const newUrl = newSearch 
+      ? `${window.location.pathname}?${newSearch}${window.location.hash}`
+      : `${window.location.pathname}${window.location.hash}`;
+    window.history.replaceState({}, '', newUrl);
+  }
+  
   let share: string | null = null;
   const queryShare = params.get('share');
   if (queryShare) {

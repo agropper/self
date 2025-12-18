@@ -3415,6 +3415,42 @@ onMounted(async () => {
   if (deepLinkShareId.value) {
     loadDeepLinkChat(true);
   }
+  
+  // Check for pending Current Medications edit deep link
+  const pendingEdit = sessionStorage.getItem('pendingMedicationsEdit');
+  if (pendingEdit && props.user?.userId) {
+    try {
+      const editData = JSON.parse(pendingEdit);
+      if (editData.token && editData.userId === props.user.userId) {
+        // Verify token
+        const verifyResponse = await fetch(`/api/verify-medications-token?token=${encodeURIComponent(editData.token)}&userId=${encodeURIComponent(editData.userId)}`, {
+          credentials: 'include'
+        });
+        
+        if (verifyResponse.ok) {
+          const verifyResult = await verifyResponse.json();
+          if (verifyResult.valid && !verifyResult.expired) {
+            // Token is valid - open My Stuff dialog with Lists tab and auto-edit
+            myStuffInitialTab.value = 'lists';
+            showMyStuffDialog.value = true;
+            // Store flag to auto-edit medications in Lists component
+            sessionStorage.setItem('autoEditMedications', 'true');
+            // Clear the pending edit from sessionStorage
+            sessionStorage.removeItem('pendingMedicationsEdit');
+          } else {
+            // Token invalid or expired - clear it
+            sessionStorage.removeItem('pendingMedicationsEdit');
+            if (verifyResult.expired) {
+              console.warn('Current Medications edit token has expired');
+            }
+          }
+        }
+      }
+    } catch (err) {
+      console.error('Error processing pending medications edit:', err);
+      sessionStorage.removeItem('pendingMedicationsEdit');
+    }
+  }
 });
 
 // Cleanup on unmount (must be at top level, not inside onMounted)

@@ -383,7 +383,7 @@
 
 <script setup lang="ts">
 import PdfViewerModal from './PdfViewerModal.vue';
-import { ref, computed, onMounted, watch, onActivated } from 'vue';
+import { ref, computed, onMounted, watch, onActivated, nextTick } from 'vue';
 import { useQuasar } from 'quasar';
 
 const $q = useQuasar();
@@ -1448,6 +1448,9 @@ const extractObservationsForCategory = (
   const shouldMergeByDate = categoryLower.includes('clinical vitals') || categoryLower.includes('lab result');
   const mergedByDate = new Map<string, { lineCount: number; page?: number; outOfRangeLines?: string[] }>();
   
+  // Special handling for Immunizations: each content line after [D+P] becomes a separate observation
+  const isImmunizations = categoryLower.includes('immunization');
+  
   let currentObservationStart = -1;
   let currentDate = '';
   let dPlusCount = 0;
@@ -1458,8 +1461,37 @@ const extractObservationsForCategory = (
     // Check if this is a [D+P] line (start of new observation)
     if (line.startsWith('[D+P] ')) {
       dPlusCount++;
-      // Save previous observation if exists
-      if (currentObservationStart >= 0 && currentDate) {
+      
+      // For Immunizations: process all content lines from previous [D+P] as separate observations
+      if (isImmunizations && currentObservationStart >= 0 && currentDate) {
+        const page = findPageForLine(currentObservationStart, lines);
+        const dPlusLine = lines[currentObservationStart]; // The [D+P] line
+        
+        // For Immunizations, create one observation per content line (skip the [D+P] line itself)
+        // Content lines are non-empty lines that don't start with [D+P], ###, or ##
+        for (let j = currentObservationStart + 1; j < i; j++) {
+          const contentLine = lines[j].trim();
+          // Skip empty lines, category headers, page headers, and [D+P] lines
+          if (contentLine && 
+              !contentLine.startsWith('[D+P]') && 
+              !contentLine.startsWith('###') && 
+              !contentLine.startsWith('## ')) {
+            // Create a separate observation for this content line
+            // formatObservation expects obsLines[0] to be the [D+P] line and obsLines[1] to be the content
+            const singleLineObs = [dPlusLine, lines[j]]; // [D+P] line + content line
+            const display = formatObservation(categoryName, currentDate, singleLineObs, lines, i, page);
+            if (display) {
+              observations.push({ 
+                date: currentDate, 
+                display, 
+                page, 
+                lineCount: 1
+              });
+            }
+          }
+        }
+      } else if (currentObservationStart >= 0 && currentDate) {
+        // For other categories, process as before
         const obsLines = lines.slice(currentObservationStart, i);
         const page = findPageForLine(currentObservationStart, lines);
         
@@ -1518,42 +1550,71 @@ const extractObservationsForCategory = (
     const obsLines = lines.slice(currentObservationStart, endLine + 1);
     const page = findPageForLine(currentObservationStart, lines);
     
-    // For Lab Results, track lines with "OUT   OF   RANG*"
-    let outOfRangeLines: string[] = [];
-    if (categoryLower.includes('lab result')) {
-      outOfRangeLines = obsLines.filter(l => l.includes('OUT') && l.includes('OF') && l.includes('RANG'));
-    }
-    
-    if (shouldMergeByDate) {
-      // For Clinical Vitals and Lab Results, merge observations with same date
-      const existing = mergedByDate.get(currentDate);
-      if (existing) {
-        existing.lineCount += obsLines.length;
-        // Merge out of range lines
-        if (categoryLower.includes('lab result') && outOfRangeLines.length > 0) {
-          if (!existing.outOfRangeLines) {
-            existing.outOfRangeLines = [];
+    // For Immunizations: process all content lines as separate observations
+    if (isImmunizations) {
+      const dPlusLine = lines[currentObservationStart]; // The [D+P] line
+      
+      // Create one observation per content line (skip the [D+P] line itself)
+      for (let j = currentObservationStart + 1; j <= endLine; j++) {
+        const contentLine = lines[j].trim();
+        // Skip empty lines, category headers, page headers, and [D+P] lines
+        if (contentLine && 
+            !contentLine.startsWith('[D+P]') && 
+            !contentLine.startsWith('###') && 
+            !contentLine.startsWith('## ')) {
+          // Create a separate observation for this content line
+          // formatObservation expects obsLines[0] to be the [D+P] line and obsLines[1] to be the content
+          const singleLineObs = [dPlusLine, lines[j]]; // [D+P] line + content line
+          const display = formatObservation(categoryName, currentDate, singleLineObs, lines, endLine + 1, page);
+          if (display) {
+            observations.push({ 
+              date: currentDate, 
+              display, 
+              page, 
+              lineCount: 1
+            });
           }
-          existing.outOfRangeLines.push(...outOfRangeLines);
         }
-      } else {
-        mergedByDate.set(currentDate, { 
-          lineCount: obsLines.length, 
-          page,
-          outOfRangeLines: categoryLower.includes('lab result') && outOfRangeLines.length > 0 ? outOfRangeLines : undefined
-        });
       }
     } else {
-      // For other categories, create separate observations
-      const display = formatObservation(categoryName, currentDate, obsLines, lines, endLine + 1, page);
-      if (display) {
-        observations.push({ 
-          date: currentDate, 
-          display, 
-          page, 
-          lineCount: obsLines.length,
-          outOfRangeLines: categoryLower.includes('lab result') && outOfRangeLines.length > 0 ? outOfRangeLines : undefined
-        });
+      // For other categories, process as before
+      // For Lab Results, track lines with "OUT   OF   RANG*"
+      let outOfRangeLines: string[] = [];
+      if (categoryLower.includes('lab result')) {
+        outOfRangeLines = obsLines.filter(l => l.includes('OUT') && l.includes('OF') && l.includes('RANG'));
+      }
+      
+      if (shouldMergeByDate) {
+        // For Clinical Vitals and Lab Results, merge observations with same date
+        const existing = mergedByDate.get(currentDate);
+        if (existing) {
+          existing.lineCount += obsLines.length;
+          // Merge out of range lines
+          if (categoryLower.includes('lab result') && outOfRangeLines.length > 0) {
+            if (!existing.outOfRangeLines) {
+              existing.outOfRangeLines = [];
+            }
+            existing.outOfRangeLines.push(...outOfRangeLines);
+          }
+        } else {
+          mergedByDate.set(currentDate, { 
+            lineCount: obsLines.length, 
+            page,
+            outOfRangeLines: categoryLower.includes('lab result') && outOfRangeLines.length > 0 ? outOfRangeLines : undefined
+          });
+        }
+      } else {
+        // For other categories, create separate observations
+        const display = formatObservation(categoryName, currentDate, obsLines, lines, endLine + 1, page);
+        if (display) {
+          observations.push({ 
+            date: currentDate, 
+            display, 
+            page, 
+            lineCount: obsLines.length,
+            outOfRangeLines: categoryLower.includes('lab result') && outOfRangeLines.length > 0 ? outOfRangeLines : undefined
+          });
+        }
       }
     }
   }
@@ -2035,6 +2096,18 @@ onMounted(async () => {
   await loadSavedResults(); // Check for saved results first
   // Load current medications from user document
   loadCurrentMedications();
+  
+  // Check if we should auto-edit medications (from deep link)
+  const autoEdit = sessionStorage.getItem('autoEditMedications');
+  if (autoEdit === 'true' && currentMedications.value) {
+    // Clear the flag
+    sessionStorage.removeItem('autoEditMedications');
+    // Wait a bit for the dialog to fully open, then start editing
+    await nextTick();
+    setTimeout(() => {
+      startEditingCurrentMedications();
+    }, 500);
+  }
 });
 
 // Load current medications from user document or Medication Records

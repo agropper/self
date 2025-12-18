@@ -88,7 +88,7 @@ export class EmailService {
    * @param {boolean} options.success - Whether provisioning succeeded
    * @param {string} options.errorDetails - Error details if provisioning failed
    */
-  async sendProvisioningCompletionEmail({ userId, userEmail, success, errorDetails = null }) {
+  async sendProvisioningCompletionEmail({ userId, userEmail, success, errorDetails = null, currentMedicationsToken = null }) {
     if (!this.apiKey || !this.fromEmail) {
       console.warn('⚠️  Email service not configured (RESEND_API_KEY, RESEND_FROM_EMAIL)');
       return { success: false, error: 'Email service not configured' };
@@ -103,9 +103,43 @@ export class EmailService {
       ? `Private MAIA provisioned for ${userId}`
       : `Private MAIA provisioning failed for ${userId}`;
 
-    const body = success
-      ? `Hi ${userId},\n${userEmail}\n\nYour Private AI agent has been provisioned and is ready to receive your health records.\n\nMAIA, including your Private AI agent, can work with imported files directly but large documents may fail and many privacy features will be unavailable. For large files and best results, use the SAVED FILES tab in My Stuff to choose files for indexing into your knowledge base.\n\nI look forward to hearing from you with comments, suggestions and, of course, bugs.\n\n-Adrian`
-      : `Hi ${userId},\n${userEmail}\n\nUnfortunately, provisioning of your Private AI agent failed.\n\nError Details:\n${errorDetails || 'Unknown error occurred during provisioning.'}\n\nPlease contact support for assistance.\n\n-Adrian`;
+    let body;
+    let htmlBody;
+
+    if (success) {
+      // Build deep link URL if token is provided
+      let medicationsLink = '';
+      if (currentMedicationsToken) {
+        const medicationsUrl = `${this.baseUrl}/?editMedications=${currentMedicationsToken}&userId=${userId}`;
+        medicationsLink = `\n\n**IMPORTANT**: Please review and edit your Current Medications list. This helps ensure your Patient Summary is accurate.\n\n[Edit Current Medications](${medicationsUrl})\n\nAfter you save your medications, your Patient Summary will be automatically generated.\n\n`;
+        
+        htmlBody = `
+          <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+            <p>Hi ${userId},</p>
+            <p>Your Private MAIA has been provisioned and is ready to use!</p>
+            <p style="font-weight: bold; color: #d32f2f;">IMPORTANT: Please review and edit your Current Medications list. This helps ensure your Patient Summary is accurate.</p>
+            <p style="margin: 20px 0;">
+              <a href="${medicationsUrl}" 
+                 style="background-color: #007bff; color: white; padding: 12px 24px; text-decoration: none; border-radius: 4px; display: inline-block;">
+                Edit Current Medications
+              </a>
+            </p>
+            <p>After you save your medications, your Patient Summary will be automatically generated.</p>
+            <p>Your Private AI agent is ready to receive your health records and answer questions.</p>
+            <p>-Adrian</p>
+          </div>
+        `;
+      }
+      
+      body = `Hi ${userId},\n\nYour Private MAIA has been provisioned and is ready to use!${medicationsLink}\nYour Private AI agent is ready to receive your health records and answer questions.\n\n-Adrian`;
+      
+      if (!medicationsLink) {
+        // Fallback if no token provided
+        body = `Hi ${userId},\n\nYour Private AI agent has been provisioned and is ready to receive your health records.\n\nMAIA, including your Private AI agent, can work with imported files directly but large documents may fail and many privacy features will be unavailable. For large files and best results, use the SAVED FILES tab in My Stuff to choose files for indexing into your knowledge base.\n\nI look forward to hearing from you with comments, suggestions and, of course, bugs.\n\n-Adrian`;
+      }
+    } else {
+      body = `Hi ${userId},\n\nUnfortunately, provisioning of your Private AI agent failed.\n\nError Details:\n${errorDetails || 'Unknown error occurred during provisioning.'}\n\nPlease contact support for assistance.\n\n-Adrian`;
+    }
 
     const emailData = {
       from: this.fromEmail,
@@ -113,6 +147,11 @@ export class EmailService {
       subject: subject,
       text: body
     };
+    
+    // Use HTML if available (for better link formatting)
+    if (htmlBody) {
+      emailData.html = htmlBody;
+    }
     
     // Add CC to admin email if configured
     if (this.adminEmail) {
@@ -233,6 +272,27 @@ export class EmailService {
     const timestamp = Date.now();
     const random = Math.random().toString(36).substring(2, 15);
     return `${userId}_${timestamp}_${random}`;
+  }
+
+  /**
+   * Generate a secure token for Current Medications editor deep link
+   * @param {string} userId - User ID
+   * @returns {Object} Token object with token string and expiration timestamp
+   */
+  generateCurrentMedicationsToken(userId) {
+    // Generate cryptographically secure random token (32 hex characters)
+    // Use crypto module (available in Node.js)
+    const crypto = require('crypto');
+    const token = crypto.randomBytes(16).toString('hex');
+    
+    // Set expiration to 7 days from now
+    const expiresAt = new Date();
+    expiresAt.setDate(expiresAt.getDate() + 7);
+    
+    return {
+      token,
+      expiresAt: expiresAt.toISOString()
+    };
   }
 }
 

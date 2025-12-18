@@ -4061,12 +4061,18 @@ async function provisionUserAsync(userId, token) {
               const currentMedications = (response.content || response.text || '').trim();
               
               if (currentMedications && currentMedications.length > 0) {
-                // Save to user document
+                // Generate deep link token for Current Medications editor
+                const tokenData = emailService.generateCurrentMedicationsToken(userId);
+                
+                // Save to user document (including token for email link)
                 await updateUserDoc({
-                  currentMedications: currentMedications
+                  currentMedications: currentMedications,
+                  currentMedicationsToken: tokenData.token,
+                  currentMedicationsTokenExpiresAt: tokenData.expiresAt
                 });
                 
                 logProvisioning(userId, `✅ [CURRENT MEDICATIONS] Current medications generated and saved successfully`, 'success');
+                logProvisioning(userId, `🔗 [CURRENT MEDICATIONS] Deep link token generated for email`, 'info');
                 updateStatus('Current Medications generated', { medicationsGenerated: true });
               } else {
                 logProvisioning(userId, `⚠️  [CURRENT MEDICATIONS] Empty response from Private AI`, 'warning');
@@ -4316,11 +4322,16 @@ async function provisionUserAsync(userId, token) {
     const userEmail = userDoc.email || null;
     if (userEmail) {
       try {
+        // Get current medications token from user document (if it was generated)
+        const finalUserDoc = await cloudant.getDocument('maia_users', userId);
+        const currentMedicationsToken = finalUserDoc?.currentMedicationsToken || null;
+        
         await emailService.sendProvisioningCompletionEmail({
           userId,
           userEmail,
           success: true,
-          errorDetails: null
+          errorDetails: null,
+          currentMedicationsToken: currentMedicationsToken
         });
       } catch (emailError) {
         logProvisioning(userId, `⚠️  Failed to send success email: ${emailError.message}`, 'warning');
@@ -6435,6 +6446,84 @@ app.post('/api/user-current-medications', async (req, res) => {
       success: false, 
       message: `Failed to save current medications: ${error.message}`,
       error: 'SAVE_FAILED'
+    });
+  }
+});
+
+// Verify Current Medications token
+app.get('/api/verify-medications-token', async (req, res) => {
+  try {
+    const { token, userId } = req.query;
+    
+    if (!token || !userId) {
+      return res.status(400).json({ 
+        success: false, 
+        valid: false,
+        message: 'Token and userId are required',
+        error: 'MISSING_REQUIRED_FIELDS'
+      });
+    }
+
+    // Get the user document
+    const userDoc = await cloudant.getDocument('maia_users', userId);
+    
+    if (!userDoc) {
+      return res.status(404).json({ 
+        success: false, 
+        valid: false,
+        message: 'User not found',
+        error: 'USER_NOT_FOUND'
+      });
+    }
+
+    // Check if token matches and is not expired
+    const storedToken = userDoc.currentMedicationsToken;
+    const expiresAt = userDoc.currentMedicationsTokenExpiresAt;
+    
+    if (!storedToken || storedToken !== token) {
+      return res.json({
+        success: true,
+        valid: false,
+        expired: false,
+        message: 'Invalid token'
+      });
+    }
+    
+    if (!expiresAt) {
+      return res.json({
+        success: true,
+        valid: false,
+        expired: true,
+        message: 'Token has no expiration date'
+      });
+    }
+    
+    const expirationDate = new Date(expiresAt);
+    const now = new Date();
+    
+    if (now > expirationDate) {
+      return res.json({
+        success: true,
+        valid: false,
+        expired: true,
+        message: 'Token has expired'
+      });
+    }
+    
+    // Token is valid
+    return res.json({
+      success: true,
+      valid: true,
+      expired: false,
+      message: 'Token is valid'
+    });
+  } catch (error) {
+    console.error('❌ Error verifying medications token:', error);
+    res.status(500).json({ 
+      success: false, 
+      valid: false,
+      message: `Failed to verify token: ${error.message}`,
+      error: 'VERIFICATION_FAILED'
     });
   }
 });
