@@ -3679,7 +3679,7 @@ async function provisionUserAsync(userId, token) {
     let agentDetails = null;
     let deploymentStatus = 'STATUS_PENDING';
     const pollIntervalMs = 30000; // 30 seconds
-    const maxAttempts = 20; // 10 minutes max (20 attempts @ 30s interval)
+    const maxAttempts = 50; // 25 minutes max (50 attempts @ 30s interval)
     let attempts = 0;
 
     while (attempts < maxAttempts && !successStatuses.includes(deploymentStatus)) {
