@@ -4233,7 +4233,18 @@ async function provisionUserAsync(userId, token) {
               baseURL: agentEndpointUrl
             });
 
-            const summaryPrompt = 'Please generate a comprehensive patient summary based on all available medical records and documents in the knowledge base. Include key medical history, diagnoses, medications, allergies, and important notes.';
+            // Build prompt - simple trigger, rely on agent instruction text for format
+            // Include Current Medications if available (user-reviewed list takes precedence)
+            let summaryPrompt = 'Please generate a patient summary.';
+            
+            // Get latest user document to check for Current Medications
+            const latestUserDoc = await cloudant.getDocument('maia_users', userId);
+            if (latestUserDoc.currentMedications && latestUserDoc.currentMedications.trim().length > 0) {
+              summaryPrompt += `\n\nUse this as the authoritative source for Current Medications (the patient has reviewed and confirmed this list):\n\n${latestUserDoc.currentMedications}`;
+              logProvisioning(userId, `📝 [PATIENT SUMMARY] Including Current Medications in prompt (${latestUserDoc.currentMedications.length} chars)`, 'info');
+            } else {
+              logProvisioning(userId, `📝 [PATIENT SUMMARY] No Current Medications found - generating from KB only`, 'info');
+            }
 
             const summaryResponse = await agentProvider.chat(
               [{ role: 'user', content: summaryPrompt }],
@@ -7692,7 +7703,16 @@ app.post('/api/update-knowledge-base', async (req, res) => {
               baseURL: finalUserDoc.agentEndpoint
             });
 
-            const summaryPrompt = 'Please generate a comprehensive patient summary based on all available medical records and documents in the knowledge base. Include key medical history, diagnoses, medications, allergies, and important notes.';
+            // Build prompt - simple trigger, rely on agent instruction text for format
+            // Include Current Medications if available (user-reviewed list takes precedence)
+            let summaryPrompt = 'Please generate a patient summary.';
+            
+            if (finalUserDoc.currentMedications && finalUserDoc.currentMedications.trim().length > 0) {
+              summaryPrompt += `\n\nUse this as the authoritative source for Current Medications (the patient has reviewed and confirmed this list):\n\n${finalUserDoc.currentMedications}`;
+              console.log(`[KB AUTO] 📝 [PATIENT SUMMARY] Including Current Medications in prompt (${finalUserDoc.currentMedications.length} chars)`);
+            } else {
+              console.log(`[KB AUTO] 📝 [PATIENT SUMMARY] No Current Medications found - generating from KB only`);
+            }
 
             const summaryResponse = await agentProvider.chat(
               [{ role: 'user', content: summaryPrompt }],
@@ -9128,7 +9148,16 @@ app.post('/api/generate-patient-summary', async (req, res) => {
       baseURL: userDoc.agentEndpoint
     });
 
-    const summaryPrompt = 'Please generate a comprehensive patient summary based on all available medical records and documents in the knowledge base. Include key medical history, diagnoses, medications, allergies, and important notes.';
+    // Build prompt - simple trigger, rely on agent instruction text for format
+    // Include Current Medications if available (user-reviewed list takes precedence)
+    let summaryPrompt = 'Please generate a patient summary.';
+    
+    if (userDoc.currentMedications && userDoc.currentMedications.trim().length > 0) {
+      summaryPrompt += `\n\nUse this as the authoritative source for Current Medications (the patient has reviewed and confirmed this list):\n\n${userDoc.currentMedications}`;
+      console.log(`📝 [PATIENT SUMMARY] Including Current Medications in prompt (${userDoc.currentMedications.length} chars)`);
+    } else {
+      console.log(`📝 [PATIENT SUMMARY] No Current Medications found in user document - generating from KB only`);
+    }
     
     console.log(`📝 Generating patient summary for user ${userId} using agent ${userDoc.assignedAgentId}`);
     
