@@ -196,6 +196,21 @@ const setAuthenticatedUser = (userData: any, deepLink: DeepLinkInfo | null = nul
     document.title = `MAIA for ${normalizedUser.userId}`;
   }
 
+  // Check if user is on /admin but is not an admin - redirect to root
+  if (typeof window !== 'undefined') {
+    const isAdminPage = window.location.pathname === '/admin';
+    const isLocalhost = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
+    
+    // In production (non-localhost), redirect away from /admin after authentication
+    // This prevents new users from seeing the admin page after registration
+    // The backend will enforce admin access if they try to access admin routes
+    if (isAdminPage && !isLocalhost) {
+      // Redirect to root - backend will enforce admin access if needed
+      window.history.replaceState({}, '', '/');
+      showAdminPage.value = false;
+    }
+  }
+
   if (isDeepLinkUser.value) {
     const sessionInfo = userData.deepLinkInfo || {};
     const resolvedShareId = (deepLink && deepLink.shareId) || sessionInfo.activeShareId || deepLinkShareId.value || (Array.isArray(sessionInfo.shareIds) ? sessionInfo.shareIds[0] : null) || null;
@@ -219,6 +234,20 @@ const handleAuthenticated = (userData: any) => {
       ? { shareId: deepLinkShareId.value, chatId: null }
       : null;
   setAuthenticatedUser(userData, pendingDeepLink);
+  
+  // After authentication, if on /admin path (and not localhost), redirect to root
+  // This fixes the issue where new users end up on /admin after registration
+  if (typeof window !== 'undefined') {
+    const isAdminPage = window.location.pathname === '/admin';
+    const isLocalhost = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
+    
+    if (isAdminPage && !isLocalhost) {
+      // Redirect to root after a brief delay to ensure state is updated
+      setTimeout(() => {
+        window.location.href = '/';
+      }, 100);
+    }
+  }
 };
 
 const handleDeepLinkAuthenticated = (payload: { user: User; deepLinkInfo: DeepLinkInfo }) => {
@@ -436,7 +465,25 @@ onMounted(async () => {
   // Watch for route changes
   const checkRoute = () => {
     const path = window.location.pathname;
-    showAdminPage.value = path === '/admin';
+    const isLocalhost = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
+    
+    // Only show admin page if:
+    // 1. Path is /admin AND
+    // 2. (Running locally OR user is authenticated and we'll let backend handle admin auth)
+    if (path === '/admin') {
+      if (isLocalhost) {
+        showAdminPage.value = true;
+      } else if (authenticated.value) {
+        // In production, only show admin page if user is actually on /admin
+        // Backend will enforce admin access
+        showAdminPage.value = true;
+      } else {
+        // Not authenticated and not localhost - don't show admin page
+        showAdminPage.value = false;
+      }
+    } else {
+      showAdminPage.value = false;
+    }
   };
   
   // Store reference for cleanup before setting up listeners
