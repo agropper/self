@@ -5414,6 +5414,63 @@ app.get('/api/user-files', async (req, res) => {
       });
     }
     
+    // Deduplicate files by filename - prefer KB folder entries over archived/root entries
+    // Get KB name for preference checking
+    const kbName = getKBNameFromUserDoc(userDoc, userId);
+    const kbFolderPath = kbName ? `${userId}/${kbName}/` : null;
+    
+    const filesByFileName = new Map();
+    
+    for (const file of files) {
+      const bucketKey = file.bucketKey || '';
+      const fileName = bucketKey.split('/').pop() || '';
+      
+      if (!fileName) continue; // Skip files without valid filenames
+      
+      const existing = filesByFileName.get(fileName);
+      
+      if (!existing) {
+        // First occurrence of this filename - add it
+        filesByFileName.set(fileName, file);
+      } else {
+        // Duplicate filename found - prefer KB folder entry
+        const existingBucketKey = existing.bucketKey || '';
+        const existingIsInKB = kbFolderPath && existingBucketKey.startsWith(kbFolderPath);
+        const currentIsInKB = kbFolderPath && bucketKey.startsWith(kbFolderPath);
+        
+        if (currentIsInKB && !existingIsInKB) {
+          // Current file is in KB, existing is not - replace
+          filesByFileName.set(fileName, file);
+        } else if (!currentIsInKB && !existingIsInKB) {
+          // Neither is in KB - prefer the one with better metadata
+          const existingHasMetadata = existing.fileSize && existing.uploadedAt;
+          const currentHasMetadata = file.fileSize && file.uploadedAt;
+          
+          if (currentHasMetadata && !existingHasMetadata) {
+            // Current has metadata, existing doesn't - replace
+            filesByFileName.set(fileName, file);
+          }
+          // Otherwise keep existing (first one wins if both have same metadata quality)
+        }
+        // If existing is in KB and current is not, keep existing (don't replace)
+      }
+    }
+    
+    // Convert map back to array and ensure all files have required metadata
+    files = Array.from(filesByFileName.values()).map(file => {
+      // Ensure fileSize and uploadedAt are present (use defaults if missing)
+      if (!file.fileSize && file.size) {
+        file.fileSize = file.size; // Some entries use 'size' instead of 'fileSize'
+      }
+      if (!file.uploadedAt && file.addedAt) {
+        file.uploadedAt = file.addedAt; // Fallback to addedAt if uploadedAt missing
+      }
+      if (!file.uploadedAt) {
+        file.uploadedAt = new Date().toISOString(); // Last resort: use current date
+      }
+      return file;
+    });
+    
     // Sync indexed files with DO API state (source of truth)
     let indexedFiles = userDoc.kbIndexedFiles || [];
     
