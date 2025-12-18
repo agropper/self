@@ -459,11 +459,6 @@ const emit = defineEmits<{
   'show-patient-summary': [];
 }>();
 
-interface UserFile {
-  fileName: string;
-  bucketKey: string;
-  fileType?: string;
-}
 
 interface PdfPage {
   page: number;
@@ -516,7 +511,6 @@ const isLoadingCategoryItems = ref(false);
 const hasInitialFile = ref(false);
 const markdownContent = ref<string>('');
 const markdownBucketKey = ref<string | null>(null);
-const isCleaningMarkdown = ref(false);
 const initialFileInfo = ref<{ bucketKey: string; fileName: string } | null>(null);
 const categoriesList = ref<Array<{ 
   name: string; 
@@ -524,7 +518,7 @@ const categoriesList = ref<Array<{
   observationCount: number; 
   startLine?: number; 
   endLine?: number;
-  observations?: Array<{ date: string; display: string; page?: number; lineCount?: number; outOfRangeLines?: string[] }>;
+  observations?: Array<{ date: string; display: string; page?: number; lineCount?: number; outOfRangeLines?: string[] | undefined }>;
   expanded?: boolean;
 }>>([]);
 const expandedCategories = ref<Set<string>>(new Set());
@@ -542,7 +536,6 @@ const currentMedicationsStatus = ref<'reviewing' | 'consulting' | ''>('');
 const showSummaryDialog = ref(false);
 const showRefreshConfirmDialog = ref(false);
 const showMarkdownContent = ref(false);
-const fileInputRef = ref<HTMLInputElement | null>(null);
 const isReplacingFile = ref(false);
 
 const checkInitialFile = async () => {
@@ -877,29 +870,6 @@ const processInitialFile = async () => {
   }
 };
 
-const clearCachedLists = async () => {
-  try {
-    // Call backend to clear cached list files
-    const response = await fetch('/api/files/lists/clear-cache', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json'
-      },
-      credentials: 'include'
-    });
-    
-    if (response.ok) {
-      // Reset processing status
-      categoryProcessingStatus.value = {};
-      currentCategoryDisplay.value = null;
-      categoryItems.value = [];
-    }
-  } catch (err) {
-    console.warn('Failed to clear cached lists:', err);
-    // Continue anyway - the cache will be invalidated by timestamp check
-  }
-};
-
 // processPdfFile and processPdfFromBucket removed - replaced with processInitialFile
 
 const processCategory = async (categoryName: string) => {
@@ -975,64 +945,7 @@ const processCategory = async (categoryName: string) => {
   }
 };
 
-const cleanupMarkdown = async () => {
-  isCleaningMarkdown.value = true;
-  try {
-    const response = await fetch('/api/files/lists/cleanup-markdown', {
-      method: 'POST',
-      credentials: 'include'
-    });
-
-    if (!response.ok) {
-      const errorData = await response.json().catch(() => ({ error: `HTTP ${response.status}: ${response.statusText}` }));
-      throw new Error(errorData.error || 'Failed to cleanup markdown');
-    }
-
-    const result = await response.json();
-    
-    // Reload the markdown to show cleaned version
-    const markdownResponse = await fetch('/api/files/lists/markdown', {
-      credentials: 'include'
-    });
-    
-    if (markdownResponse.ok) {
-      const markdownResult = await markdownResponse.json();
-      if (markdownResult.hasMarkdown && markdownResult.markdown) {
-        markdownBucketKey.value = markdownResult.markdownBucketKey || null;
-        // FIRST PASS: Re-extract categories and label ALL [D+P] lines (returns modified markdown)
-        const markedMarkdown = extractCategoriesFromMarkdown(markdownResult.markdown);
-        markdownContent.value = markedMarkdown;
-        
-        // SECOND PASS: Count [D+P] lines for each category
-        countObservationsByPageRange(markdownContent.value);
-      }
-    }
-    
-    if ($q && typeof $q.notify === 'function') {
-      $q.notify({
-        message: `Markdown cleaned: ${result.pagesCleaned} page(s) cleaned`,
-        type: 'positive',
-        position: 'top',
-        timeout: 3000
-      });
-    }
-  } catch (err) {
-    const errorMessage = err instanceof Error ? err.message : 'Failed to cleanup markdown';
-    error.value = errorMessage;
-    console.error('Markdown cleanup error:', err);
-    
-    if ($q && typeof $q.notify === 'function') {
-      $q.notify({
-        message: errorMessage,
-        type: 'negative',
-        position: 'top',
-        timeout: 3000
-      });
-    }
-  } finally {
-    isCleaningMarkdown.value = false;
-  }
-};
+// cleanupMarkdown function removed - not used
 
 // Toggle markdown content visibility
 const toggleMarkdownContent = () => {
@@ -1503,8 +1416,8 @@ const extractObservationsForCategory = (
   startLine: number,
   endLine: number,
   lines: string[]
-): Array<{ date: string; display: string; page?: number; lineCount?: number }> => {
-  const observations: Array<{ date: string; display: string; page?: number; lineCount?: number }> = [];
+): Array<{ date: string; display: string; page?: number; lineCount?: number; outOfRangeLines?: string[] }> => {
+  const observations: Array<{ date: string; display: string; page?: number; lineCount?: number; outOfRangeLines?: string[] }> = [];
   const categoryLower = categoryName.toLowerCase();
   
   // For Clinical Vitals and Lab Results, track observations by date to merge duplicates
@@ -1542,7 +1455,7 @@ const extractObservationsForCategory = (
             // Create a separate observation for this content line
             // formatObservation expects obsLines[0] to be the [D+P] line and obsLines[1] to be the content
             const singleLineObs = [dPlusLine, lines[j]]; // [D+P] line + content line
-            const display = formatObservation(categoryName, currentDate, singleLineObs, lines, i, page);
+            const display = formatObservation(categoryName, currentDate, singleLineObs, page);
             if (display) {
               observations.push({ 
                 date: currentDate, 
@@ -1586,7 +1499,7 @@ const extractObservationsForCategory = (
           }
         } else {
           // For other categories, create separate observations
-          const display = formatObservation(categoryName, currentDate, obsLines, lines, i, page);
+          const display = formatObservation(categoryName, currentDate, obsLines, page);
           if (display) {
             observations.push({ 
               date: currentDate, 
@@ -1628,7 +1541,7 @@ const extractObservationsForCategory = (
           // Create a separate observation for this content line
           // formatObservation expects obsLines[0] to be the [D+P] line and obsLines[1] to be the content
           const singleLineObs = [dPlusLine, lines[j]]; // [D+P] line + content line
-          const display = formatObservation(categoryName, currentDate, singleLineObs, lines, endLine + 1, page);
+          const display = formatObservation(categoryName, currentDate, singleLineObs, page);
           if (display) {
             observations.push({ 
               date: currentDate, 
@@ -1668,7 +1581,7 @@ const extractObservationsForCategory = (
         }
       } else {
         // For other categories, create separate observations
-        const display = formatObservation(categoryName, currentDate, obsLines, lines, endLine + 1, page);
+        const display = formatObservation(categoryName, currentDate, obsLines, page);
         if (display) {
           observations.push({ 
             date: currentDate, 
@@ -1685,7 +1598,7 @@ const extractObservationsForCategory = (
   // For Clinical Vitals and Lab Results, convert merged dates to observations
   if (shouldMergeByDate) {
     for (const [date, data] of mergedByDate.entries()) {
-      const display = formatObservation(categoryName, date, [], lines, 0, data.page, data.lineCount);
+      const display = formatObservation(categoryName, date, [], data.page, data.lineCount);
       if (display) {
         observations.push({ 
           date, 
@@ -1704,7 +1617,7 @@ const extractObservationsForCategory = (
     const page = findPageForLine(startLine, lines);
     // For Allergies, don't use a date - just use empty string
     const allergyDate = '';
-    const display = formatObservation(categoryName, allergyDate, allLines, lines, endLine + 1, page);
+    const display = formatObservation(categoryName, allergyDate, allLines, page);
     if (display && allLines.length > 1) {
       observations.push({ date: allergyDate, display, page });
     }
@@ -1718,8 +1631,6 @@ const formatObservation = (
   categoryName: string,
   date: string,
   obsLines: string[],
-  allLines: string[],
-  nextDPlusIndex: number,
   page?: number,
   lineCount?: number
 ): string => {
@@ -1832,7 +1743,16 @@ const formatObservation = (
 
 // SECOND PASS: Count [D+P] lines for each category using category boundaries from FIRST PASS
 const countObservationsByPageRange = (markedMarkdown: string): void => {
+  if (!markedMarkdown) {
+    return;
+  }
+  
   const lines = markedMarkdown.split('\n');
+  
+  // Ensure categoriesList is initialized
+  if (!categoriesList.value || categoriesList.value.length === 0) {
+    return;
+  }
   
   // Process each category using boundaries calculated in FIRST PASS
   categoriesList.value = categoriesList.value.map(category => {
@@ -1842,8 +1762,6 @@ const countObservationsByPageRange = (markedMarkdown: string): void => {
     
     // Count [D+P] lines in this category's range
     let dPlusCount = 0;
-    let firstDPlusLine: string | null = null;
-    let firstDPlusDate: string | null = null;
     
     // Scan only the lines for this category
     for (let i = startLine; i <= endLine && i < lines.length; i++) {
@@ -1855,17 +1773,6 @@ const countObservationsByPageRange = (markedMarkdown: string): void => {
       if (line.startsWith(`[D+P] ${categoryName} `)) {
         // This is the first [D+P] line with category label
         dPlusCount++;
-        
-        // Extract date from first [D+P] line
-        if (firstDPlusLine === null) {
-          firstDPlusLine = line;
-          // Extract date (format: "Mon DD, YYYY")
-          // Pattern: after category name, find date
-          const dateMatch = line.match(/\[D\+P\]\s+\S+\s+([A-Z][a-z]{2}\s+\d{1,2},\s+\d{4})/);
-          if (dateMatch) {
-            firstDPlusDate = dateMatch[1];
-          }
-        }
       } else if (line.startsWith('[D+P] ') && !line.startsWith(`[D+P] ${categoryName} `)) {
         // Check if this is a [D+P] line without category label (subsequent ones)
         // Pattern: "[D+P] <date and place>" - date pattern after [D+P]
@@ -1874,14 +1781,7 @@ const countObservationsByPageRange = (markedMarkdown: string): void => {
           // This is a [D+P] line without category label (subsequent ones in this category)
           dPlusCount++;
           
-          // Extract date from first [D+P] line if not already found
-          if (firstDPlusLine === null) {
-            firstDPlusLine = line;
-            const dateMatch = line.match(/([A-Z][a-z]{2}\s+\d{1,2},\s+\d{4})/);
-            if (dateMatch) {
-              firstDPlusDate = dateMatch[1];
-            }
-          }
+          // Count this [D+P] line
         }
       }
     }
@@ -1916,7 +1816,7 @@ const countObservationsByPageRange = (markedMarkdown: string): void => {
 };
 
 // Save category file if it doesn't already exist (generic function for all categories)
-const saveCategoryIfNeeded = async (category: { name: string; observations: Array<{ date: string; display: string; page?: number; lineCount?: number; outOfRangeLines?: string[] }> }) => {
+const saveCategoryIfNeeded = async (category: { name: string; observations?: Array<{ date: string; display: string; page?: number; lineCount?: number; outOfRangeLines?: string[] }> }) => {
   try {
     // Sanitize category name to match backend format (same as lists-processor.js)
     const sanitizedCategoryName = category.name
@@ -1943,12 +1843,11 @@ const saveCategoryIfNeeded = async (category: { name: string; observations: Arra
       credentials: 'include',
       body: JSON.stringify({
         categoryName: category.name,
-        observations: category.observations
+        observations: category.observations || []
       })
     });
     
     if (saveResponse.ok) {
-      const result = await saveResponse.json();
       // Successfully saved
     }
   } catch (err) {
@@ -1957,7 +1856,8 @@ const saveCategoryIfNeeded = async (category: { name: string; observations: Arra
 };
 
 
-// Load categories and observations from stored category files
+// Load categories and observations from stored category files (deprecated - using on-the-fly computation)
+/*
 const loadCategoriesFromFiles = async () => {
   try {
     // Get list of category files
@@ -2022,9 +1922,11 @@ const loadCategoriesFromFiles = async () => {
     categoriesList.value = [];
   }
 };
+*/
 
-// Parse observations from a category markdown file
-const parseObservationsFromCategoryFile = (content: string, categoryName: string): Array<{ date: string; display: string; page?: number; lineCount?: number; outOfRangeLines?: string[] }> => {
+// Parse observations from a category markdown file (deprecated - only used in commented-out code)
+// @ts-ignore - Function is only used in commented-out code
+const parseObservationsFromCategoryFile = (content: string, _categoryName: string): Array<{ date: string; display: string; page?: number; lineCount?: number; outOfRangeLines?: string[] }> => {
   const observations = [];
   const lines = content.split('\n');
   
