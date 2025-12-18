@@ -55,6 +55,17 @@
             flat
             round
             dense
+            color="primary"
+            icon="refresh"
+            @click="recoverUser(props.row.userId)"
+            :loading="recoveringUsers.has(props.row.userId)"
+            title="Recover provisioning - check DO API and update user document"
+            class="q-mr-xs"
+          />
+          <q-btn
+            flat
+            round
+            dense
             color="negative"
             icon="delete"
             @click="confirmDelete(props.row.userId)"
@@ -103,6 +114,7 @@ const totalUsers = ref(0);
 const totalDeepLinkUsers = ref(0);
 const passkeyConfig = ref<PasskeyConfig | null>(null);
 const deletingUsers = ref(new Set<string>());
+const recoveringUsers = ref(new Set<string>());
 
 const columns = [
   {
@@ -310,6 +322,54 @@ async function deleteUser(userId: string) {
     }
   } finally {
     deletingUsers.value.delete(userId);
+  }
+}
+
+async function recoverUser(userId: string) {
+  recoveringUsers.value.add(userId);
+  try {
+    const response = await fetch(`/api/admin/users/${userId}/recover`, {
+      method: 'POST',
+      credentials: 'include'
+    });
+    
+    const data = await response.json();
+    
+    if (data.success) {
+      if ($q && typeof $q.notify === 'function') {
+        $q.notify({
+          type: 'positive',
+          message: data.message || `User ${userId} recovered successfully`,
+          timeout: 5000
+        });
+      } else {
+        alert(data.message || `User ${userId} recovered successfully`);
+      }
+      // Reload users list to show updated status
+      await loadUsers();
+    } else {
+      if ($q && typeof $q.notify === 'function') {
+        $q.notify({
+          type: 'negative',
+          message: `Recovery failed: ${data.error || 'Unknown error'}`,
+          timeout: 5000
+        });
+      } else {
+        alert(`Recovery failed: ${data.error || 'Unknown error'}`);
+      }
+    }
+  } catch (error) {
+    console.error('Error recovering user:', error);
+    if ($q && typeof $q.notify === 'function') {
+      $q.notify({
+        type: 'negative',
+        message: 'Failed to recover user. Please try again.'
+      });
+    } else {
+      alert('Failed to recover user. Please try again.');
+    }
+  } finally {
+    recoveringUsers.value.delete(userId);
   }
 }
 

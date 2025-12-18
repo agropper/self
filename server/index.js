@@ -8478,6 +8478,226 @@ app.get('/api/admin/users', async (req, res) => {
   }
 });
 
+// Admin: Recover user provisioning - check DO API and update user document
+app.post('/api/admin/users/:userId/recover', async (req, res) => {
+  try {
+    // Allow unauthenticated access when running locally (only check hostname, not NODE_ENV)
+    const isLocalhost = req.hostname === 'localhost' || req.hostname === '127.0.0.1';
+    
+    // If not localhost, require authentication and check for ADMIN_USERNAME
+    if (!isLocalhost) {
+      const sessionUserId = req.session?.userId;
+      const adminUsername = process.env.ADMIN_USERNAME;
+      
+      if (!sessionUserId) {
+        return res.status(401).json({
+          success: false,
+          error: 'Authentication required'
+        });
+      }
+      
+      if (!adminUsername || sessionUserId !== adminUsername) {
+        return res.status(403).json({
+          success: false,
+          error: 'Access denied. Admin privileges required.'
+        });
+      }
+    }
+    
+    const { userId } = req.params;
+    
+    if (!userId) {
+      return res.status(400).json({
+        success: false,
+        error: 'User ID is required'
+      });
+    }
+
+    // Get user document
+    let userDoc;
+    try {
+      userDoc = await cloudant.getDocument('maia_users', userId);
+    } catch (error) {
+      return res.status(404).json({
+        success: false,
+        error: 'User not found'
+      });
+    }
+
+    console.log(`[RECOVERY] Starting recovery for user: ${userId}`);
+    console.log(`[RECOVERY] Current state: workflowStage=${userDoc.workflowStage}, assignedAgentId=${userDoc.assignedAgentId || 'none'}`);
+
+    // Find agent by name pattern: {userId}-agent-{pattern}
+    const agentNamePattern = new RegExp(`^${userId}-agent-`);
+    let matchingAgent = null;
+    let agentDetails = null;
+
+    try {
+      const agents = await doClient.agent.list();
+      console.log(`[RECOVERY] Found ${agents.length} total agents in DO`);
+      
+      // Find agent matching user's name pattern
+      for (const agent of agents) {
+        if (agent.name && agentNamePattern.test(agent.name)) {
+          matchingAgent = agent;
+          console.log(`[RECOVERY] Found matching agent: ${agent.name} (UUID: ${agent.uuid || agent.id})`);
+          break;
+        }
+      }
+
+      if (!matchingAgent) {
+        return res.status(404).json({
+          success: false,
+          error: `No agent found matching pattern for user ${userId}`
+        });
+      }
+
+      // Get full agent details
+      const agentId = matchingAgent.uuid || matchingAgent.id;
+      agentDetails = await doClient.agent.get(agentId);
+      console.log(`[RECOVERY] Agent details retrieved: status=${agentDetails?.deployment?.status || agentDetails?.status || 'unknown'}`);
+
+      // Check if agent is deployed
+      const deploymentStatus = agentDetails?.deployment?.status || agentDetails?.deployment?.state || agentDetails?.status || agentDetails?.state || 'UNKNOWN';
+      const successStatuses = ['STATUS_RUNNING', 'RUNNING', 'STATUS_SUCCEEDED', 'SUCCEEDED', 'STATUS_READY', 'READY'];
+      
+      if (!successStatuses.includes(deploymentStatus)) {
+        return res.status(400).json({
+          success: false,
+          error: `Agent is not deployed. Current status: ${deploymentStatus}. Agent must be in STATUS_RUNNING to complete recovery.`
+        });
+      }
+
+      // Get agent endpoint
+      let agentEndpointUrl = agentDetails?.deployment?.url ? `${agentDetails.deployment.url}/api/v1` : null;
+      if (!agentEndpointUrl) {
+        return res.status(400).json({
+          success: false,
+          error: 'Agent is deployed but endpoint URL is not available yet. Please wait a few minutes and try again.'
+        });
+      }
+
+      console.log(`[RECOVERY] Agent is deployed and ready. Endpoint: ${agentEndpointUrl}`);
+
+      // Check if API key exists, create if needed
+      let apiKey = userDoc.agentApiKey;
+      if (!apiKey) {
+        console.log(`[RECOVERY] No API key found, creating new one...`);
+        try {
+          apiKey = await doClient.agent.createApiKey(agentId, `agent-${agentId}-api-key-recovery`);
+          console.log(`[RECOVERY] API key created successfully`);
+        } catch (apiKeyError) {
+          console.error(`[RECOVERY] Failed to create API key: ${apiKeyError.message}`);
+          return res.status(500).json({
+            success: false,
+            error: `Failed to create API key: ${apiKeyError.message}`
+          });
+        }
+      } else {
+        console.log(`[RECOVERY] Using existing API key`);
+      }
+
+      // Get agent model name
+      const agentModelName = agentDetails?.model?.inference_name || agentDetails?.model?.name || null;
+
+      // Helper function to safely update user document
+      const updateUserDoc = async (updates, retries = 3) => {
+        for (let attempt = 1; attempt <= retries; attempt++) {
+          try {
+            const latestDoc = await cloudant.getDocument('maia_users', userId);
+            const updatedDoc = {
+              ...latestDoc,
+              ...(typeof updates === 'function' ? updates(latestDoc) : updates),
+              updatedAt: new Date().toISOString()
+            };
+            await cloudant.saveDocument('maia_users', updatedDoc);
+            return updatedDoc;
+          } catch (error) {
+            if (error.statusCode === 409 && attempt < retries) {
+              await new Promise(resolve => setTimeout(resolve, 200 * attempt));
+              continue;
+            }
+            throw error;
+          }
+        }
+      };
+
+      // Update user document with all missing fields
+      const timestamp = new Date().toISOString();
+      const agentName = matchingAgent.name;
+      const defaultProfileKey = userDoc.agentProfileDefaultKey || 'default';
+
+      // Clone user doc for merging
+      const docClone = { ...userDoc };
+
+      // Merge agent profile
+      mergeAgentProfileOnDoc(docClone, defaultProfileKey, {
+        agentId: agentId,
+        agentName: agentName,
+        endpoint: agentEndpointUrl,
+        modelName: agentModelName,
+        apiKey: apiKey
+      }, timestamp);
+
+      docClone.agentProfileDefaultKey = defaultProfileKey;
+      ensureDeepLinkAgentOverrides(docClone);
+
+      // Update user document
+      await updateUserDoc({
+        assignedAgentId: agentId,
+        assignedAgentName: agentName,
+        agentEndpoint: agentEndpointUrl,
+        agentModelName: agentModelName,
+        agentApiKey: apiKey,
+        agentProfiles: docClone.agentProfiles,
+        agentProfileDefaultKey: docClone.agentProfileDefaultKey,
+        deepLinkAgentOverrides: docClone.deepLinkAgentOverrides,
+        workflowStage: 'agent_deployed',
+        provisioned: true,
+        provisionedAt: timestamp
+      });
+
+      console.log(`[RECOVERY] User document updated successfully`);
+
+      // Generate Current Medications token if agent is ready
+      try {
+        const tokenData = await emailService.generateCurrentMedicationsToken(userId);
+        await updateUserDoc({
+          currentMedicationsToken: tokenData.token,
+          currentMedicationsTokenExpiresAt: tokenData.expiresAt
+        });
+        console.log(`[RECOVERY] Current Medications token generated`);
+      } catch (tokenError) {
+        console.error(`[RECOVERY] Failed to generate Current Medications token: ${tokenError.message}`);
+        // Don't fail recovery if token generation fails
+      }
+
+      return res.json({
+        success: true,
+        message: `User ${userId} recovered successfully. Agent ${agentName} is now linked and ready.`,
+        agentId: agentId,
+        agentName: agentName,
+        endpoint: agentEndpointUrl,
+        workflowStage: 'agent_deployed'
+      });
+
+    } catch (error) {
+      console.error(`[RECOVERY] Error during recovery: ${error.message}`);
+      console.error(`[RECOVERY] Stack: ${error.stack}`);
+      return res.status(500).json({
+        success: false,
+        error: `Recovery failed: ${error.message}`
+      });
+    }
+  } catch (error) {
+    console.error('Recovery endpoint error:', error);
+    return res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
 // Admin: Delete user and all associated resources
 app.delete('/api/admin/users/:userId', async (req, res) => {
   try {
