@@ -2990,7 +2990,7 @@ const loadPrivacyFilter = async () => {
           if (removed.length > 0) {
             // Save the deduplicated mapping back to storage
             try {
-              const saveResponse = await fetch('/api/privacy-filter-mapping', {
+              await fetch('/api/privacy-filter-mapping', {
                 method: 'POST',
                 headers: {
                   'Content-Type': 'application/json'
