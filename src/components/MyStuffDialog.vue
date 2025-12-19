@@ -2895,7 +2895,6 @@ const deduplicateMapping = (mappings: Array<{ original: string; pseudonym: strin
       seenIndices.set(normalized, i);
       deduplicatedMapping.push(mapping);
     } else {
-      const firstIndex = seenIndices.get(normalized);
       duplicatesRemoved.push(mapping.original);
     }
   }
@@ -3023,7 +3022,7 @@ const loadPrivacyFilter = async () => {
         privacyFilterMapping.value = deduplicated;
         // Save cleaned version
         try {
-          const saveResponse = await fetch('/api/privacy-filter-mapping', {
+          await fetch('/api/privacy-filter-mapping', {
             method: 'POST',
             headers: {
               'Content-Type': 'application/json'
