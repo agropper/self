@@ -2958,7 +2958,6 @@ const cleanDuplicates = async () => {
       }
     }
   } catch (err) {
-    console.error(`[PRIVACY] Error cleaning duplicates:`, err);
     if ($q && typeof $q.notify === 'function') {
       $q.notify({
         type: 'negative',
@@ -3330,16 +3329,12 @@ const createPseudonymMapping = async (responseText: string) => {
     const allMappings = [...existingMapping, ...newMappings];
     const { deduplicated: deduplicatedMapping, removed: duplicateRemoved } = deduplicateMapping(allMappings);
     
-    if (duplicateRemoved.length > 0) {
-      console.log(`[PRIVACY] Removed ${duplicateRemoved.length} duplicate(s):`, duplicateRemoved);
-    }
-    
     privacyFilterMapping.value = deduplicatedMapping;
     
     // Always save the deduplicated mapping to ensure storage is clean
     if (duplicateRemoved.length > 0 || newMappings.length > 0) {
       try {
-        const saveResponse = await fetch('/api/privacy-filter-mapping', {
+        await fetch('/api/privacy-filter-mapping', {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json'
@@ -3355,7 +3350,7 @@ const createPseudonymMapping = async (responseText: string) => {
     
     // Save updated mapping to user document
     try {
-      const saveResponse = await fetch('/api/privacy-filter-mapping', {
+      await fetch('/api/privacy-filter-mapping', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json'
@@ -3369,7 +3364,6 @@ const createPseudonymMapping = async (responseText: string) => {
         // Don't fail the whole operation if save fails
       }
   } catch (err) {
-    console.error(`[PRIVACY] Error creating pseudonym mapping:`, err);
     privacyFilterMapping.value = [];
   } finally {
     loadingRandomNames.value = false;
@@ -4994,7 +4988,7 @@ watch(currentTab, async (newTab) => {
         privacyFilterMapping.value = deduplicated;
         // Save the cleaned mapping back to storage
         try {
-          const saveResponse = await fetch('/api/privacy-filter-mapping', {
+          await fetch('/api/privacy-filter-mapping', {
             method: 'POST',
             headers: {
               'Content-Type': 'application/json'
