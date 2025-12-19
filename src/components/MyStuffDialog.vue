@@ -2880,8 +2880,6 @@ const deduplicateMapping = (mappings: Array<{ original: string; pseudonym: strin
   const deduplicatedMapping: Array<{ original: string; pseudonym: string }> = [];
   const duplicatesRemoved: string[] = [];
   
-  console.log(`[PRIVACY] Deduplicating ${mappings.length} mappings...`);
-  
   for (let i = 0; i < mappings.length; i++) {
     const mapping = mappings[i];
     // Normalize: trim whitespace, replace non-breaking spaces, and use lowercase for comparison
@@ -2892,16 +2890,6 @@ const deduplicateMapping = (mappings: Array<{ original: string; pseudonym: strin
       .trim()
       .toLowerCase();
     
-    // Debug: log the original and normalized versions
-    if (i < 5) {
-      console.log(`[PRIVACY] Mapping ${i}: original="${mapping.original}" (length: ${mapping.original.length}), normalized="${normalized}"`);
-      // Check for special characters
-      const specialChars = mapping.original.match(/[^\x20-\x7E]/g);
-      if (specialChars) {
-        console.log(`[PRIVACY] Mapping ${i} has special characters:`, specialChars.map(c => `U+${c.charCodeAt(0).toString(16)}`));
-      }
-    }
-    
     if (!seen.has(normalized)) {
       seen.add(normalized);
       seenIndices.set(normalized, i);
@@ -2909,13 +2897,7 @@ const deduplicateMapping = (mappings: Array<{ original: string; pseudonym: strin
     } else {
       const firstIndex = seenIndices.get(normalized);
       duplicatesRemoved.push(mapping.original);
-      console.log(`[PRIVACY] Removing duplicate at index ${i}: "${mapping.original}" (first seen at index ${firstIndex}: "${mappings[firstIndex!].original}")`);
     }
-  }
-  
-  console.log(`[PRIVACY] Deduplication complete: ${deduplicatedMapping.length} unique, ${duplicatesRemoved.length} duplicates removed`);
-  if (duplicatesRemoved.length > 0) {
-    console.log(`[PRIVACY] Duplicates removed:`, duplicatesRemoved);
   }
   
   return { deduplicated: deduplicatedMapping, removed: duplicatesRemoved };
@@ -2925,15 +2907,9 @@ const deduplicateMapping = (mappings: Array<{ original: string; pseudonym: strin
 const cleanDuplicates = async () => {
   cleaningDuplicates.value = true;
   try {
-    console.log(`[PRIVACY] Starting manual duplicate cleanup. Current mapping has ${privacyFilterMapping.value.length} entries.`);
-    console.log(`[PRIVACY] Current mapping entries:`, privacyFilterMapping.value.map((m, i) => `${i}: "${m.original}" -> "${m.pseudonym}"`));
-    
     const { deduplicated, removed } = deduplicateMapping(privacyFilterMapping.value);
     
-    console.log(`[PRIVACY] After deduplication: ${deduplicated.length} unique entries, ${removed.length} duplicates removed`);
-    
     if (removed.length > 0) {
-      console.log(`[PRIVACY] Manually removed ${removed.length} duplicate(s):`, removed);
       privacyFilterMapping.value = deduplicated;
       
       // Save the cleaned mapping back to storage
@@ -2947,7 +2923,6 @@ const cleanDuplicates = async () => {
           body: JSON.stringify({ mapping: deduplicated })
         });
         if (!saveResponse.ok) {
-          console.warn(`[PRIVACY] Failed to save deduplicated mapping:`, await saveResponse.text());
           if ($q && typeof $q.notify === 'function') {
             $q.notify({
               type: 'negative',
@@ -2956,7 +2931,6 @@ const cleanDuplicates = async () => {
             });
           }
         } else {
-          console.log(`[PRIVACY] Saved deduplicated mapping (${deduplicated.length} entries)`);
           if ($q && typeof $q.notify === 'function') {
             $q.notify({
               type: 'positive',
@@ -2966,7 +2940,6 @@ const cleanDuplicates = async () => {
           }
         }
       } catch (saveErr) {
-        console.error(`[PRIVACY] Error saving deduplicated mapping:`, saveErr);
         if ($q && typeof $q.notify === 'function') {
           $q.notify({
             type: 'negative',
@@ -3017,7 +2990,6 @@ const loadPrivacyFilter = async () => {
           const { deduplicated, removed } = deduplicateMapping(loadData.mapping);
           
           if (removed.length > 0) {
-            console.log(`[PRIVACY] Removed ${removed.length} duplicate(s) on load:`, removed);
             // Save the deduplicated mapping back to storage
             try {
               const saveResponse = await fetch('/api/privacy-filter-mapping', {
@@ -3028,27 +3000,20 @@ const loadPrivacyFilter = async () => {
                 credentials: 'include',
                 body: JSON.stringify({ mapping: deduplicated })
               });
-              if (!saveResponse.ok) {
-                console.warn(`[PRIVACY] Failed to save deduplicated mapping:`, await saveResponse.text());
-              } else {
-                console.log(`[PRIVACY] Saved deduplicated mapping (${deduplicated.length} entries)`);
-              }
+              // Silently handle save errors - mapping is already deduplicated in memory
             } catch (saveErr) {
-              console.error(`[PRIVACY] Error saving deduplicated mapping:`, saveErr);
+              // Silently handle save errors
             }
           }
           
           privacyFilterMapping.value = deduplicated;
-          console.log(`[PRIVACY] Loaded ${deduplicated.length} unique mapping entries (was ${loadData.mapping.length})`);
         } else {
           // Even if no duplicates were found, still deduplicate to be safe
           const { deduplicated } = deduplicateMapping(loadData.mapping);
           privacyFilterMapping.value = deduplicated;
-          console.log(`[PRIVACY] Loaded ${deduplicated.length} mapping entries (verified unique)`);
         }
       }
     } catch (loadErr) {
-      console.warn(`[PRIVACY] Could not load existing mapping:`, loadErr);
       privacyFilterMapping.value = [];
     }
     
@@ -3056,7 +3021,6 @@ const loadPrivacyFilter = async () => {
     if (privacyFilterMapping.value.length > 0) {
       const { deduplicated, removed } = deduplicateMapping(privacyFilterMapping.value);
       if (removed.length > 0 || deduplicated.length !== privacyFilterMapping.value.length) {
-        console.log(`[PRIVACY] Found ${removed.length} duplicate(s) in current mapping, cleaning...`);
         privacyFilterMapping.value = deduplicated;
         // Save cleaned version
         try {
@@ -3068,11 +3032,9 @@ const loadPrivacyFilter = async () => {
             credentials: 'include',
             body: JSON.stringify({ mapping: deduplicated })
           });
-          if (saveResponse.ok) {
-            console.log(`[PRIVACY] Saved cleaned mapping (${deduplicated.length} entries)`);
-          }
+          // Silently handle save errors
         } catch (saveErr) {
-          console.error(`[PRIVACY] Error saving cleaned mapping:`, saveErr);
+          // Silently handle save errors
         }
       }
     }
@@ -3107,8 +3069,6 @@ const loadPrivacyFilter = async () => {
       }
       return;
     }
-
-    console.log('[PRIVACY] Analyzing names from', messagesToAnalyze.length, 'Private AI messages (out of', allMessages.length, 'total)');
 
     // Prepare messages for Private AI query
     // Include only Private AI chat messages plus the privacy filter question
@@ -3200,7 +3160,6 @@ const loadPrivacyFilter = async () => {
     // Always check for new names and add them to existing mapping (cumulative)
     await createPseudonymMapping(responseText.trim());
   } catch (err) {
-    console.error(`[PRIVACY] Error during privacy filter analysis:`, err);
     privacyFilterError.value = err instanceof Error ? err.message : 'Failed to analyze chat for names';
   } finally {
     loadingPrivacyFilter.value = false;
@@ -3267,7 +3226,6 @@ const createPseudonymMapping = async (responseText: string) => {
         uniqueExtractedNames.push(name);
       }
     }
-    console.log('[PRIVACY] Extracted names:', uniqueExtractedNames);
     
     // Start with existing mapping (cumulative - never delete)
     const existingMapping = privacyFilterMapping.value || [];
@@ -3303,7 +3261,6 @@ const createPseudonymMapping = async (responseText: string) => {
     
     // Add last names to newNames (deduplicated)
     newNames.push(...lastNamesToAdd);
-    console.log('[PRIVACY] New names (including last names):', newNames);
     
     if (newNames.length === 0) {
       return; // No new names, keep existing mapping
@@ -3361,7 +3318,6 @@ const createPseudonymMapping = async (responseText: string) => {
       
       // Validate pseudonym before adding
       if (!pseudonym || pseudonym.trim() === '') {
-        console.error(`[PRIVACY] ERROR: Failed to create pseudonym for "${originalName}" - pseudonym is empty!`);
         continue; // Skip this name
       }
       
@@ -3379,7 +3335,6 @@ const createPseudonymMapping = async (responseText: string) => {
     }
     
     privacyFilterMapping.value = deduplicatedMapping;
-    console.log(`[PRIVACY] Final mapping count (deduplicated): ${deduplicatedMapping.length} (was ${allMappings.length})`);
     
     // Always save the deduplicated mapping to ensure storage is clean
     if (duplicateRemoved.length > 0 || newMappings.length > 0) {
@@ -3392,13 +3347,9 @@ const createPseudonymMapping = async (responseText: string) => {
           credentials: 'include',
           body: JSON.stringify({ mapping: deduplicatedMapping })
         });
-        if (!saveResponse.ok) {
-          console.warn(`[PRIVACY] Failed to save deduplicated mapping:`, await saveResponse.text());
-        } else {
-          console.log(`[PRIVACY] Saved deduplicated mapping to storage`);
-        }
+        // Silently handle save errors
       } catch (saveErr) {
-        console.error(`[PRIVACY] Error saving deduplicated mapping:`, saveErr);
+        // Silently handle save errors
       }
     }
     
@@ -3413,13 +3364,10 @@ const createPseudonymMapping = async (responseText: string) => {
         body: JSON.stringify({ mapping: deduplicatedMapping })
       });
       
-      if (!saveResponse.ok) {
-        console.warn(`[PRIVACY] Failed to save mapping:`, await saveResponse.text());
+        // Silently handle save errors
+      } catch (saveErr) {
+        // Don't fail the whole operation if save fails
       }
-    } catch (saveErr) {
-      console.error(`[PRIVACY] Error saving mapping:`, saveErr);
-      // Don't fail the whole operation if save fails
-    }
   } catch (err) {
     console.error(`[PRIVACY] Error creating pseudonym mapping:`, err);
     privacyFilterMapping.value = [];
@@ -5043,7 +4991,6 @@ watch(currentTab, async (newTab) => {
     if (privacyFilterMapping.value.length > 0) {
       const { deduplicated, removed } = deduplicateMapping(privacyFilterMapping.value);
       if (removed.length > 0) {
-        console.log(`[PRIVACY] Found and removed ${removed.length} duplicate(s) when opening tab:`, removed);
         privacyFilterMapping.value = deduplicated;
         // Save the cleaned mapping back to storage
         try {
@@ -5055,13 +5002,9 @@ watch(currentTab, async (newTab) => {
             credentials: 'include',
             body: JSON.stringify({ mapping: deduplicated })
           });
-          if (!saveResponse.ok) {
-            console.warn(`[PRIVACY] Failed to save deduplicated mapping:`, await saveResponse.text());
-          } else {
-            console.log(`[PRIVACY] Saved deduplicated mapping (${deduplicated.length} entries)`);
-          }
+          // Silently handle save errors
         } catch (saveErr) {
-          console.error(`[PRIVACY] Error saving deduplicated mapping:`, saveErr);
+          // Silently handle save errors
         }
       }
     }
