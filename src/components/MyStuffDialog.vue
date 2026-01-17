@@ -24,7 +24,7 @@
           <q-tab name="lists" label="My Lists" icon="list" />
           <q-tab name="privacy" label="Privacy Filter" icon="privacy_tip" />
           <q-tab name="diary" label="Patient Diary" icon="book" />
-          <q-tab name="references" label="SHARED REFERENCES" icon="link" />
+          <q-tab name="references" label="REFERENCES" icon="link" />
         </q-tabs>
 
         <q-tab-panels v-model="currentTab" animated>
