@@ -86,6 +86,98 @@ This document lists the APIs related to each environment variable used in the MA
 
 ---
 
+### STORAGE_BACKEND
+**Status:** Optional
+
+**Usage:**
+- Selects the storage backend for S3-compatible file access
+- Set to `minio` for local testing with MinIO
+- Any other value (or unset) uses DigitalOcean Spaces defaults
+
+**Related Files:**
+- `server/utils/storage-config.js`
+- `server/index.js`
+
+---
+
+### MINIO_ENDPOINT_URL
+**Status:** Optional (used when `STORAGE_BACKEND=minio`)
+
+**Usage:**
+- S3-compatible endpoint for MinIO (e.g. `http://localhost:9000`)
+- Mapped to `DIGITALOCEAN_ENDPOINT_URL` at runtime for compatibility
+
+**Related Files:**
+- `server/utils/storage-config.js`
+
+---
+
+### MINIO_ACCESS_KEY_ID
+**Status:** Optional (used when `STORAGE_BACKEND=minio`)
+
+**Usage:**
+- Access key for MinIO
+- Mapped to `DIGITALOCEAN_AWS_ACCESS_KEY_ID` at runtime for compatibility
+
+**Related Files:**
+- `server/utils/storage-config.js`
+
+---
+
+### MINIO_SECRET_ACCESS_KEY
+**Status:** Optional (used when `STORAGE_BACKEND=minio`)
+
+**Usage:**
+- Secret key for MinIO
+- Mapped to `DIGITALOCEAN_AWS_SECRET_ACCESS_KEY` at runtime for compatibility
+
+**Related Files:**
+- `server/utils/storage-config.js`
+
+---
+
+### MINIO_BUCKET
+**Status:** Optional (used when `STORAGE_BACKEND=minio`)
+
+**Usage:**
+- Bucket name for MinIO
+- Mapped to `DIGITALOCEAN_BUCKET` at runtime for compatibility
+
+**Related Files:**
+- `server/utils/storage-config.js`
+
+---
+
+### MINIO_REGION
+**Status:** Optional (used when `STORAGE_BACKEND=minio`)
+
+**Default:** `us-east-1`
+
+**Usage:**
+- Region value used by the S3 client for MinIO (not region-specific)
+- Mapped to `DO_REGION` at runtime if unset
+
+**Related Files:**
+- `server/utils/storage-config.js`
+
+---
+
+### S3_FORCE_PATH_STYLE
+**Status:** Optional
+
+**Usage:**
+- When set to `true`, forces path-style S3 URLs
+- Required for MinIO on `localhost`
+- Automatically set when `STORAGE_BACKEND=minio` if not already provided
+
+**Related Files:**
+- `server/index.js`
+- `server/routes/files.js`
+- `server/routes/auth.js`
+- `scripts/sync-kb-names-and-files.js`
+
+---
+
 ### DIGITALOCEAN_BUCKET
 **API:** DigitalOcean Spaces (S3-compatible API)
 

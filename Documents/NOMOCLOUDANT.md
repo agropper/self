@@ -109,8 +109,8 @@ them to avoid month‑long storage charges.
 ### Phase 0: Prep (no code changes)
 - MinIO selected for local storage.
 - Define local folder naming and root path policy.
-- Confirm OpenSearch cluster stays persistent.
-- Create a new repo for major changes (per decision).
+- Confirm OpenSearch cluster stays persistent. (Confirmed on main branch.)
+- Create a new repo for major changes (per decision). (Done.)
 
 ### Phase 1: Infrastructure
 - Provision Droplet (1–2 GB RAM).
@@ -132,6 +132,15 @@ them to avoid month‑long storage charges.
 - Persist the index manifest and update it on each indexing run.
 
 ## Local testing before cloud move
+
+- **Local Phase 1 checklist**:
+  - Run CouchDB + MinIO locally (Docker or native).
+  - Create a MinIO bucket (e.g. `maia`).
+  - Set env vars for CouchDB and MinIO (local endpoints + credentials).
+  - Start backend and frontend locally.
+  - Upload a file and confirm it appears in MinIO.
+  - Preview/download a PDF through the proxy endpoint.
+  - Confirm file list, delete, and move operations work end‑to‑end.
 
 - **App + UI**: run locally with mock data and confirm upload, preview, and page‑link flows.
 - **MinIO**: run locally (Docker) and point the S3 client to it; verify upload, list, proxy PDF.

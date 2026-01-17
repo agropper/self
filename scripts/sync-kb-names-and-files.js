@@ -7,8 +7,10 @@ import { config } from 'dotenv';
 import { CloudantClient } from '../lib/cloudant/index.js';
 import { DigitalOceanClient } from '../lib/do-client/index.js';
 import { S3Client, CopyObjectCommand, DeleteObjectCommand, ListObjectsV2Command } from '@aws-sdk/client-s3';
+import { normalizeStorageEnv } from '../server/utils/storage-config.js';
 
 config();
+normalizeStorageEnv();
 
 async function syncKB() {
   const userId = process.argv[2];
@@ -36,7 +38,7 @@ async function syncKB() {
     const s3Client = new S3Client({
       endpoint: process.env.DIGITALOCEAN_ENDPOINT_URL || 'https://tor1.digitaloceanspaces.com',
       region: 'us-east-1',
-      forcePathStyle: false,
+      forcePathStyle: process.env.S3_FORCE_PATH_STYLE === 'true',
       credentials: {
         accessKeyId: process.env.DIGITALOCEAN_AWS_ACCESS_KEY_ID || '',
         secretAccessKey: process.env.DIGITALOCEAN_AWS_SECRET_ACCESS_KEY || ''

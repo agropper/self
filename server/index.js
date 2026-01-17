@@ -18,6 +18,7 @@ import { PasskeyService } from '../lib/passkey/index.js';
 import { EmailService } from './utils/email-service.js';
 import { ChatClient } from '../lib/chat-client/index.js';
 import { findUserAgent } from './utils/agent-helper.js';
+import { normalizeStorageEnv } from './utils/storage-config.js';
 import setupAuthRoutes from './routes/auth.js';
 import setupChatRoutes from './routes/chat.js';
 import setupFileRoutes from './routes/files.js';
@@ -25,6 +26,7 @@ import { getUserBucketSize } from './routes/files.js';
 import { S3Client } from '@aws-sdk/client-s3';
 
 dotenv.config();
+normalizeStorageEnv();
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -68,7 +70,7 @@ async function createUserBucketFolders(userId, kbName) {
     const s3Client = new S3Client({
       endpoint: process.env.DIGITALOCEAN_ENDPOINT_URL || 'https://tor1.digitaloceanspaces.com',
       region: 'us-east-1',
-      forcePathStyle: false,
+      forcePathStyle: process.env.S3_FORCE_PATH_STYLE === 'true',
       credentials: {
         accessKeyId: process.env.DIGITALOCEAN_AWS_ACCESS_KEY_ID || '',
         secretAccessKey: process.env.DIGITALOCEAN_AWS_SECRET_ACCESS_KEY || ''
@@ -245,29 +247,22 @@ const cloudant = new CloudantClient({
 
 // Initialize databases
 (async () => {
-  try {
-    await cloudant.createDatabase('maia_sessions');
-    console.log('✅ Created maia_sessions database');
-  } catch (error) {
-    // Already exists, that's fine
+  const connected = await cloudant.testConnection();
+  if (!connected) {
+    console.error('❌ Cloudant connection failed. Check CLOUDANT_URL, CLOUDANT_USERNAME, and CLOUDANT_PASSWORD.');
+    return;
   }
-  try {
-    await cloudant.createDatabase('maia_users');
-    console.log('✅ Created maia_users database');
-  } catch (error) {
-    // Already exists, that's fine
-  }
-  try {
-    await cloudant.createDatabase('maia_audit_log');
-    console.log('✅ Created maia_audit_log database');
-  } catch (error) {
-    // Already exists, that's fine
-  }
-  try {
-    await cloudant.createDatabase('maia_chats');
-    console.log('✅ Created maia_chats database');
-  } catch (error) {
-    // Already exists, that's fine
+
+  console.log('✅ Cloudant connection successful');
+  const databases = ['maia_sessions', 'maia_users', 'maia_audit_log', 'maia_chats'];
+
+  for (const dbName of databases) {
+    try {
+      await cloudant.createDatabase(dbName);
+      console.log(`✅ Ensured ${dbName} database`);
+    } catch (error) {
+      console.error(`❌ Failed to ensure ${dbName} database: ${error.message}`);
+    }
   }
 })();
 
@@ -2274,7 +2269,7 @@ app.post('/api/admin/provision/confirm', async (req, res) => {
           const s3Client = new S3Client({
             endpoint: process.env.DIGITALOCEAN_ENDPOINT_URL || 'https://tor1.digitaloceanspaces.com',
             region: 'us-east-1',
-            forcePathStyle: false,
+            forcePathStyle: process.env.S3_FORCE_PATH_STYLE === 'true',
             credentials: {
               accessKeyId: process.env.DIGITALOCEAN_AWS_ACCESS_KEY_ID || '',
               secretAccessKey: process.env.DIGITALOCEAN_AWS_SECRET_ACCESS_KEY || ''
@@ -2451,7 +2446,7 @@ async function verifyProvisioningComplete(userId, agentId, agentName, kbName, ex
         const s3Client = new S3Client({
           endpoint: process.env.DIGITALOCEAN_ENDPOINT_URL || 'https://tor1.digitaloceanspaces.com',
           region: 'us-east-1',
-          forcePathStyle: false,
+          forcePathStyle: process.env.S3_FORCE_PATH_STYLE === 'true',
           credentials: {
             accessKeyId: process.env.DIGITALOCEAN_AWS_ACCESS_KEY_ID || '',
             secretAccessKey: process.env.DIGITALOCEAN_AWS_SECRET_ACCESS_KEY || ''
@@ -2830,7 +2825,7 @@ async function provisionUserAsync(userId, token) {
       const s3Client = new S3Client({
         endpoint: process.env.DIGITALOCEAN_ENDPOINT_URL || 'https://tor1.digitaloceanspaces.com',
         region: 'us-east-1',
-        forcePathStyle: false,
+        forcePathStyle: process.env.S3_FORCE_PATH_STYLE === 'true',
         credentials: {
           accessKeyId: process.env.DIGITALOCEAN_AWS_ACCESS_KEY_ID || '',
           secretAccessKey: process.env.DIGITALOCEAN_AWS_SECRET_ACCESS_KEY || ''
@@ -3165,7 +3160,7 @@ async function provisionUserAsync(userId, token) {
         const s3Client = new S3Client({
           endpoint: process.env.DIGITALOCEAN_ENDPOINT_URL || 'https://tor1.digitaloceanspaces.com',
           region: 'us-east-1',
-          forcePathStyle: false,
+          forcePathStyle: process.env.S3_FORCE_PATH_STYLE === 'true',
           credentials: {
             accessKeyId: process.env.DIGITALOCEAN_AWS_ACCESS_KEY_ID || '',
             secretAccessKey: process.env.DIGITALOCEAN_AWS_SECRET_ACCESS_KEY || ''
@@ -3332,7 +3327,7 @@ async function provisionUserAsync(userId, token) {
           const s3Client = new S3Client({
             endpoint: process.env.DIGITALOCEAN_ENDPOINT_URL || 'https://tor1.digitaloceanspaces.com',
             region: 'us-east-1',
-            forcePathStyle: false,
+            forcePathStyle: process.env.S3_FORCE_PATH_STYLE === 'true',
             credentials: {
               accessKeyId: process.env.DIGITALOCEAN_AWS_ACCESS_KEY_ID || '',
               secretAccessKey: process.env.DIGITALOCEAN_AWS_SECRET_ACCESS_KEY || ''
@@ -3985,7 +3980,7 @@ async function provisionUserAsync(userId, token) {
           const s3Client = new S3Client({
             endpoint: process.env.DIGITALOCEAN_ENDPOINT_URL || 'https://tor1.digitaloceanspaces.com',
             region: 'us-east-1',
-            forcePathStyle: false,
+            forcePathStyle: process.env.S3_FORCE_PATH_STYLE === 'true',
             credentials: {
               accessKeyId: process.env.DIGITALOCEAN_AWS_ACCESS_KEY_ID || '',
               secretAccessKey: process.env.DIGITALOCEAN_AWS_SECRET_ACCESS_KEY || ''
@@ -5018,7 +5013,7 @@ app.post('/api/cleanup-imported-files', async (req, res) => {
     const s3Client = new S3Client({
       endpoint: process.env.DIGITALOCEAN_ENDPOINT_URL || 'https://tor1.digitaloceanspaces.com',
       region: 'us-east-1',
-      forcePathStyle: false,
+      forcePathStyle: process.env.S3_FORCE_PATH_STYLE === 'true',
       credentials: {
         accessKeyId: process.env.DIGITALOCEAN_AWS_ACCESS_KEY_ID || '',
         secretAccessKey: process.env.DIGITALOCEAN_AWS_SECRET_ACCESS_KEY || ''
@@ -5148,7 +5143,7 @@ app.post('/api/archive-user-files', async (req, res) => {
     const s3Client = new S3Client({
       endpoint: process.env.DIGITALOCEAN_ENDPOINT_URL || 'https://tor1.digitaloceanspaces.com',
       region: 'us-east-1',
-      forcePathStyle: false,
+      forcePathStyle: process.env.S3_FORCE_PATH_STYLE === 'true',
       credentials: {
         accessKeyId: process.env.DIGITALOCEAN_AWS_ACCESS_KEY_ID || '',
         secretAccessKey: process.env.DIGITALOCEAN_AWS_SECRET_ACCESS_KEY || ''
@@ -5362,7 +5357,7 @@ app.get('/api/verify-file-state', async (req, res) => {
     const s3Client = new S3Client({
       endpoint: process.env.DIGITALOCEAN_ENDPOINT_URL || 'https://tor1.digitaloceanspaces.com',
       region: 'us-east-1',
-      forcePathStyle: false,
+      forcePathStyle: process.env.S3_FORCE_PATH_STYLE === 'true',
       credentials: {
         accessKeyId: process.env.DIGITALOCEAN_AWS_ACCESS_KEY_ID || '',
         secretAccessKey: process.env.DIGITALOCEAN_AWS_SECRET_ACCESS_KEY || ''
@@ -5596,7 +5591,7 @@ app.get('/api/user-files', async (req, res) => {
           const s3Client = new S3Client({
             endpoint: process.env.DIGITALOCEAN_ENDPOINT_URL || 'https://tor1.digitaloceanspaces.com',
             region: 'us-east-1',
-            forcePathStyle: false,
+            forcePathStyle: process.env.S3_FORCE_PATH_STYLE === 'true',
             credentials: {
               accessKeyId: process.env.DIGITALOCEAN_AWS_ACCESS_KEY_ID || '',
               secretAccessKey: process.env.DIGITALOCEAN_AWS_SECRET_ACCESS_KEY || ''
@@ -5987,7 +5982,7 @@ app.post('/api/toggle-file-knowledge-base', async (req, res) => {
     const s3Client = new S3Client({
       endpoint: process.env.DIGITALOCEAN_ENDPOINT_URL || 'https://tor1.digitaloceanspaces.com',
       region: 'us-east-1',
-      forcePathStyle: false,
+      forcePathStyle: process.env.S3_FORCE_PATH_STYLE === 'true',
       credentials: {
         accessKeyId: process.env.DIGITALOCEAN_AWS_ACCESS_KEY_ID || '',
         secretAccessKey: process.env.DIGITALOCEAN_AWS_SECRET_ACCESS_KEY || ''
@@ -6756,7 +6751,7 @@ app.delete('/api/delete-file', async (req, res) => {
     const s3Client = new S3Client({
       endpoint: process.env.DIGITALOCEAN_ENDPOINT_URL || 'https://tor1.digitaloceanspaces.com',
       region: 'us-east-1',
-      forcePathStyle: false,
+      forcePathStyle: process.env.S3_FORCE_PATH_STYLE === 'true',
       credentials: {
         accessKeyId: process.env.DIGITALOCEAN_AWS_ACCESS_KEY_ID || '',
         secretAccessKey: process.env.DIGITALOCEAN_AWS_SECRET_ACCESS_KEY || ''
@@ -7234,7 +7229,7 @@ app.post('/api/update-knowledge-base', async (req, res) => {
           const s3Client = new S3Client({
             endpoint: process.env.DIGITALOCEAN_ENDPOINT_URL || 'https://tor1.digitaloceanspaces.com',
             region: 'us-east-1',
-            forcePathStyle: false,
+            forcePathStyle: process.env.S3_FORCE_PATH_STYLE === 'true',
             credentials: {
               accessKeyId: process.env.DIGITALOCEAN_AWS_ACCESS_KEY_ID || '',
               secretAccessKey: process.env.DIGITALOCEAN_AWS_SECRET_ACCESS_KEY || ''
@@ -8188,7 +8183,7 @@ app.post('/api/cancel-kb-indexing', async (req, res) => {
       const s3Client = new S3Client({
         endpoint: process.env.DIGITALOCEAN_ENDPOINT_URL || 'https://tor1.digitaloceanspaces.com',
         region: 'us-east-1',
-        forcePathStyle: false,
+        forcePathStyle: process.env.S3_FORCE_PATH_STYLE === 'true',
         credentials: {
           accessKeyId: process.env.DIGITALOCEAN_AWS_ACCESS_KEY_ID || '',
           secretAccessKey: process.env.DIGITALOCEAN_AWS_SECRET_ACCESS_KEY || ''
@@ -8397,7 +8392,7 @@ app.get('/api/admin/users', async (req, res) => {
           const s3Client = new S3Client({
             endpoint: process.env.DIGITALOCEAN_ENDPOINT_URL || 'https://tor1.digitaloceanspaces.com',
             region: 'us-east-1',
-            forcePathStyle: false,
+            forcePathStyle: process.env.S3_FORCE_PATH_STYLE === 'true',
             credentials: {
               accessKeyId: process.env.DIGITALOCEAN_AWS_ACCESS_KEY_ID,
               secretAccessKey: process.env.DIGITALOCEAN_AWS_SECRET_ACCESS_KEY
@@ -8766,7 +8761,7 @@ app.delete('/api/admin/users/:userId', async (req, res) => {
         const s3Client = new S3Client({
           endpoint: process.env.DIGITALOCEAN_ENDPOINT_URL || 'https://tor1.digitaloceanspaces.com',
           region: 'us-east-1',
-          forcePathStyle: false,
+          forcePathStyle: process.env.S3_FORCE_PATH_STYLE === 'true',
           credentials: {
             accessKeyId: process.env.DIGITALOCEAN_AWS_ACCESS_KEY_ID || '',
             secretAccessKey: process.env.DIGITALOCEAN_AWS_SECRET_ACCESS_KEY || ''
