@@ -22,24 +22,22 @@ export function normalizeStorageEnv() {
     process.env.DO_REGION ||
     'us-east-1';
 
-  if (!process.env.DIGITALOCEAN_ENDPOINT_URL && endpoint) {
+  if (endpoint) {
     process.env.DIGITALOCEAN_ENDPOINT_URL = endpoint;
   }
-  if (!process.env.DIGITALOCEAN_AWS_ACCESS_KEY_ID && accessKeyId) {
+  if (accessKeyId) {
     process.env.DIGITALOCEAN_AWS_ACCESS_KEY_ID = accessKeyId;
   }
-  if (!process.env.DIGITALOCEAN_AWS_SECRET_ACCESS_KEY && secretAccessKey) {
+  if (secretAccessKey) {
     process.env.DIGITALOCEAN_AWS_SECRET_ACCESS_KEY = secretAccessKey;
   }
-  if (!process.env.DIGITALOCEAN_BUCKET && bucket) {
+  if (bucket) {
     process.env.DIGITALOCEAN_BUCKET = bucket;
   }
-  if (!process.env.DO_REGION && region) {
+  if (region) {
     process.env.DO_REGION = region;
   }
-  if (!process.env.S3_FORCE_PATH_STYLE) {
-    process.env.S3_FORCE_PATH_STYLE = 'true';
-  }
+  process.env.S3_FORCE_PATH_STYLE = 'true';
 
   return {
     backend: 'minio',

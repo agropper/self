@@ -23,13 +23,88 @@ import setupAuthRoutes from './routes/auth.js';
 import setupChatRoutes from './routes/chat.js';
 import setupFileRoutes from './routes/files.js';
 import { getUserBucketSize } from './routes/files.js';
-import { S3Client } from '@aws-sdk/client-s3';
+import { S3Client, HeadBucketCommand, CreateBucketCommand } from '@aws-sdk/client-s3';
 
 dotenv.config();
-normalizeStorageEnv();
+const storageConfig = normalizeStorageEnv();
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+
+function logStorageConfig(config) {
+  const backend = config?.backend || 'spaces';
+  const endpoint = process.env.DIGITALOCEAN_ENDPOINT_URL || 'https://tor1.digitaloceanspaces.com';
+  const bucket = process.env.DIGITALOCEAN_BUCKET || 'maia';
+  const forcePathStyle = process.env.S3_FORCE_PATH_STYLE === 'true';
+
+  console.log(`🪣 [STORAGE] Backend: ${backend}`);
+  console.log(`🪣 [STORAGE] Endpoint: ${endpoint}`);
+  console.log(`🪣 [STORAGE] Bucket: ${bucket}`);
+  console.log(`🪣 [STORAGE] Path style: ${forcePathStyle}`);
+
+  if (backend === 'minio' && endpoint.includes('digitaloceanspaces.com')) {
+    console.warn('⚠️ [STORAGE] MinIO backend is set but endpoint looks like Spaces.');
+  }
+}
+
+function getBucketName(bucketUrl) {
+  if (!bucketUrl) return 'maia';
+  const withoutProtocol = bucketUrl.replace(/^https?:\/\//, '');
+  const hostOrName = withoutProtocol.split('/')[0];
+  return hostOrName.split('.')[0] || 'maia';
+}
+
+async function ensureBucketExists() {
+  const bucketUrl = process.env.DIGITALOCEAN_BUCKET;
+  if (!bucketUrl) {
+    console.warn('⚠️ [STORAGE] DIGITALOCEAN_BUCKET not set; skipping bucket check.');
+    return;
+  }
+
+  const bucketName = getBucketName(bucketUrl);
+  const endpoint = process.env.DIGITALOCEAN_ENDPOINT_URL || 'https://tor1.digitaloceanspaces.com';
+  const accessKeyId = process.env.DIGITALOCEAN_AWS_ACCESS_KEY_ID || '';
+  const secretAccessKey = process.env.DIGITALOCEAN_AWS_SECRET_ACCESS_KEY || '';
+  const forcePathStyle = process.env.S3_FORCE_PATH_STYLE === 'true';
+
+  if (!accessKeyId || !secretAccessKey) {
+    console.warn('⚠️ [STORAGE] Missing S3 credentials; skipping bucket check.');
+    return;
+  }
+
+  console.log(`🪣 [STORAGE] Checking bucket access: ${bucketName} (${endpoint})`);
+
+  const s3Client = new S3Client({
+    endpoint,
+    region: 'us-east-1',
+    forcePathStyle,
+    credentials: {
+      accessKeyId,
+      secretAccessKey
+    }
+  });
+
+  try {
+    await s3Client.send(new HeadBucketCommand({ Bucket: bucketName }));
+    console.log(`✅ [STORAGE] Bucket accessible: ${bucketName}`);
+  } catch (error) {
+    const statusCode = error?.$metadata?.httpStatusCode;
+    if (statusCode === 404 || error?.name === 'NotFound') {
+      console.warn(`⚠️ [STORAGE] Bucket missing; creating: ${bucketName}`);
+      try {
+        await s3Client.send(new CreateBucketCommand({ Bucket: bucketName }));
+        console.log(`✅ [STORAGE] Bucket created: ${bucketName}`);
+      } catch (createError) {
+        console.error(`❌ [STORAGE] Failed to create bucket ${bucketName}: ${createError.message}`);
+      }
+      return;
+    }
+    console.error(`❌ [STORAGE] Bucket check failed: ${error.message}`);
+    if (statusCode) {
+      console.error(`❌ [STORAGE] Bucket check status: ${statusCode}`);
+    }
+  }
+}
 
 /**
  * Generate agent name for a user
@@ -245,6 +320,9 @@ const cloudant = new CloudantClient({
   password: process.env.CLOUDANT_PASSWORD
 });
 
+logStorageConfig(storageConfig);
+ensureBucketExists();
+
 // Initialize databases
 (async () => {
   const connected = await cloudant.testConnection();
@@ -264,6 +342,8 @@ const cloudant = new CloudantClient({
       console.error(`❌ Failed to ensure ${dbName} database: ${error.message}`);
     }
   }
+
+  await runStartupUserValidation();
 })();
 
 const auditLog = new AuditLogService(cloudant, 'maia_audit_log');
@@ -293,6 +373,41 @@ const logProvisioning = (userId, message, level = 'info') => {
   // Also log to console
   console.log(message);
 };
+
+async function runStartupUserValidation() {
+  try {
+    const userDocs = await cloudant.getAllDocuments('maia_users');
+    const users = userDocs.filter(doc => doc && (doc.type === 'user' || doc.userId));
+
+    if (users.length === 0) {
+      console.log('ℹ️ [STARTUP] No user documents found for validation.');
+      return;
+    }
+
+    console.log(`🔍 [STARTUP] Validating ${users.length} user document(s)...`);
+    for (const userDoc of users) {
+      const userId = userDoc.userId || userDoc._id;
+      if (!userId) {
+        continue;
+      }
+
+      try {
+        const kbName = getKBNameFromUserDoc(userDoc, userId);
+        if (kbName) {
+          await createUserBucketFolders(userId, kbName);
+        } else {
+          console.warn(`⚠️ [STARTUP] No kbName for user ${userId}; skipping bucket folder creation.`);
+        }
+
+        await validateUserResources(userId);
+      } catch (error) {
+        console.error(`❌ [STARTUP] Validation failed for user ${userId}: ${error.message}`);
+      }
+    }
+  } catch (error) {
+    console.error(`❌ [STARTUP] Failed to load users for validation: ${error.message}`);
+  }
+}
 
 const emailService = new EmailService({
   apiKey: process.env.RESEND_API_KEY,
