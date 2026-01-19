@@ -806,8 +806,25 @@ export default function setupFileRoutes(app, cloudant, doClient) {
    * GET /api/files/proxy-pdf/:bucketKey(*)
    */
   app.get('/api/files/proxy-pdf/:bucketKey(*)', async (req, res) => {
+    const resolveMovedKey = (key, userId, kbName) => {
+      if (!key || !userId || !kbName) return key;
+      const kbPrefix = `${userId}/${kbName}/`;
+      if (key.startsWith(kbPrefix)) return key;
+      const filename = key.split('/').pop();
+      if (!filename) return key;
+      return `${kbPrefix}${filename}`;
+    };
+
+    const isMissingKeyError = (err) => {
+      if (!err) return false;
+      return err.name === 'NotFound' ||
+        err.Code === 'NoSuchKey' ||
+        err.$metadata?.httpStatusCode === 404;
+    };
+
     try {
       const { bucketKey } = req.params;
+      const userId = req.session?.userId || req.session?.deepLinkUserId;
       
       const bucketUrl = process.env.DIGITALOCEAN_BUCKET;
       const bucketName = bucketUrl?.split('//')[1]?.split('.')[0] || 'maia';
@@ -822,22 +839,54 @@ export default function setupFileRoutes(app, cloudant, doClient) {
         }
       });
 
-      const getCommand = new GetObjectCommand({
-        Bucket: bucketName,
-        Key: bucketKey
-      });
-      
-      const response = await s3Client.send(getCommand);
-      
-      // Set appropriate headers
-      res.setHeader('Content-Type', 'application/pdf');
-      res.setHeader('Content-Disposition', `inline; filename="${bucketKey.split('/').pop()}"`);
-      res.setHeader('Access-Control-Allow-Origin', '*');
-      res.setHeader('Access-Control-Allow-Methods', 'GET');
-      res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
-      
-      // Stream the PDF content
-      response.Body.pipe(res);
+      let resolvedKey = bucketKey;
+      try {
+        const getCommand = new GetObjectCommand({
+          Bucket: bucketName,
+          Key: resolvedKey
+        });
+        const response = await s3Client.send(getCommand);
+
+        // Set appropriate headers
+        res.setHeader('Content-Type', 'application/pdf');
+        res.setHeader('Content-Disposition', `inline; filename="${resolvedKey.split('/').pop()}"`);
+        res.setHeader('Access-Control-Allow-Origin', '*');
+        res.setHeader('Access-Control-Allow-Methods', 'GET');
+        res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+        
+        // Stream the PDF content
+        return response.Body.pipe(res);
+      } catch (error) {
+        if (!isMissingKeyError(error) || !userId) {
+          throw error;
+        }
+
+        try {
+          const userDoc = await cloudant.getDocument('maia_users', userId);
+          const kbName = userDoc?.kbName || userDoc?.connectedKB || null;
+          resolvedKey = resolveMovedKey(bucketKey, userId, kbName);
+
+          if (resolvedKey === bucketKey) {
+            throw error;
+          }
+
+          const retryCommand = new GetObjectCommand({
+            Bucket: bucketName,
+            Key: resolvedKey
+          });
+          const retryResponse = await s3Client.send(retryCommand);
+
+          res.setHeader('Content-Type', 'application/pdf');
+          res.setHeader('Content-Disposition', `inline; filename="${resolvedKey.split('/').pop()}"`);
+          res.setHeader('Access-Control-Allow-Origin', '*');
+          res.setHeader('Access-Control-Allow-Methods', 'GET');
+          res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+          
+          return retryResponse.Body.pipe(res);
+        } catch (fallbackError) {
+          throw fallbackError;
+        }
+      }
     } catch (error) {
       console.error('❌ Error proxying PDF:', error);
       res.status(500).json({ 
@@ -874,12 +923,49 @@ export default function setupFileRoutes(app, cloudant, doClient) {
         }
       });
 
-      const getCommand = new GetObjectCommand({
-        Bucket: bucketName,
-        Key: bucketKey
-      });
-      
-      const response = await s3Client.send(getCommand);
+      const resolveMovedKey = (key, userId, kbName) => {
+        if (!key || !userId || !kbName) return key;
+        const kbPrefix = `${userId}/${kbName}/`;
+        if (key.startsWith(kbPrefix)) return key;
+        const filename = key.split('/').pop();
+        if (!filename) return key;
+        return `${kbPrefix}${filename}`;
+      };
+
+      const isMissingKeyError = (err) => {
+        if (!err) return false;
+        return err.name === 'NotFound' ||
+          err.Code === 'NoSuchKey' ||
+          err.$metadata?.httpStatusCode === 404;
+      };
+
+      let resolvedKey = bucketKey;
+      let response;
+      try {
+        const getCommand = new GetObjectCommand({
+          Bucket: bucketName,
+          Key: resolvedKey
+        });
+        response = await s3Client.send(getCommand);
+      } catch (error) {
+        if (!isMissingKeyError(error)) {
+          throw error;
+        }
+
+        const userDoc = await cloudant.getDocument('maia_users', userId);
+        const kbName = userDoc?.kbName || userDoc?.connectedKB || null;
+        resolvedKey = resolveMovedKey(bucketKey, userId, kbName);
+
+        if (resolvedKey === bucketKey) {
+          throw error;
+        }
+
+        const retryCommand = new GetObjectCommand({
+          Bucket: bucketName,
+          Key: resolvedKey
+        });
+        response = await s3Client.send(retryCommand);
+      }
       
       // Read the file content as text
       const chunks = [];

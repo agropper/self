@@ -2061,6 +2061,18 @@ app.get('/api/admin/agent-diagnostic', async (req, res) => {
       `);
     }
 
+    if (!userDoc) {
+      return res.status(404).send(`
+        <html>
+          <head><title>Provision Error</title></head>
+          <body style="font-family: Arial, sans-serif; max-width: 600px; margin: 50px auto; padding: 20px;">
+            <h2 style="color: #d32f2f;">❌ Provisioning Failed</h2>
+            <p>User not found: ${userId}</p>
+          </body>
+        </html>
+      `);
+    }
+
     const storedAgentId = userDoc.assignedAgentId || null;
     const storedAgentName = userDoc.assignedAgentName || null;
     const agentProfile = userDoc.agentProfiles?.[userDoc.agentProfileDefaultKey || 'default'] || null;
@@ -4585,8 +4597,7 @@ async function provisionUserAsync(userId, token) {
         agentName,
         model: agentDetails?.model?.name || agentDetails?.model?.inference_name || 'Unknown',
         endpoint: userDoc.agentEndpoint || 'Not available',
-        totalTime,
-        testResult
+        totalTime
       };
     }
     
@@ -7311,40 +7322,8 @@ app.post('/api/update-knowledge-base', async (req, res) => {
             }
           }
           
-          let listToIndex = [];
-          
-          if (useEphemeralSpaces) {
-            listToIndex = newlyCreatedDsUuids;
-            console.log(`[KB Update] Ephemeral indexing: ${listToIndex.length} data source(s) created for this run`);
-          } else if (userDoc.kbReindexAll) {
-            listToIndex = allDsUuids;
-            console.log(`[KB Update] Re-indexing all ${allDsUuids.length} data sources (kbReindexAll=true)`);
-          } else if (Array.isArray(userDoc.kbChangedDataSourceUuids) && userDoc.kbChangedDataSourceUuids.length > 0) {
-            listToIndex = userDoc.kbChangedDataSourceUuids.filter(uuid => allDsUuids.includes(uuid));
-            console.log(`[KB Update] Indexing ${listToIndex.length} changed data source(s) from kbChangedDataSourceUuids`);
-          } else if (newlyCreatedDsUuids.length > 0) {
-            listToIndex = newlyCreatedDsUuids.filter(uuid => allDsUuids.includes(uuid));
-            console.log(`[KB Update] Indexing ${newlyCreatedDsUuids.length} newly created data source(s)`);
-          } else {
-            // Check DO API for which data sources are not indexed
-            const unindexedDsUuids = allDsUuids.filter(uuid => {
-              const isIndexed = dsIndexingStatus.get(uuid) === true;
-              return !isIndexed;
-            });
-            
-            if (unindexedDsUuids.length > 0) {
-              listToIndex = unindexedDsUuids;
-              console.log(`[KB Update] Found ${unindexedDsUuids.length} unindexed data source(s) from DO API status check: ${unindexedDsUuids.join(', ')}`);
-            } else if (allDsUuids.length > 0) {
-              // All data sources are indexed - nothing to do
-              console.log(`[KB Update] All ${allDsUuids.length} data source(s) are already indexed according to DO API`);
-              listToIndex = [];
-            } else {
-              // No data sources at all
-              console.log(`[KB Update] No data sources found in KB`);
-              listToIndex = [];
-            }
-          }
+          const listToIndex = allDsUuids;
+          console.log(`[KB Update] Re-indexing all ${allDsUuids.length} data source(s) by request`);
 
           if (listToIndex.length === 0) {
             console.warn(`[KB Update] ⚠️ No data sources to index - KB may be empty or all datasources were removed`);
