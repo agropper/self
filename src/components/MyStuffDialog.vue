@@ -125,6 +125,13 @@
                   </q-item-section>
                 </q-item>
               </q-list>
+
+              <div
+                v-if="kbSummaryTokens !== null && kbSummaryFiles !== null"
+                class="q-mt-sm text-caption text-grey-7"
+              >
+                Your Private AI current knowledge base has a total {{ formatNumber(kbSummaryTokens) }} tokens from {{ formatNumber(kbSummaryFiles) }} files.
+              </div>
               
               <div v-if="kbNeedsUpdate || hasCheckboxChanges || kbIndexingOutOfSync" class="q-mt-md q-pt-md" style="border-top: 1px solid #e0e0e0;">
                 <div v-if="kbNeedsUpdate || hasCheckboxChanges" class="q-mb-md text-body2 text-amber-9">
@@ -138,18 +145,9 @@
                   label="Update and Index KB"
                   color="primary"
                   @click="updateAndIndexKB"
-                    :disable="indexingKB || resettingKB"
+                    :disable="indexingKB"
                   :loading="indexingKB"
                 />
-                  <q-btn
-                    v-if="isDevelopment"
-                    label="RESET KB"
-                    color="negative"
-                    outline
-                    @click="resetKB"
-                    :disable="indexingKB || resettingKB"
-                    :loading="resettingKB"
-                  />
                 </div>
               </div>
               
@@ -1087,6 +1085,8 @@ const originalFiles = ref<UserFile[]>([]);
 const originalIndexedFiles = ref<string[]>([]); // Track original indexed files state
 const indexedFiles = ref<string[]>([]); // Track which files are actually indexed
 const kbNeedsUpdate = ref(false); // Track if KB needs to be updated (files moved)
+const kbSummaryTokens = ref<string | number | null>(null);
+const kbSummaryFiles = ref<number | null>(null);
 
 const hasCheckboxChanges = computed(() => {
   if (originalFiles.value.length !== userFiles.value.length) return true;
@@ -1128,7 +1128,6 @@ const isFileIndexed = computed(() => {
   };
 });
 const indexingKB = ref(false);
-const resettingKB = ref(false);
 const indexingStatus = ref({
   phase: 'moving', // 'moving' | 'kb_setup' | 'indexing_started' | 'indexing' | 'complete' | 'error'
   message: '',
@@ -1139,11 +1138,6 @@ const indexingStatus = ref({
   error: ''
 });
 
-// Check if we're in development/localhost (show RESET KB button only in dev)
-const isDevelopment = computed(() => {
-  if (typeof window === 'undefined') return false;
-  return import.meta.env.DEV || window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
-});
 const currentIndexingJobId = ref<string | null>(null);
 const pollingInterval = ref<ReturnType<typeof setInterval> | null>(null);
 const elapsedTimeInterval = ref<ReturnType<typeof setInterval> | null>(null);
@@ -1232,8 +1226,8 @@ const loadFiles = async () => {
       console.warn('Failed to auto-archive files:', archiveErr);
     }
 
-    // Then load files as normal - request verification when loading SAVED FILES tab
-    const response = await fetch(`/api/user-files?userId=${encodeURIComponent(props.userId)}&verify=true`, {
+    // Then load files as normal
+    const response = await fetch(`/api/user-files?userId=${encodeURIComponent(props.userId)}`, {
       credentials: 'include'
     });
     if (!response.ok) {
@@ -1268,52 +1262,26 @@ const loadFiles = async () => {
     if (result.indexedFiles && Array.isArray(result.indexedFiles)) {
       indexedFiles.value = result.indexedFiles;
       originalIndexedFiles.value = [...result.indexedFiles]; // Save original state
+      kbSummaryFiles.value = result.indexedFiles.length;
     } else {
       // If server doesn't provide indexedFiles, initialize as empty array
       // This indicates files haven't been indexed yet, not that they should match userFiles
       indexedFiles.value = [];
       originalIndexedFiles.value = [];
+      kbSummaryFiles.value = 0;
+    }
+
+    if (kbSummaryFiles.value && kbSummaryFiles.value > 0 &&
+      result.kbLastIndexingTokens !== undefined &&
+      result.kbLastIndexingTokens !== null) {
+      kbSummaryTokens.value = result.kbLastIndexingTokens;
+    } else {
+      kbSummaryTokens.value = null;
     }
     
     // Reset dirty flag when files are loaded (dialog opened or refreshed)
     kbNeedsUpdate.value = false;
     
-    // Display verification result in browser console if available
-    if (result.verificationResult) {
-      const vr = result.verificationResult;
-      console.log('[KB VERIFY] Verification Result:', {
-        inconsistencies: vr.inconsistencies || 'None',
-        cleanupActions: vr.cleanupActions || 'None',
-        userDocUpdates: vr.userDocUpdates || 'None',
-        indexingInProgress: vr.indexingInProgress ? `Yes (jobId: ${vr.indexingJobId})` : 'No',
-        needsIndexing: vr.needsIndexing ? 'Yes' : 'No',
-        verifiedFiles: vr.verifiedFiles,
-        indexedFiles: vr.indexedFiles,
-        filesInS3: vr.filesInS3,
-        filesWithoutDataSources: vr.filesWithoutDataSources
-      });
-      
-      // If indexing is in progress, start polling
-      if (vr.indexingInProgress && vr.indexingJobId) {
-        console.log('[KB VERIFY] Indexing detected in progress, starting polling...');
-        currentIndexingJobId.value = vr.indexingJobId;
-        indexingKB.value = true;
-        indexingStartTime.value = Date.now();
-        indexingStatus.value = {
-          phase: 'indexing',
-          message: 'Indexing in progress...',
-          kb: '',
-          tokens: '0',
-          filesIndexed: 0,
-          progress: 0,
-          error: ''
-        };
-        pollIndexingProgress(vr.indexingJobId);
-      } else if (vr.needsIndexing && !vr.indexingInProgress) {
-        // Indexing is needed but not started - mark KB as needing update
-        kbNeedsUpdate.value = true;
-      }
-    }
   } catch (err) {
     filesError.value = err instanceof Error ? err.message : 'Failed to load files';
   } finally {
@@ -1623,6 +1591,12 @@ const formatFileSize = (bytes: number) => {
   const sizes = ['B', 'KB', 'MB', 'GB'];
   const i = Math.floor(Math.log(bytes) / Math.log(k));
   return Math.round((bytes / Math.pow(k, i)) * 100) / 100 + ' ' + sizes[i];
+};
+
+const formatNumber = (value: string | number) => {
+  const parsed = typeof value === 'string' ? Number(value) : value;
+  if (!Number.isFinite(parsed)) return String(value);
+  return parsed.toLocaleString();
 };
 
 // File management methods
@@ -1985,57 +1959,6 @@ const updateAndIndexKB = async () => {
   }
 };
 
-const resetKB = async () => {
-  if (!confirm('Are you sure you want to reset the knowledge base? This will clear all KB-related data (KB ID, indexing status, indexed files) but keep the KB name and files unchanged.')) {
-    return;
-  }
-
-  resettingKB.value = true;
-  try {
-    const response = await fetch('/api/reset-kb', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json'
-      },
-      credentials: 'include',
-      body: JSON.stringify({
-        userId: props.userId
-      })
-    });
-
-    if (!response.ok) {
-      const errorData = await response.json();
-      throw new Error(errorData.message || 'Failed to reset KB');
-    }
-
-    const result = await response.json();
-    console.log('[KB] KB reset:', result);
-
-    // Reload files and agent info to reflect reset state
-    await loadFiles();
-    await loadAgent();
-
-    if ($q && typeof $q.notify === 'function') {
-      $q.notify({
-        type: 'positive',
-        message: 'Knowledge base reset successfully'
-      });
-    }
-  } catch (err) {
-    console.error('[KB] Error resetting KB:', err);
-    if ($q && typeof $q.notify === 'function') {
-      $q.notify({
-        type: 'negative',
-        message: err instanceof Error ? err.message : 'Failed to reset KB'
-      });
-    } else {
-      alert(`Error: ${err instanceof Error ? err.message : 'Failed to reset KB'}`);
-    }
-  } finally {
-    resettingKB.value = false;
-  }
-};
-
 const cancelIndexingAndRestore = async () => {
   if (!currentIndexingJobId.value) {
     console.warn('[KB Cancel] No active indexing job to cancel');
@@ -2275,6 +2198,14 @@ const pollIndexingProgress = async (jobId: string) => {
         // The server queries DO API directly when completion is detected, ensuring we get the correct state
         if (result.kbIndexedFiles && Array.isArray(result.kbIndexedFiles)) {
           indexedFiles.value = result.kbIndexedFiles;
+          originalIndexedFiles.value = [...result.kbIndexedFiles];
+        }
+
+        if (result.tokens !== undefined) {
+          kbSummaryTokens.value = result.tokens;
+        }
+        if (result.filesIndexed !== undefined) {
+          kbSummaryFiles.value = result.filesIndexed;
         }
         
         // Reload files to refresh the file list (for chips, etc.)
