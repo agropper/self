@@ -19,7 +19,6 @@ export function normalizeStorageEnv() {
     process.env.DIGITALOCEAN_BUCKET;
   const region =
     process.env.MINIO_REGION ||
-    process.env.DO_REGION ||
     'us-east-1';
 
   if (endpoint) {
@@ -33,9 +32,6 @@ export function normalizeStorageEnv() {
   }
   if (bucket) {
     process.env.DIGITALOCEAN_BUCKET = bucket;
-  }
-  if (region) {
-    process.env.DO_REGION = region;
   }
   process.env.S3_FORCE_PATH_STYLE = 'true';
 

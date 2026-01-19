@@ -23,7 +23,16 @@ import setupAuthRoutes from './routes/auth.js';
 import setupChatRoutes from './routes/chat.js';
 import setupFileRoutes from './routes/files.js';
 import { getUserBucketSize } from './routes/files.js';
-import { S3Client, HeadBucketCommand, CreateBucketCommand } from '@aws-sdk/client-s3';
+import {
+  S3Client,
+  HeadBucketCommand,
+  CreateBucketCommand,
+  ListObjectsV2Command,
+  DeleteObjectsCommand,
+  DeleteBucketCommand,
+  GetObjectCommand,
+  PutObjectCommand
+} from '@aws-sdk/client-s3';
 
 dotenv.config();
 const storageConfig = normalizeStorageEnv();
@@ -104,6 +113,120 @@ async function ensureBucketExists() {
       console.error(`❌ [STORAGE] Bucket check status: ${statusCode}`);
     }
   }
+}
+
+function shouldUseEphemeralSpaces() {
+  if (process.env.KB_USE_EPHEMERAL_SPACES === 'true') {
+    return true;
+  }
+  return storageConfig?.backend === 'minio';
+}
+
+function getSpacesConfig() {
+  const endpoint = process.env.SPACES_ENDPOINT_URL || 'https://tor1.digitaloceanspaces.com';
+  const region = process.env.SPACES_REGION || process.env.DO_REGION || 'tor1';
+  const accessKeyId = process.env.SPACES_AWS_ACCESS_KEY_ID || process.env.SPACES_ACCESS_KEY_ID;
+  const secretAccessKey = process.env.SPACES_AWS_SECRET_ACCESS_KEY || process.env.SPACES_SECRET_ACCESS_KEY;
+  const bucketPrefix = process.env.SPACES_BUCKET_PREFIX || 'maia-kb-temp';
+
+  if (!accessKeyId || !secretAccessKey) {
+    return null;
+  }
+
+  return { endpoint, region, accessKeyId, secretAccessKey, bucketPrefix };
+}
+
+function createSpacesClient(config) {
+  return new S3Client({
+    endpoint: config.endpoint,
+    region: 'us-east-1',
+    forcePathStyle: false,
+    credentials: {
+      accessKeyId: config.accessKeyId,
+      secretAccessKey: config.secretAccessKey
+    }
+  });
+}
+
+function buildEphemeralBucketName(prefix, userId, kbName) {
+  const base = `${prefix}-${userId}-${kbName}-${Date.now()}`;
+  const sanitized = base
+    .toLowerCase()
+    .replace(/[^a-z0-9-]/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-|-$/g, '');
+  return sanitized.slice(0, 63).replace(/-+$/g, '') || `${prefix}-${Date.now()}`;
+}
+
+async function createEphemeralSpacesBucket(config, userId, kbName) {
+  const bucketName = buildEphemeralBucketName(config.bucketPrefix, userId, kbName);
+  const spacesClient = createSpacesClient(config);
+
+  await spacesClient.send(new CreateBucketCommand({ Bucket: bucketName }));
+  console.log(`🪣 [SPACES] Created ephemeral bucket: ${bucketName}`);
+
+  return { bucketName, client: spacesClient };
+}
+
+async function copyKeysToSpaces({ sourceClient, sourceBucket, destClient, destBucket, keys }) {
+  for (const key of keys) {
+    const getResponse = await sourceClient.send(new GetObjectCommand({
+      Bucket: sourceBucket,
+      Key: key
+    }));
+
+    const contentLength = getResponse.ContentLength;
+    const body = getResponse.Body;
+
+    if (!contentLength) {
+      const chunks = [];
+      for await (const chunk of body) {
+        chunks.push(chunk);
+      }
+      const buffer = Buffer.concat(chunks);
+      await destClient.send(new PutObjectCommand({
+        Bucket: destBucket,
+        Key: key,
+        Body: buffer,
+        ContentLength: buffer.length,
+        ContentType: getResponse.ContentType || 'application/octet-stream'
+      }));
+      continue;
+    }
+
+    await destClient.send(new PutObjectCommand({
+      Bucket: destBucket,
+      Key: key,
+      Body: body,
+      ContentLength: contentLength,
+      ContentType: getResponse.ContentType || 'application/octet-stream'
+    }));
+  }
+}
+
+async function deleteSpacesBucket(config, bucketName) {
+  const spacesClient = createSpacesClient(config);
+  let continuationToken;
+
+  do {
+    const listResponse = await spacesClient.send(new ListObjectsV2Command({
+      Bucket: bucketName,
+      ContinuationToken: continuationToken
+    }));
+
+    const objects = (listResponse.Contents || []).map(obj => ({ Key: obj.Key }));
+    if (objects.length > 0) {
+      await spacesClient.send(new DeleteObjectsCommand({
+        Bucket: bucketName,
+        Delete: { Objects: objects }
+      }));
+    }
+
+    continuationToken = listResponse.IsTruncated ? listResponse.NextContinuationToken : undefined;
+  } while (continuationToken);
+
+  await spacesClient.send(new DeleteBucketCommand({ Bucket: bucketName }));
+  console.log(`🪣 [SPACES] Deleted ephemeral bucket: ${bucketName}`);
 }
 
 /**
@@ -2933,6 +3056,21 @@ async function provisionUserAsync(userId, token) {
     
     const bucketName = bucketUrl.split('//')[1]?.split('.')[0] || 'maia';
     const kbName = getKBNameFromUserDoc(userDoc, userId);
+    const useEphemeralSpaces = shouldUseEphemeralSpaces();
+    let indexingBucketName = bucketName;
+    let indexingRegion = process.env.DO_REGION || 'tor1';
+    let spacesConfig = null;
+    let ephemeralProvisioning = null;
+
+    const storageClient = new S3Client({
+      endpoint: process.env.DIGITALOCEAN_ENDPOINT_URL || 'https://tor1.digitaloceanspaces.com',
+      region: 'us-east-1',
+      forcePathStyle: process.env.S3_FORCE_PATH_STYLE === 'true',
+      credentials: {
+        accessKeyId: process.env.DIGITALOCEAN_AWS_ACCESS_KEY_ID || '',
+        secretAccessKey: process.env.DIGITALOCEAN_AWS_SECRET_ACCESS_KEY || ''
+      }
+    });
     
     // Check if folders already exist (created during registration)
     try {
@@ -3049,6 +3187,65 @@ async function provisionUserAsync(userId, token) {
       logProvisioning(userId, `📁 [KB CREATION PATH: NO INITIAL FILE] Temporary datasource will be deleted after KB creation`, 'info');
     }
     
+    if (useEphemeralSpaces) {
+      spacesConfig = getSpacesConfig();
+      if (!spacesConfig) {
+        throw new Error('SPACES_AWS_ACCESS_KEY_ID and SPACES_AWS_SECRET_ACCESS_KEY are required for ephemeral indexing.');
+      }
+
+      const { bucketName: tempBucket, client: spacesClient } = await createEphemeralSpacesBucket(spacesConfig, userId, kbName);
+      indexingBucketName = tempBucket;
+      indexingRegion = spacesConfig.region;
+      ephemeralProvisioning = {
+        bucketName: tempBucket,
+        spacesClient,
+        dataSourceUuids: [],
+        config: spacesConfig
+      };
+
+      if (hasInitialFile) {
+        await copyKeysToSpaces({
+          sourceClient: storageClient,
+          sourceBucket: bucketName,
+          destClient: spacesClient,
+          destBucket: tempBucket,
+          keys: [initialFileBucketKey]
+        });
+      } else {
+        await spacesClient.send(new PutObjectCommand({
+          Bucket: tempBucket,
+          Key: `${userId}/${kbName}/.keep`,
+          Body: Buffer.from('')
+        }));
+      }
+    }
+
+    const cleanupEphemeralProvisioning = async (reason) => {
+      if (!ephemeralProvisioning?.bucketName) {
+        return;
+      }
+
+      const tempBucket = ephemeralProvisioning.bucketName;
+      console.log(`🧹 [KB PROVISION] Cleaning up ephemeral Spaces resources (${reason})...`);
+
+      if (ephemeralProvisioning.dataSourceUuids.length > 0) {
+        for (const dsUuid of ephemeralProvisioning.dataSourceUuids) {
+          try {
+            await doClient.kb.deleteDataSource(kbId, dsUuid);
+            logProvisioning(userId, `🧹 [KB PROVISION] Deleted ephemeral datasource ${dsUuid}`, 'info');
+          } catch (dsError) {
+            logProvisioning(userId, `⚠️  [KB PROVISION] Failed to delete datasource ${dsUuid}: ${dsError.message}`, 'warning');
+          }
+        }
+      }
+
+      try {
+        await deleteSpacesBucket(ephemeralProvisioning.config, tempBucket);
+      } catch (bucketError) {
+        logProvisioning(userId, `⚠️  [KB PROVISION] Failed to delete ephemeral bucket: ${bucketError.message}`, 'warning');
+      }
+    };
+
     let kbId = null;
     let kbDetails = null;
     let initialFileDatasourceUuid = null; // Track if datasource was created for initial file
@@ -3072,6 +3269,14 @@ async function provisionUserAsync(userId, token) {
         } else {
           logProvisioning(userId, `✅ KB has ${datasources.length} data source(s)`, 'success');
         }
+
+        if (useEphemeralSpaces && !hasInitialFile && ephemeralProvisioning?.bucketName) {
+          try {
+            await deleteSpacesBucket(ephemeralProvisioning.config, ephemeralProvisioning.bucketName);
+          } catch (bucketError) {
+            logProvisioning(userId, `⚠️  Failed to delete ephemeral bucket: ${bucketError.message}`, 'warning');
+          }
+        }
       } else {
         // Determine itemPath based on whether initial file exists
         let itemPath;
@@ -3090,9 +3295,9 @@ async function provisionUserAsync(userId, token) {
           description: `Knowledge base for ${userId}`,
           projectId: projectId.trim(),
           databaseId: databaseId.trim(),
-          bucketName: bucketName,
+          bucketName: indexingBucketName,
           itemPath: itemPath,
-          region: process.env.DO_REGION || 'tor1'
+          region: indexingRegion
         };
         
         if (embeddingModelId && isValidUUID(embeddingModelId)) {
@@ -3242,6 +3447,14 @@ async function provisionUserAsync(userId, token) {
             console.log(`[KB VERIFY] [KB CREATION PATH: NO INITIAL FILE] ⚠️  Could not find datasource pointing to ${kbFolderPath} to delete`);
             logProvisioning(userId, `⚠️  [KB CREATION PATH: NO INITIAL FILE] Warning: Could not find temporary datasource to delete`, 'warning');
           }
+
+        if (useEphemeralSpaces && ephemeralProvisioning?.bucketName) {
+          try {
+            await deleteSpacesBucket(ephemeralProvisioning.config, ephemeralProvisioning.bucketName);
+          } catch (bucketError) {
+            logProvisioning(userId, `⚠️  [KB CREATION PATH: NO INITIAL FILE] Failed to delete ephemeral bucket: ${bucketError.message}`, 'warning');
+          }
+        }
         }
       }
       
@@ -3469,9 +3682,9 @@ async function provisionUserAsync(userId, token) {
           
           try {
             const newDataSource = await doClient.kb.addDataSource(kbId, {
-              bucketName: bucketName,
+              bucketName: indexingBucketName,
               itemPath: initialFileBucketKey,
-              region: process.env.DO_REGION || 'tor1'
+              region: indexingRegion
             });
             
             datasourceUuid = newDataSource.uuid || newDataSource.id || newDataSource.knowledge_base_data_source?.uuid;
@@ -3489,6 +3702,12 @@ async function provisionUserAsync(userId, token) {
           logProvisioning(userId, `✅ [INITIAL FILE PROCESSING] Using datasource created during KB creation: ${datasourceUuid}`, 'success');
           logProvisioning(userId, `✅ [INITIAL FILE PROCESSING] No need to create new datasource - already exists from KB creation`, 'info');
         }
+
+        if (useEphemeralSpaces && datasourceUuid && ephemeralProvisioning) {
+          if (!ephemeralProvisioning.dataSourceUuids.includes(datasourceUuid)) {
+            ephemeralProvisioning.dataSourceUuids.push(datasourceUuid);
+          }
+        }
           
         // Update user document to store datasource UUID on the file
         // Find or create file entry in userDoc.files[]
@@ -3505,13 +3724,15 @@ async function provisionUserAsync(userId, token) {
             size: userDoc.initialFile.fileSize || 0,
             uploadedAt: userDoc.initialFile.uploadedAt || new Date().toISOString(),
             knowledgeBases: [kbName],
-            kbDataSourceUuid: datasourceUuid
+            kbDataSourceUuid: useEphemeralSpaces ? undefined : datasourceUuid
           });
           fileIndex = userDoc.files.length - 1;
           logProvisioning(userId, `📝 [INITIAL FILE PROCESSING] Added initial file to userDoc.files[]`, 'info');
         } else {
           // File exists - update it
-          userDoc.files[fileIndex].kbDataSourceUuid = datasourceUuid;
+          if (!useEphemeralSpaces) {
+            userDoc.files[fileIndex].kbDataSourceUuid = datasourceUuid;
+          }
           if (!userDoc.files[fileIndex].knowledgeBases) {
             userDoc.files[fileIndex].knowledgeBases = [];
           }
@@ -3642,7 +3863,7 @@ async function provisionUserAsync(userId, token) {
               
               logProvisioning(userId, `📊 [INITIAL FILE PROCESSING] Indexing status: ${jobStatus} (elapsed: ${elapsedSeconds}s)`, 'info');
               
-              if (jobStatus === 'INDEX_JOB_STATUS_COMPLETED' || jobStatus === 'completed') {
+              if (jobStatus === 'INDEX_JOB_STATUS_COMPLETED' || jobStatus === 'INDEX_JOB_STATUS_NO_CHANGES' || jobStatus === 'completed') {
                 indexingCompleted = true;
                 indexingJobResult = currentJob;
                 const indexingDurationSeconds = elapsedSeconds;
@@ -3721,11 +3942,29 @@ async function provisionUserAsync(userId, token) {
             logProvisioning(userId, `⚠️  [INITIAL FILE PROCESSING] Indexing job completed but datasource verification failed - not marking as indexed`, 'warning');
             // Don't update kbIndexedFiles - let background polling handle it
           }
+
+          if (useEphemeralSpaces && ephemeralProvisioning?.bucketName) {
+            if (datasourceUuid) {
+              try {
+                await doClient.kb.deleteDataSource(kbId, datasourceUuid);
+                logProvisioning(userId, `🧹 [INITIAL FILE PROCESSING] Deleted ephemeral datasource ${datasourceUuid}`, 'info');
+              } catch (dsDeleteError) {
+                logProvisioning(userId, `⚠️  [INITIAL FILE PROCESSING] Failed to delete ephemeral datasource: ${dsDeleteError.message}`, 'warning');
+              }
+            }
+
+            try {
+              await deleteSpacesBucket(ephemeralProvisioning.config, ephemeralProvisioning.bucketName);
+            } catch (bucketError) {
+              logProvisioning(userId, `⚠️  [INITIAL FILE PROCESSING] Failed to delete ephemeral bucket: ${bucketError.message}`, 'warning');
+            }
+          }
         }
         
-      } catch (initialFileError) {
+        } catch (initialFileError) {
         // Log error but don't fail provisioning
         logProvisioning(userId, `⚠️  Error processing initial file: ${initialFileError.message}. Continuing provisioning.`, 'warning');
+          await cleanupEphemeralProvisioning('initial_file_error');
         // Continue with agent creation
       }
     } else {
@@ -7137,6 +7376,7 @@ async function setupKnowledgeBase(userId, kbName, filesInKB, bucketName, existin
 app.post('/api/update-knowledge-base', async (req, res) => {
   try {
     const { userId } = req.body;
+    let cleanupEphemeralIndexing = async () => {};
     
     console.log(`[KB Update] Received request for userId: ${userId}`);
     
@@ -7172,6 +7412,21 @@ app.post('/api/update-knowledge-base', async (req, res) => {
       });
     }
     const bucketName = bucketUrl.split('//')[1]?.split('.')[0] || 'maia';
+    const useEphemeralSpaces = shouldUseEphemeralSpaces();
+    let indexingBucketName = bucketName;
+    let indexingRegion = process.env.DO_REGION || 'tor1';
+    let ephemeralContext = null;
+    let spacesConfig = null;
+
+    const storageClient = new S3Client({
+      endpoint: process.env.DIGITALOCEAN_ENDPOINT_URL || 'https://tor1.digitaloceanspaces.com',
+      region: 'us-east-1',
+      forcePathStyle: process.env.S3_FORCE_PATH_STYLE === 'true',
+      credentials: {
+        accessKeyId: process.env.DIGITALOCEAN_AWS_ACCESS_KEY_ID || '',
+        secretAccessKey: process.env.DIGITALOCEAN_AWS_SECRET_ACCESS_KEY || ''
+      }
+    });
 
     // Get list of files currently in KB folder (files already moved by checkboxes)
     const filesInKB = userDoc.files
@@ -7179,13 +7434,52 @@ app.post('/api/update-knowledge-base', async (req, res) => {
         return file.bucketKey && file.bucketKey.startsWith(`${userId}/${kbName}/`);
       })
       .map(file => file.bucketKey);
+
+    if (useEphemeralSpaces) {
+      spacesConfig = getSpacesConfig();
+      if (!spacesConfig) {
+        return res.status(500).json({
+          success: false,
+          error: 'SPACES_NOT_CONFIGURED',
+          message: 'SPACES_AWS_ACCESS_KEY_ID and SPACES_AWS_SECRET_ACCESS_KEY are required for ephemeral indexing.'
+        });
+      }
+
+      const { bucketName: tempBucket, client: spacesClient } = await createEphemeralSpacesBucket(spacesConfig, userId, kbName);
+      indexingBucketName = tempBucket;
+      indexingRegion = spacesConfig.region;
+      ephemeralContext = {
+        bucketName: tempBucket,
+        spacesClient,
+        dataSourceUuids: [],
+        config: spacesConfig
+      };
+
+      if (filesInKB.length > 0) {
+        console.log(`[KB Update] Copying ${filesInKB.length} file(s) to ephemeral Spaces bucket ${tempBucket}...`);
+        await copyKeysToSpaces({
+          sourceClient: storageClient,
+          sourceBucket: bucketName,
+          destClient: spacesClient,
+          destBucket: tempBucket,
+          keys: filesInKB
+        });
+        console.log(`[KB Update] ✅ Copied files to ephemeral Spaces bucket ${tempBucket}`);
+      } else {
+        await spacesClient.send(new PutObjectCommand({
+          Bucket: tempBucket,
+          Key: `${userId}/${kbName}/.keep`,
+          Body: Buffer.from('')
+        }));
+      }
+    }
     
     // Setup KB (just create it - no datasource or indexing management)
     const kbSetupResult = await setupKnowledgeBase(
       userId,
       kbName,
       filesInKB,
-      bucketName,
+      indexingBucketName,
       null // No existing job ID needed
     );
     
@@ -7248,6 +7542,34 @@ app.post('/api/update-knowledge-base', async (req, res) => {
         }
       }
       return userDoc;
+    };
+
+    cleanupEphemeralIndexing = async (reason) => {
+      if (!ephemeralContext?.bucketName) {
+        return;
+      }
+
+      const tempBucket = ephemeralContext.bucketName;
+      const datasourceUuids = ephemeralContext.dataSourceUuids || [];
+
+      console.log(`🧹 [KB Update] Cleaning up ephemeral Spaces resources (${reason})...`);
+
+      if (datasourceUuids.length > 0) {
+        for (const dsUuid of datasourceUuids) {
+          try {
+            await doClient.kb.deleteDataSource(kbId, dsUuid);
+            console.log(`🧹 [KB Update] Deleted ephemeral datasource ${dsUuid}`);
+          } catch (dsError) {
+            console.warn(`⚠️ [KB Update] Failed to delete datasource ${dsUuid}: ${dsError.message}`);
+          }
+        }
+      }
+
+      try {
+        await deleteSpacesBucket(ephemeralContext.config, tempBucket);
+      } catch (bucketError) {
+        console.warn(`⚠️ [KB Update] Failed to delete ephemeral bucket ${tempBucket}: ${bucketError.message}`);
+      }
     };
 
     userDoc = await persistKbState();
@@ -7340,16 +7662,7 @@ app.post('/api/update-knowledge-base', async (req, res) => {
           let datasources = kbDetails?.datasources || kbDetails?.data_sources || kbDetails?.knowledge_base_data_sources || [];
           
           // Query S3/Spaces directly to get actual files in KB folder (source of truth)
-          const { S3Client, ListObjectsV2Command } = await import('@aws-sdk/client-s3');
-          const s3Client = new S3Client({
-            endpoint: process.env.DIGITALOCEAN_ENDPOINT_URL || 'https://tor1.digitaloceanspaces.com',
-            region: 'us-east-1',
-            forcePathStyle: process.env.S3_FORCE_PATH_STYLE === 'true',
-            credentials: {
-              accessKeyId: process.env.DIGITALOCEAN_AWS_ACCESS_KEY_ID || '',
-              secretAccessKey: process.env.DIGITALOCEAN_AWS_SECRET_ACCESS_KEY || ''
-            }
-          });
+          const s3Client = storageClient;
           
           const kbFolderPath = `${userId}/${kbName}/`;
           const listCommand = new ListObjectsV2Command({
@@ -7382,18 +7695,21 @@ app.post('/api/update-knowledge-base', async (req, res) => {
           
           // Build map of existing data sources by file path
           const existingDsByPath = new Map();
-          for (const ds of datasources) {
-            const dsPath = ds.item_path || ds.path || ds.spaces_data_source?.item_path;
-            if (dsPath) {
-              existingDsByPath.set(dsPath, ds.uuid || ds.id);
-            }
-          }
-          
-          // Build map of file data source UUIDs from userDoc
           const fileDsMap = new Map();
-          for (const file of userDoc.files || []) {
-            if (file.bucketKey && file.kbDataSourceUuid) {
-              fileDsMap.set(file.bucketKey, file.kbDataSourceUuid);
+
+          if (!useEphemeralSpaces) {
+            for (const ds of datasources) {
+              const dsPath = ds.item_path || ds.path || ds.spaces_data_source?.item_path;
+              if (dsPath) {
+                existingDsByPath.set(dsPath, ds.uuid || ds.id);
+              }
+            }
+
+            // Build map of file data source UUIDs from userDoc
+            for (const file of userDoc.files || []) {
+              if (file.bucketKey && file.kbDataSourceUuid) {
+                fileDsMap.set(file.bucketKey, file.kbDataSourceUuid);
+              }
             }
           }
           
@@ -7411,20 +7727,24 @@ app.post('/api/update-knowledge-base', async (req, res) => {
               try {
                 console.log(`[KB Update] Creating per-file data source for: ${expectedPath}`);
                 const newDataSource = await doClient.kb.addDataSource(kbId, {
-                  bucketName: bucketName,
+                  bucketName: indexingBucketName,
                   itemPath: expectedPath,
-                  region: process.env.DO_REGION || 'tor1'
+                  region: indexingRegion
                 });
                 
                 const dsUuid = newDataSource.uuid || newDataSource.id || newDataSource.knowledge_base_data_source?.uuid;
                 if (dsUuid) {
-                  // Store the data source UUID on the file in userDoc
-                  const fileIndex = userDoc.files.findIndex(f => f.bucketKey === filePath);
-                  if (fileIndex >= 0) {
-                    userDoc.files[fileIndex].kbDataSourceUuid = dsUuid;
-                  } else {
-                    // File not in userDoc yet - add it (shouldn't happen, but handle it)
-                    console.warn(`[KB Update] ⚠️ File ${filePath} found in S3 but not in userDoc.files`);
+                  if (!useEphemeralSpaces) {
+                    // Store the data source UUID on the file in userDoc
+                    const fileIndex = userDoc.files.findIndex(f => f.bucketKey === filePath);
+                    if (fileIndex >= 0) {
+                      userDoc.files[fileIndex].kbDataSourceUuid = dsUuid;
+                    } else {
+                      // File not in userDoc yet - add it (shouldn't happen, but handle it)
+                      console.warn(`[KB Update] ⚠️ File ${filePath} found in S3 but not in userDoc.files`);
+                    }
+                  } else if (ephemeralContext) {
+                    ephemeralContext.dataSourceUuids.push(dsUuid);
                   }
                   newlyCreatedDsUuids.push(dsUuid);
                   existingDsByPath.set(expectedPath, dsUuid); // Add to map for next iteration
@@ -7437,14 +7757,14 @@ app.post('/api/update-knowledge-base', async (req, res) => {
             } else {
               // Data source exists - ensure it's stored on the file
               const fileIndex = userDoc.files.findIndex(f => f.bucketKey === filePath);
-              if (fileIndex >= 0 && !userDoc.files[fileIndex].kbDataSourceUuid) {
+              if (!useEphemeralSpaces && fileIndex >= 0 && !userDoc.files[fileIndex].kbDataSourceUuid) {
                 userDoc.files[fileIndex].kbDataSourceUuid = existingDsUuid;
               }
             }
           }
           
           // Save file updates if any data sources were created or updated
-          if (newlyCreatedDsUuids.length > 0) {
+          if (newlyCreatedDsUuids.length > 0 && !useEphemeralSpaces) {
             try {
               await cloudant.saveDocument('maia_users', userDoc);
             } catch (saveErr) {
@@ -7499,7 +7819,10 @@ app.post('/api/update-knowledge-base', async (req, res) => {
           
           let listToIndex = [];
           
-          if (userDoc.kbReindexAll) {
+          if (useEphemeralSpaces) {
+            listToIndex = newlyCreatedDsUuids;
+            console.log(`[KB Update] Ephemeral indexing: ${listToIndex.length} data source(s) created for this run`);
+          } else if (userDoc.kbReindexAll) {
             listToIndex = allDsUuids;
             console.log(`[KB Update] Re-indexing all ${allDsUuids.length} data sources (kbReindexAll=true)`);
           } else if (Array.isArray(userDoc.kbChangedDataSourceUuids) && userDoc.kbChangedDataSourceUuids.length > 0) {
@@ -7545,6 +7868,7 @@ app.post('/api/update-knowledge-base', async (req, res) => {
                 await cloudant.saveDocument('maia_users', emptyDoc);
                 invalidateResourceCache(userId);
               }
+              await cleanupEphemeralIndexing('empty_kb');
               return res.json({
                 success: true,
                 message: 'Knowledge base updated successfully (empty KB)',
@@ -7566,6 +7890,7 @@ app.post('/api/update-knowledge-base', async (req, res) => {
                 await cloudant.saveDocument('maia_users', freshDoc);
                 invalidateResourceCache(userId);
               }
+              await cleanupEphemeralIndexing('no_datasources');
               return res.json({
                 success: true,
                 message: 'Knowledge base updated successfully (no data sources to index)',
@@ -7667,6 +7992,10 @@ app.post('/api/update-knowledge-base', async (req, res) => {
     }
     
     // Return response with jobId if available
+    if (!indexingStarted) {
+      await cleanupEphemeralIndexing('no_indexing');
+    }
+
     res.json({
       success: true,
       message: indexingStarted ? 'Knowledge base updated, indexing started' : 'Knowledge base updated successfully',
@@ -7793,6 +8122,8 @@ app.post('/api/update-knowledge-base', async (req, res) => {
           invalidateResourceCache(userId);
         }
 
+      await cleanupEphemeralIndexing('completed');
+
         // Attach KB to agent if needed
         try {
           if (finalUserDoc && finalUserDoc.assignedAgentId) {
@@ -7914,6 +8245,7 @@ app.post('/api/update-knowledge-base', async (req, res) => {
                   jobStatus === 'INDEX_JOB_STATUS_RUNNING' ||
                     jobStatus === 'INDEX_JOB_STATUS_IN_PROGRESS' ||
                   jobStatus === 'INDEX_JOB_STATUS_COMPLETED' ||
+                  jobStatus === 'INDEX_JOB_STATUS_NO_CHANGES' ||
                   jobStatus === 'pending' ||
                   jobStatus === 'running' ||
                   jobStatus === 'in_progress' ||
@@ -7948,6 +8280,7 @@ app.post('/api/update-knowledge-base', async (req, res) => {
 
           // Only mark as complete if this is the job we're tracking AND it's actually completed
           const isCompleted = (status === 'INDEX_JOB_STATUS_COMPLETED' || 
+                             status === 'INDEX_JOB_STATUS_NO_CHANGES' ||
                              status === 'completed' ||
                              status === 'COMPLETED' ||
                              (job.completed === true) ||
@@ -7987,6 +8320,7 @@ app.post('/api/update-knowledge-base', async (req, res) => {
              clearPollTimer();
              const failedJobId = failedJob.uuid || failedJob.id || failedJob.indexing_job_id;
              console.error(`[KB AUTO] ❌ Indexing job ${failedJobId} failed:`, failedJob.error || failedJob.message || 'Unknown error');
+            await cleanupEphemeralIndexing('failed');
              return;
            } else if (pollCount % 6 === 0) {
              // Log when job not found (might have completed and been removed from list)
@@ -8005,6 +8339,7 @@ app.post('/api/update-knowledge-base', async (req, res) => {
            finished = true;
            clearPollTimer();
            console.error(`[KB AUTO] ⚠️ Polling timeout: No indexing job found after ${maxPolls} polls (${Math.round((maxPolls * pollDelayMs) / 60000)} minutes)`);
+          await cleanupEphemeralIndexing('timeout');
          } else {
            scheduleNextPoll();
          }
@@ -8015,6 +8350,13 @@ app.post('/api/update-knowledge-base', async (req, res) => {
     } // End of polling block - only runs if jobId || indexingStarted || (filesChanged || indexingRequested)
   } catch (error) {
     console.error('❌ Error updating knowledge base:', error);
+    if (typeof cleanupEphemeralIndexing === 'function') {
+      try {
+        await cleanupEphemeralIndexing('error');
+      } catch (cleanupError) {
+        console.warn(`⚠️ [KB Update] Failed to cleanup ephemeral resources: ${cleanupError.message}`);
+      }
+    }
     res.status(500).json({ 
       success: false, 
       message: `Failed to update knowledge base: ${error.message}`,
@@ -8109,7 +8451,7 @@ app.get('/api/kb-indexing-status/:jobId', async (req, res) => {
         phase = 'indexing_started';
       } else if (status === 'INDEX_JOB_STATUS_RUNNING') {
         phase = 'indexing';
-      } else if (status === 'INDEX_JOB_STATUS_COMPLETED') {
+      } else if (status === 'INDEX_JOB_STATUS_COMPLETED' || status === 'INDEX_JOB_STATUS_NO_CHANGES') {
         phase = 'indexing'; // Still 'indexing' because backend hasn't finished processing yet
         completed = true; // DO API says completed
       } else if (status === 'INDEX_JOB_STATUS_FAILED') {
@@ -8130,7 +8472,7 @@ app.get('/api/kb-indexing-status/:jobId', async (req, res) => {
       
       // If job is completed, query DO API directly to get the actual indexed files
       // This ensures we return the correct state even if backend hasn't updated userDoc yet
-      if (status === 'INDEX_JOB_STATUS_COMPLETED' && userDoc.kbId) {
+      if ((status === 'INDEX_JOB_STATUS_COMPLETED' || status === 'INDEX_JOB_STATUS_NO_CHANGES') && userDoc.kbId) {
         try {
           const dataSources = await doClient.kb.listDataSources(userDoc.kbId);
           const kbName = getKBNameFromUserDoc(userDoc, userId);

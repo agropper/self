@@ -178,6 +178,79 @@ This document lists the APIs related to each environment variable used in the MA
 
 ---
 
+### KB_USE_EPHEMERAL_SPACES
+**Status:** Optional
+
+**Usage:**
+- When `true`, uses a temporary Spaces bucket for KB indexing
+- Defaults to `true` when `STORAGE_BACKEND=minio`
+
+**Related Files:**
+- `server/index.js`
+
+---
+
+### SPACES_ENDPOINT_URL
+**Status:** Optional
+
+**Default:** `https://tor1.digitaloceanspaces.com`
+
+**Usage:**
+- Spaces endpoint used for ephemeral KB indexing bucket
+
+**Related Files:**
+- `server/index.js`
+
+---
+
+### SPACES_REGION
+**Status:** Optional
+
+**Default:** `tor1`
+
+**Usage:**
+- Region used for Spaces datasources in DO KB indexing
+
+**Related Files:**
+- `server/index.js`
+
+---
+
+### SPACES_AWS_ACCESS_KEY_ID
+**Status:** Optional
+
+**Usage:**
+- Spaces access key for ephemeral KB indexing bucket
+
+**Related Files:**
+- `server/index.js`
+
+---
+
+### SPACES_AWS_SECRET_ACCESS_KEY
+**Status:** Optional
+
+**Usage:**
+- Spaces secret key for ephemeral KB indexing bucket
+
+**Related Files:**
+- `server/index.js`
+
+---
+
+### SPACES_BUCKET_PREFIX
+**Status:** Optional
+
+**Default:** `maia-kb-temp`
+
+**Usage:**
+- Prefix used when creating ephemeral Spaces buckets for indexing
+
+**Related Files:**
+- `server/index.js`
+
+---
+
 ### DIGITALOCEAN_BUCKET
 **API:** DigitalOcean Spaces (S3-compatible API)
 
