@@ -113,6 +113,36 @@ function getMaiaInstructionText() {
   }
 }
 
+function getSetupWizardMessages() {
+  try {
+    const newAgentFilePath = path.join(__dirname, '../../NEW-AGENT.txt');
+    const fileContent = readFileSync(newAgentFilePath, 'utf-8');
+    const marker = '## PRIVATE AI SETUP WIZARD MESSAGES';
+    const startIndex = fileContent.indexOf(marker);
+    if (startIndex === -1) {
+      return {};
+    }
+    const lines = fileContent.slice(startIndex + marker.length).split('\n');
+    const messages = {};
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+      if (trimmed.startsWith('## ')) break;
+      const match = trimmed.match(/^(\d+)[).:\-]\s*(.+)$/);
+      if (match) {
+        const stage = Number(match[1]);
+        if (stage >= 1 && stage <= 4) {
+          messages[stage] = match[2];
+        }
+      }
+    }
+    return messages;
+  } catch (error) {
+    console.warn('Unable to read setup wizard messages:', error.message);
+    return {};
+  }
+}
+
 const agentStatusCache = new Map();
 
 async function ensureUserAgent(doClient, cloudant, userDoc) {
@@ -501,6 +531,13 @@ export default function setupAuthRoutes(app, passkeyService, cloudant, doClient,
           chatId: req.session.deepLinkChatId || null
         } : null
       }
+    });
+  });
+
+  app.get('/api/setup-wizard-messages', (req, res) => {
+    res.json({
+      success: true,
+      messages: getSetupWizardMessages()
     });
   });
 

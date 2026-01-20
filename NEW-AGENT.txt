@@ -56,6 +56,28 @@ Tips for each stage can be added below:
 
 ---
 
+## PRIVATE AI SETUP WIZARD MESSAGES
+
+1. Creating your Private AI agent. This can take several minutes.
+  
+2. Add your Apple Health "Export PDF" file to get started. If don't have an Apple Health file, click Not yet. You will be able to add a file or manage your current medications manually on the My Lists tab.
+   - Stage 2 is never disabled. A user can add the PDF even after they have other files.
+   - OK displays the file chooser, saves the file as imported, and then launches the My Lists tab.
+    - Not yet dismisses the wizard until the next page reload.
+  - Stage 2 is checked off when the My Lists modal is closed or there's a Current Medications list.
+
+3. Add any health records you want included. If you click Not yet, you can manage and index health record files anytime using the Saved Files tab.
+   - OK displays the file chooser, saves the file as imported, and then launches the Saved Files tab
+   - Not yet checks if there are files indexed into the knowledge base and, if so, checks off Stage 3 
+
+4. Review and verify your Patient Summary. Use the Patient Summary tab any time to update or edit it.
+   - If Stage 5 is complete, then there is a Patient Summary and the SETUP WIZARD is not displayed.
+   - OK is enabled if there are files in the knowledge base. It displays the Patient Summary tab.
+   - Not yet just closes the modal.
+
+
+---
+
 ## Complete Status Tip Messages Reference
 
 All status tip messages displayed in the application (numbered 1-17, corresponding to workflow stages 1-13 plus additional status messages):
