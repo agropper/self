@@ -168,8 +168,9 @@ async function createEphemeralSpacesBucket(config, userId, kbName) {
   return { bucketName, client: spacesClient };
 }
 
-async function copyKeysToSpaces({ sourceClient, sourceBucket, destClient, destBucket, keys }) {
+async function copyKeysToSpaces({ sourceClient, sourceBucket, destClient, destBucket, keys, destKeyFor }) {
   for (const key of keys) {
+    const destKey = typeof destKeyFor === 'function' ? destKeyFor(key) : key;
     const getResponse = await sourceClient.send(new GetObjectCommand({
       Bucket: sourceBucket,
       Key: key
@@ -186,7 +187,7 @@ async function copyKeysToSpaces({ sourceClient, sourceBucket, destClient, destBu
       const buffer = Buffer.concat(chunks);
       await destClient.send(new PutObjectCommand({
         Bucket: destBucket,
-        Key: key,
+        Key: destKey,
         Body: buffer,
         ContentLength: buffer.length,
         ContentType: getResponse.ContentType || 'application/octet-stream'
@@ -196,11 +197,37 @@ async function copyKeysToSpaces({ sourceClient, sourceBucket, destClient, destBu
 
     await destClient.send(new PutObjectCommand({
       Bucket: destBucket,
-      Key: key,
+      Key: destKey,
       Body: body,
       ContentLength: contentLength,
       ContentType: getResponse.ContentType || 'application/octet-stream'
     }));
+  }
+}
+
+const TEMP_KB_PREFIX = 'kb-src-';
+
+function buildTempKbFolder(userId, kbName, sourceKey) {
+  const encoded = encodeURIComponent(sourceKey);
+  return `${userId}/${kbName}/${TEMP_KB_PREFIX}${encoded}/`;
+}
+
+function buildTempKbObjectKey(userId, kbName, sourceKey) {
+  const fileName = sourceKey.split('/').pop() || sourceKey;
+  return `${buildTempKbFolder(userId, kbName, sourceKey)}${fileName}`;
+}
+
+function decodeSourceKeyFromTempPath(path, userId, kbName) {
+  if (!path || !userId || !kbName) return null;
+  const prefix = `${userId}/${kbName}/${TEMP_KB_PREFIX}`;
+  if (!path.startsWith(prefix)) return null;
+  const remainder = path.slice(prefix.length);
+  const encoded = remainder.split('/')[0];
+  if (!encoded) return null;
+  try {
+    return decodeURIComponent(encoded);
+  } catch (error) {
+    return null;
   }
 }
 
@@ -3223,7 +3250,8 @@ async function provisionUserAsync(userId, token) {
           sourceBucket: bucketName,
           destClient: spacesClient,
           destBucket: tempBucket,
-          keys: [initialFileBucketKey]
+          keys: [initialFileBucketKey],
+          destKeyFor: (key) => buildTempKbObjectKey(userId, kbName, key)
         });
       } else {
         await spacesClient.send(new PutObjectCommand({
@@ -3292,9 +3320,9 @@ async function provisionUserAsync(userId, token) {
         // Determine itemPath based on whether initial file exists
         let itemPath;
         if (hasInitialFile) {
-          // PATH 1: Create KB with datasource pointing to initial file
-          itemPath = initialFileBucketKey;
-          logProvisioning(userId, `📄 [KB CREATION PATH: WITH INITIAL FILE] Creating KB with datasource pointing to file: ${itemPath}`, 'info');
+          // PATH 1: Create KB with datasource pointing to per-file folder
+          itemPath = buildTempKbFolder(userId, kbName, initialFileBucketKey);
+          logProvisioning(userId, `📄 [KB CREATION PATH: WITH INITIAL FILE] Creating KB with datasource pointing to folder: ${itemPath}`, 'info');
         } else {
           // PATH 2: Create KB with temporary datasource pointing to empty folder (will be deleted)
           itemPath = `${userId}/${kbName}/`;
@@ -3333,9 +3361,10 @@ async function provisionUserAsync(userId, token) {
         
         if (hasInitialFile) {
           // PATH 1: Find and keep the datasource created for the initial file
+          const initialFileItemPath = buildTempKbFolder(userId, kbName, initialFileBucketKey);
           const fileDataSource = datasources.find(ds => {
             const dsPath = ds.item_path || ds.spaces_data_source?.item_path || '';
-            return dsPath === initialFileBucketKey;
+            return dsPath === initialFileItemPath;
           });
           
           if (fileDataSource) {
@@ -3684,17 +3713,18 @@ async function provisionUserAsync(userId, token) {
         }
         
         // Use datasource created during KB creation, or create one if it doesn't exist
+        const initialFileItemPath = buildTempKbFolder(userId, kbName, initialFileBucketKey);
         let datasourceUuid = initialFileDatasourceUuid; // May be null if KB already existed or datasource wasn't found
         
         if (!datasourceUuid) {
           // Datasource wasn't created during KB creation (KB already existed or not found) - create it now
           updateStatus('Creating data source for initial file...', { fileName: initialFileName });
-          logProvisioning(userId, `📦 [INITIAL FILE PROCESSING] Creating datasource for initial file: ${initialFileBucketKey}`, 'info');
+          logProvisioning(userId, `📦 [INITIAL FILE PROCESSING] Creating datasource for initial file folder: ${initialFileItemPath}`, 'info');
           
           try {
             const newDataSource = await doClient.kb.addDataSource(kbId, {
               bucketName: indexingBucketName,
-              itemPath: initialFileBucketKey,
+              itemPath: initialFileItemPath,
               region: indexingRegion
             });
             
@@ -5713,7 +5743,6 @@ app.get('/api/user-files', async (req, res) => {
     // Deduplicate files by filename - prefer KB folder entries over archived/root entries
     // Get KB name for preference checking
     const kbName = getKBNameFromUserDoc(userDoc, userId);
-    const kbFolderPath = kbName ? `${userId}/${kbName}/` : null;
     
     const filesByFileName = new Map();
     
@@ -5730,9 +5759,8 @@ app.get('/api/user-files', async (req, res) => {
         filesByFileName.set(fileName, file);
       } else {
         // Duplicate filename found - prefer KB folder entry
-        const existingBucketKey = existing.bucketKey || '';
-        const existingIsInKB = kbFolderPath && existingBucketKey.startsWith(kbFolderPath);
-        const currentIsInKB = kbFolderPath && bucketKey.startsWith(kbFolderPath);
+        const existingIsInKB = kbName && Array.isArray(existing.knowledgeBases) && existing.knowledgeBases.includes(kbName);
+        const currentIsInKB = kbName && Array.isArray(file.knowledgeBases) && file.knowledgeBases.includes(kbName);
         
         if (currentIsInKB && !existingIsInKB) {
           // Current file is in KB, existing is not - replace
@@ -5773,16 +5801,16 @@ app.get('/api/user-files', async (req, res) => {
     
     if (Array.isArray(indexedFiles)) {
       indexedFiles = Array.from(new Set(indexedFiles));
-      if (kbFolderPath) {
-        indexedFiles = indexedFiles.filter((key) => key.startsWith(kbFolderPath));
-      }
+    } else {
+      indexedFiles = [];
     }
 
     const response = {
       success: true,
       files: files,
       indexedFiles: indexedFiles,
-      kbLastIndexingTokens: userDoc.kbLastIndexingTokens || '0'
+      kbLastIndexingTokens: userDoc.kbLastIndexingTokens || '0',
+      kbName: kbName
     };
 
     res.json(response);
@@ -5837,6 +5865,38 @@ app.post('/api/toggle-file-knowledge-base', async (req, res) => {
 
     // Get KB name from user document
     const kbName = getKBNameFromUserDoc(userDoc, userId);
+
+    if (shouldUseEphemeralSpaces()) {
+      if (!userDoc.files[fileIndex].knowledgeBases) {
+        userDoc.files[fileIndex].knowledgeBases = [];
+      }
+
+      if (inKnowledgeBase) {
+        if (!userDoc.files[fileIndex].knowledgeBases.includes(kbName)) {
+          userDoc.files[fileIndex].knowledgeBases.push(kbName);
+        }
+      } else {
+        userDoc.files[fileIndex].knowledgeBases = userDoc.files[fileIndex].knowledgeBases.filter(name => name !== kbName);
+      }
+
+      userDoc.files[fileIndex].updatedAt = new Date().toISOString();
+
+      const currentFilesInKB = (userDoc.files || [])
+        .filter(file => Array.isArray(file.knowledgeBases) && file.knowledgeBases.includes(kbName))
+        .map(file => file.bucketKey);
+      const currentIndexedFiles = userDoc.kbIndexedFiles || [];
+      const filesChanged = JSON.stringify([...currentFilesInKB].sort()) !== JSON.stringify([...currentIndexedFiles].sort());
+      userDoc.kbIndexingNeeded = filesChanged;
+
+      await cloudant.saveDocument('maia_users', userDoc);
+
+      return res.json({
+        success: true,
+        message: 'Knowledge base status updated',
+        inKnowledgeBase: inKnowledgeBase,
+        newBucketKey: bucketKey
+      });
+    }
     
     // Import S3 client operations for file moves
     const { S3Client, CopyObjectCommand, DeleteObjectCommand, HeadObjectCommand } = await import('@aws-sdk/client-s3');
@@ -6641,7 +6701,8 @@ app.delete('/api/delete-file', async (req, res) => {
     
     // Check if file was in KB before removing
     const kbName = getKBNameFromUserDoc(userDoc, userId);
-    const wasInKB = bucketKey && bucketKey.startsWith(`${userId}/${kbName}/`);
+    const fileEntry = (userDoc.files || []).find(f => f.bucketKey === bucketKey);
+    const wasInKB = !!(kbName && fileEntry && Array.isArray(fileEntry.knowledgeBases) && fileEntry.knowledgeBases.includes(kbName));
     
     // CRITICAL: Delete data source FIRST (most important operation)
     // Only proceed with file deletion if data source deletion succeeds
@@ -6942,12 +7003,11 @@ app.post('/api/update-knowledge-base', async (req, res) => {
       }
     });
 
-    // Get list of files currently in KB folder (files already moved by checkboxes)
-    const filesInKB = userDoc.files
-      .filter(file => {
-        return file.bucketKey && file.bucketKey.startsWith(`${userId}/${kbName}/`);
-      })
-      .map(file => file.bucketKey);
+    // Get list of files currently in KB (tracked in metadata, not bucket path)
+    const filesInKB = (userDoc.files || [])
+      .filter(file => Array.isArray(file.knowledgeBases) && file.knowledgeBases.includes(kbName))
+      .map(file => file.bucketKey)
+      .filter(Boolean);
 
     if (useEphemeralSpaces) {
       spacesConfig = getSpacesConfig();
@@ -6976,7 +7036,8 @@ app.post('/api/update-knowledge-base', async (req, res) => {
           sourceBucket: bucketName,
           destClient: spacesClient,
           destBucket: tempBucket,
-          keys: filesInKB
+          keys: filesInKB,
+          destKeyFor: (key) => buildTempKbObjectKey(userId, kbName, key)
         });
         console.log(`[KB Update] ✅ Copied files to ephemeral Spaces bucket ${tempBucket}`);
       } else {
@@ -7168,46 +7229,72 @@ app.post('/api/update-knowledge-base', async (req, res) => {
           // Get current datasources from KB
           let datasources = kbDetails?.datasources || kbDetails?.data_sources || kbDetails?.knowledge_base_data_sources || [];
           
-          // Query S3/Spaces directly to get actual files in KB folder (source of truth)
-          const s3Client = storageClient;
-          
           const kbFolderPath = `${userId}/${kbName}/`;
-          const listCommand = new ListObjectsV2Command({
-            Bucket: bucketName,
-            Prefix: kbFolderPath
-          });
-          
-          let actualFilesInKB = [];
-          try {
-            const listResult = await s3Client.send(listCommand);
-            actualFilesInKB = (listResult.Contents || [])
-              .filter(file => {
-                const key = file.Key || '';
-                // Only include actual files (not folders), exclude .keep files
-                return key.startsWith(kbFolderPath) && 
-                       !key.endsWith('/') && 
-                       !key.endsWith('.keep') &&
-                       key !== kbFolderPath;
-              })
-              .map(file => file.Key || '');
-            
-            console.log(`[KB Update] Found ${actualFilesInKB.length} actual file(s) in KB folder: ${actualFilesInKB.map(k => k.split('/').pop()).join(', ')}`);
-          } catch (s3Error) {
-            console.error(`[KB Update] ⚠️ Error querying S3 for KB folder files:`, s3Error.message);
-            // Fallback to userDoc.files if S3 query fails
-            actualFilesInKB = userDoc.files
-              .filter(file => file.bucketKey && file.bucketKey.startsWith(kbFolderPath))
-              .map(file => file.bucketKey);
-          }
+          const actualFilesInKB = filesInKB;
+          console.log(`[KB Update] Found ${actualFilesInKB.length} actual file(s) in KB: ${actualFilesInKB.map(k => k.split('/').pop()).join(', ')}`);
           
           // Build map of existing data sources by file path
           const existingDsByPath = new Map();
           const fileDsMap = new Map();
+          const datasourcesByFileName = new Map();
+          const datasourcesBySourceKey = new Map();
+          const staleDatasources = [];
+          const currentFileKeys = new Set(actualFilesInKB);
+          const currentFileNames = new Set(
+            actualFilesInKB
+              .map(filePath => filePath.split('/').pop())
+              .filter(Boolean)
+          );
 
           for (const ds of datasources) {
             const dsPath = ds.item_path || ds.path || ds.spaces_data_source?.item_path;
-            if (dsPath) {
-              existingDsByPath.set(dsPath, ds.uuid || ds.id);
+            if (!dsPath) continue;
+
+            const normalizedPath = dsPath.endsWith('/') ? dsPath.slice(0, -1) : dsPath;
+            existingDsByPath.set(normalizedPath, ds.uuid || ds.id);
+            const dsFileName = normalizedPath.split('/').pop();
+            if (dsFileName) {
+              if (!datasourcesByFileName.has(dsFileName)) {
+                datasourcesByFileName.set(dsFileName, []);
+              }
+              datasourcesByFileName.get(dsFileName).push(ds);
+            }
+            const decodedKey = decodeSourceKeyFromTempPath(dsPath, userId, kbName);
+            if (decodedKey) {
+              if (!datasourcesBySourceKey.has(decodedKey)) {
+                datasourcesBySourceKey.set(decodedKey, []);
+              }
+              datasourcesBySourceKey.get(decodedKey).push(ds);
+            }
+
+            if (useEphemeralSpaces) {
+              const isTempFolderPath = dsPath.includes(`/${TEMP_KB_PREFIX}`);
+              if (decodedKey && !currentFileKeys.has(decodedKey)) {
+                staleDatasources.push(ds);
+              } else if (dsPath.startsWith(kbFolderPath) && !isTempFolderPath) {
+                // Legacy datasource (file or root). Always remove to enforce per-file folders.
+                staleDatasources.push(ds);
+              } else if (!decodedKey && dsPath.startsWith(kbFolderPath) && !currentFileNames.has(dsFileName)) {
+                staleDatasources.push(ds);
+              }
+            }
+          }
+
+          if (useEphemeralSpaces && staleDatasources.length > 0) {
+            console.log(`[KB Update] Removing ${staleDatasources.length} stale datasource(s) not tied to current KB files`);
+            for (const ds of staleDatasources) {
+              const dsUuid = ds.uuid || ds.id;
+              if (!dsUuid) continue;
+              try {
+                await doClient.kb.deleteDataSource(kbId, dsUuid);
+                const dsPath = ds.item_path || ds.path || ds.spaces_data_source?.item_path;
+                if (dsPath) {
+                  const normalizedPath = dsPath.endsWith('/') ? dsPath.slice(0, -1) : dsPath;
+                  existingDsByPath.delete(normalizedPath);
+                }
+              } catch (deleteError) {
+                console.warn(`[KB Update] ⚠️ Failed to delete stale datasource ${dsUuid}: ${deleteError.message}`);
+              }
             }
           }
 
@@ -7222,12 +7309,46 @@ app.post('/api/update-knowledge-base', async (req, res) => {
           const newlyCreatedDsUuids = [];
           for (const filePath of actualFilesInKB) {
             const fileName = filePath.split('/').pop();
-            const expectedPath = `${userId}/${kbName}/${fileName}`;
+            const expectedPath = buildTempKbFolder(userId, kbName, filePath);
+            const normalizedExpectedPath = expectedPath.endsWith('/') ? expectedPath.slice(0, -1) : expectedPath;
             
             // Check if data source already exists (by path or by file's kbDataSourceUuid)
-            const existingDsUuid = existingDsByPath.get(expectedPath) || fileDsMap.get(filePath);
+            const existingDsUuid = existingDsByPath.get(normalizedExpectedPath) || fileDsMap.get(filePath);
             
             if (!existingDsUuid) {
+              const duplicates = new Map();
+              const existingBySourceKey = datasourcesBySourceKey.get(filePath) || [];
+              const existingByName = datasourcesByFileName.get(fileName) || [];
+              for (const ds of [...existingBySourceKey, ...existingByName]) {
+                const dsUuid = ds.uuid || ds.id;
+                if (dsUuid) {
+                  duplicates.set(dsUuid, ds);
+                }
+              }
+
+              if (duplicates.size > 0) {
+                console.log(`[KB Update] Removing ${duplicates.size} duplicate datasource(s) for ${fileName}`);
+                for (const [dsUuid, ds] of duplicates.entries()) {
+                  try {
+                    await doClient.kb.deleteDataSource(kbId, dsUuid);
+                    const dsPath = ds.item_path || ds.path || ds.spaces_data_source?.item_path;
+                    if (dsPath) {
+                      const normalizedPath = dsPath.endsWith('/') ? dsPath.slice(0, -1) : dsPath;
+                      existingDsByPath.delete(normalizedPath);
+                    }
+                  } catch (deleteError) {
+                    console.warn(`[KB Update] ⚠️ Failed to delete duplicate datasource ${dsUuid}: ${deleteError.message}`);
+                  }
+                }
+                datasourcesByFileName.set(fileName, []);
+                datasourcesBySourceKey.set(filePath, []);
+
+                const fileIndex = userDoc.files.findIndex(f => f.bucketKey === filePath);
+                if (fileIndex >= 0 && userDoc.files[fileIndex].kbDataSourceUuid) {
+                  userDoc.files[fileIndex].kbDataSourceUuid = undefined;
+                }
+              }
+
               // Need to create a data source for this file
               try {
                 console.log(`[KB Update] Creating per-file data source for: ${expectedPath}`);
@@ -7262,7 +7383,7 @@ app.post('/api/update-knowledge-base', async (req, res) => {
             } else {
               // Data source exists - ensure it's stored on the file
               const fileIndex = userDoc.files.findIndex(f => f.bucketKey === filePath);
-              if (!useEphemeralSpaces && fileIndex >= 0 && !userDoc.files[fileIndex].kbDataSourceUuid) {
+              if (fileIndex >= 0 && !userDoc.files[fileIndex].kbDataSourceUuid) {
                 userDoc.files[fileIndex].kbDataSourceUuid = existingDsUuid;
               }
             }
@@ -7566,7 +7687,8 @@ app.post('/api/update-knowledge-base', async (req, res) => {
                 const indexedPaths = dataSources
                   .filter(ds => ds?.last_datasource_indexing_job)
                   .map(ds => ds?.item_path || ds?.spaces_data_source?.item_path)
-                  .filter(path => path && path.startsWith(kbFolderPath));
+                  .filter(path => path && path.startsWith(kbFolderPath))
+                  .map(path => decodeSourceKeyFromTempPath(path, userId, kbName) || path);
                 const uniqueIndexedPaths = Array.from(new Set(indexedPaths));
                 filesToIndex = uniqueIndexedPaths;
               } catch (dsError) {
@@ -7576,8 +7698,9 @@ app.post('/api/update-knowledge-base', async (req, res) => {
 
             if (filesToIndex.length === 0) {
               const currentFilesInKB = (finalUserDoc.files || [])
-                .filter(file => file.bucketKey && (!kbFolderPath || file.bucketKey.startsWith(kbFolderPath)))
-                .map(file => file.bucketKey);
+                .filter(file => Array.isArray(file.knowledgeBases) && file.knowledgeBases.includes(kbName))
+                .map(file => file.bucketKey)
+                .filter(Boolean);
               filesToIndex = Array.from(new Set(
                 currentFilesInKB.length > 0 ? currentFilesInKB : (indexedFiles || [])
               ));
@@ -7982,7 +8105,8 @@ app.get('/api/kb-indexing-status/:jobId', async (req, res) => {
             if (dsPath && dsPath.startsWith(kbFolderPath)) {
               // If data source has a last_datasource_indexing_job, the file is indexed
               if (ds?.last_datasource_indexing_job) {
-                indexedFilesList.push(dsPath);
+                const decodedKey = decodeSourceKeyFromTempPath(dsPath, userId, kbName);
+                indexedFilesList.push(decodedKey || dsPath);
               }
             }
           }
@@ -9274,8 +9398,8 @@ app.post('/api/reset-kb', async (req, res) => {
 
     // Check if there are files in the KB folder - if so, indexing is needed
     const kbName = getKBNameFromUserDoc(userDoc, userId);
-    const filesInKB = userDoc.files?.filter(file => 
-      file.bucketKey && file.bucketKey.startsWith(`${userId}/${kbName}/`)
+    const filesInKB = userDoc.files?.filter(file =>
+      Array.isArray(file.knowledgeBases) && file.knowledgeBases.includes(kbName)
     ) || [];
     
     // Set kbIndexingNeeded based on whether files exist in KB folder

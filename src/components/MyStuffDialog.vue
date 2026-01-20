@@ -1235,21 +1235,11 @@ const loadFiles = async () => {
     }
     const result = await response.json();
     
-    // Determine KB folder pattern: userId/kbName/ (kbName contains -kb-)
-    // Files in KB folder have bucketKey matching: userId/kbName/filename
-    // Files NOT in KB folder are: userId/filename (root) or userId/archived/filename
+    const kbName = result.kbName as string | undefined;
     userFiles.value = (result.files || []).map((file: any) => {
-      const bucketKey = file.bucketKey || '';
-      const parts = bucketKey.split('/');
-      // File is in KB folder if:
-      // 1. Has at least 3 parts (userId/kbName/filename)
-      // 2. Second part (kbName) contains '-kb-'
-      // 3. Not in archived folder
-      const isInKB = parts.length >= 3 && 
-                     parts[0] === props.userId && 
-                     parts[1]?.includes('-kb-') && 
-                     parts[1] !== 'archived';
-      
+      const isInKB = Array.isArray(file.knowledgeBases) && kbName
+        ? file.knowledgeBases.includes(kbName)
+        : false;
       return {
         ...file,
         inKnowledgeBase: isInKB
