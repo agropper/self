@@ -15,7 +15,7 @@
 12. Agent config and API key are created.
 13. Current medications token is generated.
 14. Patient summary is generated.
-15. Final verification runs and provisioning completion email is sent.
+15. Final verification runs (no email notifications).
 
 ## KB management (MinIO + ephemeral Spaces)
 ### Storage layout (source of truth)
@@ -53,3 +53,24 @@
 - **Persist an “index run record”** (runId, bucket name, file list, jobId, status).
 - **Use deterministic retry rules** for indexing jobs to avoid duplicate runs.
 - **Explicitly log KB index state transitions** (requested → running → completed).
+
+## 2026-01-19: Provisioning redo plan (append)
+### New minimal flow (no admin, no initial import, no agent)
+1. User creates a passkey.
+2. Create/update the CouchDB user document.
+3. Set session cookies for login state.
+4. App loads chat + MyStuff.
+
+### Provisioning automation components (to rewire under user control)
+- Passkey registration options and verification.
+- User document creation/update (`maia_users`).
+- Session/cookie handling and session store.
+- Admin provisioning endpoints (`/api/admin/provision*`).
+- Provisioning status/log stores and UI.
+- Agent and KB naming (`generateAgentName`, `generateKBName`).
+- Bucket folder creation utilities (`createUserBucketFolders`).
+- Initial file import flow and storage of `initialFile`.
+- KB creation + datasource + indexing automation.
+- Agent creation/deploy/attach + API key.
+- Patient summary generation + current meds.
+- Email notifications (removed).

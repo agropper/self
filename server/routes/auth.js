@@ -2,7 +2,11 @@
  * Authentication routes for user app
  */
 
-import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3';
+import { readFileSync } from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 // Helper to get client info for audit logging
 function getClientInfo(req) {
@@ -12,108 +16,156 @@ function getClientInfo(req) {
   };
 }
 
-/**
- * Generate agent name for a user
- * Format: {userId}-agent-{YYYYMMDD}-{HHMMSS}
- */
-function generateAgentName(userId) {
-  const now = new Date();
-  const dateStr = now.toISOString().split('T')[0].replace(/-/g, ''); // YYYYMMDD in UTC
-  const timeStr = now.toISOString().split('T')[1].split('.')[0].replace(/:/g, ''); // HHMMSS in UTC
-  return `${userId}-agent-${dateStr}-${timeStr}`;
+function buildAgentName(userId) {
+  const timestamp = new Date().toISOString().replace(/[-:]/g, '').split('.')[0];
+  return `${userId}-agent-${timestamp}`;
 }
 
-/**
- * Generate KB name for a user
- * Format: {userId}-kb-{YYYYMMDD}{timestamp}
- */
-function generateKBName(userId) {
-  const timestamp = new Date().toISOString().replace(/[-:]/g, '').split('T')[0]; // YYYYMMDD
-  return `${userId}-kb-${timestamp}${Date.now().toString().slice(-6)}`;
+function isValidUUID(value) {
+  if (!value || typeof value !== 'string') return false;
+  const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  return uuidRegex.test(value.trim());
 }
 
-/**
- * Create bucket folders for a user (root, archived, and KB subfolder)
- * This is called during registration to enable file uploads before admin approval
- */
-async function createUserBucketFolders(userId, kbName) {
-  console.log(`[NEW FLOW 2] Creating bucket folders for user: ${userId}, KB: ${kbName}`);
-  
-  const bucketUrl = process.env.DIGITALOCEAN_BUCKET;
-  if (!bucketUrl) {
-    throw new Error('DigitalOcean bucket not configured');
+async function resolveModelAndProject(doClient) {
+  let modelId = process.env.DO_MODEL_ID;
+  let projectId = process.env.DO_PROJECT_ID;
+
+  if (!isValidUUID(modelId) || !isValidUUID(projectId)) {
+    try {
+      const agents = await doClient.agent.list();
+      if (agents.length > 0) {
+        const existingAgent = await doClient.agent.get(agents[0].uuid || agents[0].id);
+        if (!isValidUUID(modelId) && existingAgent.model?.uuid && isValidUUID(existingAgent.model.uuid)) {
+          modelId = existingAgent.model.uuid;
+        }
+        if (!isValidUUID(projectId) && existingAgent.project_id && isValidUUID(existingAgent.project_id)) {
+          projectId = existingAgent.project_id;
+        }
+      }
+    } catch (error) {
+      // Continue with fallback
+    }
   }
-  
-  const bucketName = bucketUrl.split('//')[1]?.split('.')[0] || 'maia';
-  
+
+  if (!isValidUUID(modelId)) {
+    try {
+      const modelsResponse = await doClient.request('/v2/gen-ai/models');
+      const models = modelsResponse.models || modelsResponse.data?.models || [];
+      if (models.length > 0) {
+        const preferredModel = models.find(m =>
+          m.inference_name === 'openai-gpt-oss-120b' || m.name === 'OpenAI GPT-oss-120b'
+        );
+        const selectedModel = preferredModel || models[0];
+        if (selectedModel && selectedModel.uuid && isValidUUID(selectedModel.uuid)) {
+          modelId = selectedModel.uuid;
+        }
+      }
+    } catch (error) {
+      // Continue
+    }
+  }
+
+  if (!isValidUUID(projectId)) {
+    try {
+      const projectsResponse = await doClient.request('/v2/projects');
+      const projects = projectsResponse.projects || projectsResponse.data?.projects || [];
+      if (projects.length > 0) {
+        const selectedProject = projects[0];
+        if (selectedProject?.id && isValidUUID(selectedProject.id)) {
+          projectId = selectedProject.id;
+        }
+      }
+    } catch (error) {
+      // Continue
+    }
+  }
+
+  return { modelId, projectId };
+}
+
+function getMaiaInstructionText() {
   try {
-    const s3Client = new S3Client({
-      endpoint: process.env.DIGITALOCEAN_ENDPOINT_URL || 'https://tor1.digitaloceanspaces.com',
-      region: 'us-east-1',
-      forcePathStyle: process.env.S3_FORCE_PATH_STYLE === 'true',
-      credentials: {
-        accessKeyId: process.env.DIGITALOCEAN_AWS_ACCESS_KEY_ID || '',
-        secretAccessKey: process.env.DIGITALOCEAN_AWS_SECRET_ACCESS_KEY || ''
+    const newAgentFilePath = path.join(__dirname, '../../NEW-AGENT.txt');
+    const fileContent = readFileSync(newAgentFilePath, 'utf-8');
+    const marker = '## MAIA INSTRUCTION TEXT';
+    const markerIndex = fileContent.indexOf(marker);
+    if (markerIndex === -1) {
+      return '';
+    }
+    const lines = fileContent.slice(markerIndex + marker.length).split('\n');
+    let startIndex = lines.findIndex((line) => line.trim() && !line.trim().startsWith('##'));
+    if (startIndex === -1) {
+      startIndex = 0;
+    }
+    const contentLines = [];
+    for (let i = startIndex; i < lines.length; i += 1) {
+      const line = lines[i];
+      if (line.trim().startsWith('## ')) {
+        break;
       }
-    });
-    
-    // Create placeholder files to make folders visible in dashboard
-    const rootPlaceholder = `${userId}/.keep`;
-    const archivedPlaceholder = `${userId}/archived/.keep`;
-    const kbPlaceholder = `${userId}/${kbName}/.keep`;
-    
-    // Create root userId folder placeholder (for new imports)
-    // Use Buffer.from('') instead of empty string to avoid SDK warning about stream length
-    await s3Client.send(new PutObjectCommand({
-      Bucket: bucketName,
-      Key: rootPlaceholder,
-      Body: Buffer.from(''),
-      ContentType: 'text/plain',
-      ContentLength: 0,
-      Metadata: {
-        createdBy: 'registration',
-        createdAt: new Date().toISOString()
-      }
-    }));
-    console.log(`[NEW FLOW 2] Created root folder: ${userId}/`);
-    
-    // Create archived folder placeholder (for files moved from root)
-    await s3Client.send(new PutObjectCommand({
-      Bucket: bucketName,
-      Key: archivedPlaceholder,
-      Body: Buffer.from(''),
-      ContentType: 'text/plain',
-      ContentLength: 0,
-      Metadata: {
-        createdBy: 'registration',
-        createdAt: new Date().toISOString()
-      }
-    }));
-    console.log(`[NEW FLOW 2] Created archived folder: ${userId}/archived/`);
-    
-    // Create KB folder placeholder
-    await s3Client.send(new PutObjectCommand({
-      Bucket: bucketName,
-      Key: kbPlaceholder,
-      Body: Buffer.from(''),
-      ContentType: 'text/plain',
-      ContentLength: 0,
-      Metadata: {
-        createdBy: 'registration',
-        createdAt: new Date().toISOString()
-      }
-    }));
-    console.log(`[NEW FLOW 2] Created KB folder: ${userId}/${kbName}/`);
-    
-    console.log(`[NEW FLOW 2] ✅ All bucket folders created successfully for ${userId}`);
-    return { root: `${userId}/`, archived: `${userId}/archived/`, kb: `${userId}/${kbName}/` };
-  } catch (err) {
-    console.error(`[NEW FLOW 2] ❌ Failed to create bucket folders: ${err.message}`);
-    throw new Error(`Failed to create bucket folders: ${err.message}`);
+      contentLines.push(line);
+    }
+    return contentLines.join('\n').trim();
+  } catch (error) {
+    console.warn('Unable to read NEW-AGENT.txt for agent instructions:', error.message);
+    return '';
   }
 }
 
-export default function setupAuthRoutes(app, passkeyService, cloudant, doClient, auditLog, emailService) {
+const agentStatusCache = new Map();
+
+async function ensureUserAgent(doClient, cloudant, userDoc) {
+  if (!userDoc) return userDoc;
+  const userId = userDoc.userId;
+  if (!userId) return userDoc;
+
+  let agent = null;
+  if (userDoc.assignedAgentId) {
+    try {
+      agent = await doClient.agent.get(userDoc.assignedAgentId);
+    } catch (error) {
+      agent = null;
+    }
+  }
+
+  if (!agent) {
+    const { modelId, projectId } = await resolveModelAndProject(doClient);
+    if (!isValidUUID(modelId) || !isValidUUID(projectId)) {
+      throw new Error('Unable to resolve model or project ID for agent creation');
+    }
+
+    const instruction = getMaiaInstructionText();
+    const agentName = buildAgentName(userId);
+    agent = await doClient.agent.create({
+      name: agentName,
+      instruction,
+      modelId: modelId.trim(),
+      projectId: projectId.trim(),
+      region: process.env.DO_REGION || 'tor1',
+      maxTokens: 16384,
+      topP: 1,
+      temperature: 0.1,
+      k: 10,
+      retrievalMethod: 'RETRIEVAL_METHOD_NONE'
+    });
+  }
+
+  const resolvedAgent = await doClient.agent.get(agent.uuid || agent.id);
+  const endpoint = resolvedAgent?.deployment?.url ? `${resolvedAgent.deployment.url}/api/v1` : null;
+  userDoc.assignedAgentId = resolvedAgent.uuid || resolvedAgent.id;
+  userDoc.assignedAgentName = resolvedAgent.name || userDoc.assignedAgentName;
+  userDoc.agentEndpoint = endpoint || userDoc.agentEndpoint || null;
+  userDoc.agentModelName = resolvedAgent.model?.inference_name || resolvedAgent.model?.name || userDoc.agentModelName || null;
+  userDoc.workflowStage = endpoint ? 'agent_deployed' : 'agent_named';
+  userDoc.agentSetupInProgress = !endpoint;
+  userDoc.updatedAt = new Date().toISOString();
+
+  await cloudant.saveDocument('maia_users', userDoc);
+  return userDoc;
+}
+
+export default function setupAuthRoutes(app, passkeyService, cloudant, doClient, auditLog) {
   // Check if user exists and has passkey
   app.get('/api/passkey/check-user', async (req, res) => {
     try {
@@ -145,7 +197,7 @@ export default function setupAuthRoutes(app, passkeyService, cloudant, doClient,
   // Passkey registration - generate options
   app.post('/api/passkey/register', async (req, res) => {
     try {
-      const { userId, displayName, email } = req.body;
+      const { userId, displayName } = req.body;
 
       if (!userId || !displayName) {
         return res.status(400).json({ error: 'User ID and display name required' });
@@ -167,14 +219,11 @@ export default function setupAuthRoutes(app, passkeyService, cloudant, doClient,
       });
 
       // Store challenge in user document
-      if (existingUser && email) {
-        existingUser.email = email; // Update email if provided
-      }
       const userDoc = existingUser || {
         _id: userId,
         userId,
         displayName,
-        email: email || null,
+        email: null,
         domain: passkeyService.rpID,
         type: 'user',
         workflowStage: null,
@@ -223,48 +272,17 @@ export default function setupAuthRoutes(app, passkeyService, cloudant, doClient,
       const updatedUser = result.userDoc;
       updatedUser.challenge = undefined; // Remove challenge
       
-      console.log(`[NEW FLOW 2] Starting pre-provisioning setup for user: ${updatedUser.userId}`);
-      
-      // Generate agent name and KB name BEFORE admin approval
-      const agentName = generateAgentName(updatedUser.userId);
-      const kbName = generateKBName(updatedUser.userId);
-      
-      console.log(`[NEW FLOW 2] Generated agent name: ${agentName}`);
-      console.log(`[NEW FLOW 2] Generated KB name: ${kbName}`);
-      
-      // Store agent name and KB name in user document
-      updatedUser.assignedAgentName = agentName;
-      updatedUser.kbName = kbName;
-      
-      // Create bucket folders immediately (enables file uploads before admin approval)
-      try {
-        await createUserBucketFolders(updatedUser.userId, kbName);
-        console.log(`[NEW FLOW 2] ✅ Bucket folders created for ${updatedUser.userId}`);
-      } catch (folderError) {
-        console.error(`[NEW FLOW 2] ❌ Failed to create bucket folders: ${folderError.message}`);
-        // Don't fail registration if folder creation fails, but log it
-        // User can still proceed, folders will be created during provisioning if needed
-      }
-      
-      // Generate provisioning token for admin deep link
-      const provisionToken = emailService.generateProvisionToken(updatedUser.userId);
-      updatedUser.provisionToken = provisionToken;
-      updatedUser.provisionTokenCreatedAt = new Date().toISOString();
-      
-      // workflowStage will be set to 'request_sent' after admin email is sent (in registration-complete)
-      // For now, keep it as null or set to a pre-request state
-      // Don't set workflowStage yet - email hasn't been sent
-      
-      // Initialize initialFile field (will be set if user uploads a file during registration)
+      console.log(`[NEW FLOW 2] Passkey verified; minimal user setup for ${updatedUser.userId}`);
+      updatedUser.workflowStage = 'active';
       updatedUser.initialFile = null;
       
-      await cloudant.saveDocument('maia_users', updatedUser);
-      console.log(`[NEW FLOW 2] ✅ User document saved with agent name and KB name`);
+      const agentReadyUser = await ensureUserAgent(doClient, cloudant, updatedUser);
+      console.log(`[NEW FLOW 2] ✅ User document saved (agent ready)`);
 
       // Set session
-      req.session.userId = updatedUser.userId;
-      req.session.username = updatedUser.userId;
-      req.session.displayName = updatedUser.displayName;
+      req.session.userId = agentReadyUser.userId;
+      req.session.username = agentReadyUser.userId;
+      req.session.displayName = agentReadyUser.displayName;
       req.session.authenticatedAt = new Date().toISOString();
       req.session.expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
 
@@ -272,24 +290,23 @@ export default function setupAuthRoutes(app, passkeyService, cloudant, doClient,
       const clientInfo = getClientInfo(req);
       await auditLog.logEvent({
         type: 'passkey_registered',
-        userId: updatedUser.userId,
+        userId: agentReadyUser.userId,
         ip: clientInfo.ip,
         userAgent: clientInfo.userAgent
       });
 
       console.log(`[NEW FLOW 2] Passkey registration logged for ${updatedUser.userId}`);
-      console.log(`[NEW FLOW 2] Ready to show file import dialog - folders created, names generated`);
+      console.log(`[NEW FLOW 2] Ready to show app UI - no provisioning steps`);
 
       // Return success with flag indicating file import dialog should be shown
       // The frontend will handle showing the dialog and uploading files
       res.json({ 
         success: true, 
         user: {
-          userId: updatedUser.userId,
-          displayName: updatedUser.displayName
+          userId: agentReadyUser.userId,
+          displayName: agentReadyUser.displayName
         },
-        showFileImport: true, // Flag to trigger file import dialog
-        kbName: kbName // Pass KB name to frontend for file upload
+        showFileImport: false
       });
     } catch (error) {
       console.error('Registration verify error:', error);
@@ -297,17 +314,16 @@ export default function setupAuthRoutes(app, passkeyService, cloudant, doClient,
     }
   });
 
-  // Registration complete - called after file import (or if user skips file)
+  // Registration complete - legacy endpoint (no initial import)
   app.post('/api/passkey/registration-complete', async (req, res) => {
     try {
-      const { userId, initialFile } = req.body;
+      const { userId } = req.body;
 
       if (!userId) {
         return res.status(400).json({ error: 'User ID required' });
       }
 
       console.log(`[NEW FLOW 2] Completing registration for user: ${userId}`);
-      console.log(`[NEW FLOW 2] Initial file:`, initialFile ? `${initialFile.fileName} (${initialFile.bucketKey})` : 'none');
 
       // Get user document
       const userDoc = await cloudant.getDocument('maia_users', userId);
@@ -315,41 +331,11 @@ export default function setupAuthRoutes(app, passkeyService, cloudant, doClient,
         return res.status(404).json({ error: 'User not found' });
       }
 
-      // Update user document with initial file info if provided
-      if (initialFile) {
-        userDoc.initialFile = {
-          fileName: initialFile.fileName,
-          bucketKey: initialFile.bucketKey,
-          fileSize: initialFile.fileSize,
-          uploadedAt: initialFile.uploadedAt || new Date().toISOString()
-        };
-        console.log(`[NEW FLOW 2] Stored initial file info in user document: ${initialFile.fileName}`);
-      } else {
-        userDoc.initialFile = null;
-        console.log(`[NEW FLOW 2] No initial file - user proceeding without file`);
-      }
-
-      // Set workflowStage to request_sent (admin will be notified)
-      userDoc.workflowStage = 'request_sent';
-      console.log(`[NEW FLOW 2] Setting workflowStage to 'request_sent' for ${userId}`);
+      userDoc.workflowStage = 'active';
+      userDoc.initialFile = null;
 
       await cloudant.saveDocument('maia_users', userDoc);
-      console.log(`[NEW FLOW 2] User document updated with initial file and workflowStage`);
-
-      // Send email notification to admin (only now, after file import decision)
-      try {
-        const provisionToken = userDoc.provisionToken;
-        await emailService.sendNewUserNotification({
-          userId: userDoc.userId,
-          displayName: userDoc.displayName || userDoc.userId,
-          email: userDoc.email || null,
-          provisionToken: provisionToken
-        });
-        console.log(`[NEW FLOW 2] ✅ Admin notification email sent for ${userId}`);
-      } catch (emailError) {
-        // Log error but don't fail registration if email fails
-        console.error('[NEW FLOW 2] ❌ Failed to send admin notification email:', emailError);
-      }
+      console.log(`[NEW FLOW 2] User document updated - no admin provisioning`);
 
       res.json({ 
         success: true, 
@@ -435,19 +421,19 @@ export default function setupAuthRoutes(app, passkeyService, cloudant, doClient,
       // Update counter
       const updatedUser = result.userDoc;
       updatedUser.challenge = undefined; // Remove challenge
-      await cloudant.saveDocument('maia_users', updatedUser);
+      const agentReadyUser = await ensureUserAgent(doClient, cloudant, updatedUser);
 
       // Set session
-      req.session.userId = updatedUser.userId;
-      req.session.username = updatedUser.userId;
-      req.session.displayName = updatedUser.displayName;
+      req.session.userId = agentReadyUser.userId;
+      req.session.username = agentReadyUser.userId;
+      req.session.displayName = agentReadyUser.displayName;
       req.session.authenticatedAt = new Date().toISOString();
       req.session.expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
 
       // Log successful login
       await auditLog.logEvent({
         type: 'login_success',
-        userId: updatedUser.userId,
+        userId: agentReadyUser.userId,
         ip: clientInfo.ip,
         userAgent: clientInfo.userAgent
       });
@@ -455,8 +441,8 @@ export default function setupAuthRoutes(app, passkeyService, cloudant, doClient,
       res.json({ 
         success: true, 
         user: {
-          userId: updatedUser.userId,
-          displayName: updatedUser.displayName
+          userId: agentReadyUser.userId,
+          displayName: agentReadyUser.displayName
         }
       });
     } catch (error) {
@@ -516,6 +502,68 @@ export default function setupAuthRoutes(app, passkeyService, cloudant, doClient,
         } : null
       }
     });
+  });
+
+  app.get('/api/agent-setup-status', async (req, res) => {
+    try {
+      const userId = req.session?.userId;
+      if (!userId) {
+        return res.status(401).json({
+          success: false,
+          message: 'User not authenticated',
+          error: 'NOT_AUTHENTICATED'
+        });
+      }
+
+      const userDoc = await cloudant.getDocument('maia_users', userId);
+      if (!userDoc || !userDoc.assignedAgentId) {
+        return res.json({
+          success: true,
+          status: 'not_started',
+          endpointReady: false
+        });
+      }
+
+      const agentId = userDoc.assignedAgentId;
+      const agent = await doClient.agent.get(agentId);
+      const deploymentStatus = agent?.deployment?.status || agent?.deployment_status || agent?.status || 'unknown';
+      const endpoint = agent?.deployment?.url ? `${agent.deployment.url}/api/v1` : null;
+
+      const cacheKey = `${userId}:${agentId}`;
+      const previousStatus = agentStatusCache.get(cacheKey);
+      if (!previousStatus || previousStatus !== deploymentStatus) {
+        console.log(`[AGENT] Deployment status for ${userId} (${agentId}): ${deploymentStatus}`);
+        agentStatusCache.set(cacheKey, deploymentStatus);
+      }
+
+      if (endpoint && userDoc.agentEndpoint !== endpoint) {
+        userDoc.agentEndpoint = endpoint;
+        userDoc.agentSetupInProgress = false;
+        userDoc.workflowStage = 'agent_deployed';
+        userDoc.updatedAt = new Date().toISOString();
+        await cloudant.saveDocument('maia_users', userDoc);
+      } else if (!endpoint && userDoc.agentSetupInProgress !== true) {
+        userDoc.agentSetupInProgress = true;
+        if (userDoc.workflowStage !== 'agent_named') {
+          userDoc.workflowStage = 'agent_named';
+        }
+        userDoc.updatedAt = new Date().toISOString();
+        await cloudant.saveDocument('maia_users', userDoc);
+      }
+
+      return res.json({
+        success: true,
+        status: deploymentStatus,
+        endpointReady: !!endpoint,
+        endpoint
+      });
+    } catch (error) {
+      console.error('Error checking agent setup status:', error);
+      res.status(500).json({
+        success: false,
+        error: error.message || 'Failed to check agent status'
+      });
+    }
   });
 }
 

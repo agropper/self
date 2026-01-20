@@ -888,10 +888,18 @@ export default function setupFileRoutes(app, cloudant, doClient) {
         }
       }
     } catch (error) {
+      if (isMissingKeyError(error)) {
+        console.warn('⚠️  PDF not found for proxy request:', bucketKey);
+        return res.status(404).json({
+          success: false,
+          error: 'PDF not found'
+        });
+      }
+
       console.error('❌ Error proxying PDF:', error);
-      res.status(500).json({ 
+      res.status(500).json({
         success: false,
-        error: `Failed to proxy PDF: ${error.message}` 
+        error: `Failed to proxy PDF: ${error.message}`
       });
     }
   });
@@ -980,10 +988,18 @@ export default function setupFileRoutes(app, cloudant, doClient) {
         content
       });
     } catch (error) {
+      if (isMissingKeyError(error)) {
+        console.warn('⚠️  Text file not found:', bucketKey);
+        return res.status(404).json({
+          success: false,
+          error: 'File not found'
+        });
+      }
+
       console.error('❌ Error fetching text file:', error);
-      res.status(500).json({ 
+      res.status(500).json({
         success: false,
-        error: `Failed to fetch text file: ${error.message}` 
+        error: `Failed to fetch text file: ${error.message}`
       });
     }
   });

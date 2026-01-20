@@ -37,9 +37,9 @@ This section proposes where each `workflowStage` value should be set in the code
 
 #### 2. `request_sent` (replaces `has_passkey`)
 - **Location:** `server/routes/auth.js` - `app.post('/api/passkey/register-verify')`
-- **When:** When provision token is generated and admin notification email is sent (after passkey verification)
-- **Logic:** Set `workflowStage: 'request_sent'` to indicate user has registered and admin has been notified (can provision)
-- **Implementation:** Set immediately after provision token is created, replacing any previous stage
+- **When:** After passkey verification (no admin email flow)
+- **Logic:** Set `workflowStage: 'request_sent'` to indicate user has registered and is ready for onboarding
+- **Implementation:** Set immediately after registration is verified
 - **Code:** Line ~65: `updatedUser.workflowStage = 'request_sent';` before `cloudant.saveDocument`
 - **Note:** `request_sent` replaces `has_passkey` immediately - there is no separate `has_passkey` stage
 
@@ -174,7 +174,7 @@ When a user registers and uploads an initial PDF file, the provisioning process 
     }
     ```
 - `workflowStage` set to `'request_sent'`
-- Admin notification email sent with provisioning link
+- No email notifications; user proceeds in-app
 
 #### Phase 2: Admin Approval & Provisioning Start
 

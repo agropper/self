@@ -36,26 +36,12 @@
         @keyup.enter="handleEnterKey"
         class="q-mb-md"
       />
-      <q-input
-        v-if="action === 'register'"
-        v-model="email"
-        label="Email"
-        type="email"
-        outlined
-        :rules="[
-          (val) => !!val || 'Email is required',
-          (val) => /.+@.+\..+/.test(val) || 'Please enter a valid email address'
-        ]"
-        hint="Required for account notifications."
-        @keyup.enter="handleEnterKey"
-      />
-
       <div class="row q-gutter-sm q-mt-md">
         <q-btn
           label="Continue"
           color="primary"
           :loading="loading"
-          :disable="!userId || userId.length < 3 || (action === 'register' && !email)"
+          :disable="!userId || userId.length < 3"
           @click="continueAction"
         />
         <q-btn
@@ -76,6 +62,7 @@
       </div>
       <q-btn label="Cancel" flat @click="resetFlow" />
     </div>
+
 
     <!-- Error message -->
     <q-banner
@@ -154,7 +141,6 @@ const emit = defineEmits(['authenticated', 'cancelled']);
 
 const currentStep = ref('choose');
 const userId = ref('');
-const email = ref('');
 const loading = ref(false);
 const error = ref('');
 const action = ref(''); // 'signin' or 'register'
@@ -182,7 +168,6 @@ const startRegistrationFlow = async () => {
 const resetFlow = () => {
   currentStep.value = 'choose';
   userId.value = '';
-  email.value = '';
   error.value = '';
   action.value = '';
   loading.value = false;
@@ -241,7 +226,7 @@ const handleRegistration = async () => {
     body: JSON.stringify({
       userId: userId.value,
       displayName: userId.value,
-      email: email.value || null
+      email: null
     })
   });
 
@@ -336,7 +321,7 @@ const handleFileSelected = async (event: Event) => {
     }
 
     const completeResult = await completeResponse.json();
-    console.log('[NEW FLOW 2] Registration complete, admin email sent');
+    console.log('[NEW FLOW 2] Registration complete');
 
     showFileImportDialog.value = false;
     emit('authenticated', completeResult.user);
@@ -365,7 +350,7 @@ const goBackToFileChooser = () => {
 const sendRequestWithoutFile = async () => {
   loading.value = true;
   try {
-    console.log('[NEW FLOW 2] User proceeding without file, sending admin email');
+    console.log('[NEW FLOW 2] User proceeding without file');
     
     const response = await fetch('/api/passkey/registration-complete', {
       method: 'POST',
@@ -383,7 +368,7 @@ const sendRequestWithoutFile = async () => {
     }
 
     const result = await response.json();
-    console.log('[NEW FLOW 2] Registration complete without file, admin email sent');
+    console.log('[NEW FLOW 2] Registration complete without file');
 
     showConfirmWithoutFileDialog.value = false;
     emit('authenticated', result.user);

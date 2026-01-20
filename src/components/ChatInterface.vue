@@ -276,21 +276,38 @@
             <div class="col-auto" style="display: flex; align-items: center; justify-content: flex-end; gap: 8px;">
               <span class="text-body2 text-grey-7">User: {{ props.user?.userId || 'Guest' }}</span>
               <q-btn flat dense label="SIGN OUT" color="grey-8" @click="handleSignOut" />
-              <q-btn 
-                flat 
-                dense 
-                round 
-                icon="email" 
-                class="text-grey-6" 
-                @click="openAdminEmail"
-              >
-                <q-tooltip anchor="top left" self="bottom right">Email admin for suggestions, support or questions</q-tooltip>
-              </q-btn>
             </div>
           </div>
         </div>
       </q-card-section>
     </q-card>
+
+    <q-dialog v-model="showAgentSetupDialog" persistent>
+      <q-card style="min-width: 420px; max-width: 520px">
+        <q-card-section>
+          <div class="text-h6">Agent Setup</div>
+        </q-card-section>
+        <q-card-section class="q-pt-none">
+          <p class="text-body2">
+            Your Private AI agent is being set up. This could take a few minutes.
+            This dialog will automatically close when setup is complete.
+          </p>
+          <p class="text-caption text-grey-7" v-if="agentSetupElapsed">
+            Elapsed: {{ Math.floor(agentSetupElapsed / 60) }}m {{ agentSetupElapsed % 60 }}s
+          </p>
+          <p class="text-caption text-grey-7" v-if="agentSetupStatus">
+            Status: {{ agentSetupStatus }}
+          </p>
+          <p class="text-caption text-amber-8" v-if="agentSetupTimedOut">
+            Setup is taking longer than expected. You can keep using the app and this
+            will update when the agent is ready.
+          </p>
+        </q-card-section>
+        <q-card-actions align="right">
+          <q-btn v-if="agentSetupTimedOut" flat label="Close" @click="showAgentSetupDialog = false" />
+        </q-card-actions>
+      </q-card>
+    </q-dialog>
 
     <!-- PDF Viewer Modal -->
     <PdfViewerModal
@@ -518,6 +535,11 @@ const showDocumentChooser = ref(false);
 const pendingPageLink = ref<{ pageNum: number; bucketKey?: string } | null>(null);
 const availableUserFiles = ref<Array<{ fileName: string; bucketKey: string; fileType?: string }>>([]);
 const loadingUserFiles = ref(false);
+const showAgentSetupDialog = ref(false);
+const agentSetupStatus = ref('');
+const agentSetupElapsed = ref(0);
+const agentSetupTimedOut = ref(false);
+let agentSetupTimer: ReturnType<typeof setInterval> | null = null;
 
 // Track owner's deep link Private AI access setting
 const ownerAllowDeepLinkPrivateAI = ref<boolean | null>(null);
@@ -1071,27 +1093,10 @@ const handleSignOut = () => {
   emit('sign-out');
 };
 
-const openAdminEmail = async () => {
-  try {
-    // Try to get admin email from server
-    const response = await fetch('/api/admin-email', {
-      credentials: 'include'
-    });
-    let adminEmail = 'admin@yourdomain.com'; // Default fallback
-    if (response.ok) {
-      const data = await response.json();
-      adminEmail = data.email || adminEmail;
-    }
-    
-    const subject = encodeURIComponent(`Question from ${props.user?.userId || 'User'}`);
-    const body = encodeURIComponent(`Hello,\n\nI have a question about my MAIA account.\n\nThank you!`);
-    window.location.href = `mailto:${adminEmail}?subject=${subject}&body=${body}`;
-  } catch (error) {
-    // Fallback to default email if endpoint fails
-    const adminEmail = 'admin@yourdomain.com';
-    const subject = encodeURIComponent(`Question from ${props.user?.userId || 'User'}`);
-    const body = encodeURIComponent(`Hello,\n\nI have a question about my MAIA account.\n\nThank you!`);
-    window.location.href = `mailto:${adminEmail}?subject=${subject}&body=${body}`;
+const stopAgentSetupTimer = () => {
+  if (agentSetupTimer) {
+    clearInterval(agentSetupTimer);
+    agentSetupTimer = null;
   }
 };
 
@@ -3018,17 +3023,68 @@ const syncAgent = async () => {
     if (response.ok) {
       const result = await response.json();
       if (result.success) {
-      console.log('Agent synced:', result.agent?.name);
-      } else {
-      // No agent found - this is OK, user might not have one yet
-      console.log('No agent found for user');
+        console.log('Agent synced:', result.agent?.name);
+        return result.agent || null;
       }
-    } else {
-      console.error('Failed to sync agent:', response.status, response.statusText);
+      console.log('No agent found for user');
+      return null;
     }
+    console.error('Failed to sync agent:', response.status, response.statusText);
   } catch (error) {
     console.error('Failed to sync agent:', error);
   }
+  return null;
+};
+
+const startAgentSetupPolling = () => {
+  if (!props.user?.userId) return;
+  const maxAttempts = 60; // 15 minutes at 15s
+  let attempts = 0;
+  agentSetupTimedOut.value = false;
+  agentSetupElapsed.value = 0;
+
+  const poll = async () => {
+    attempts += 1;
+    try {
+      const response = await fetch('/api/agent-setup-status', {
+        credentials: 'include'
+      });
+      if (!response.ok) {
+        throw new Error(`Status ${response.status}`);
+      }
+      const result = await response.json();
+      if (result?.status) {
+        agentSetupStatus.value = result.status;
+      }
+
+      if (result?.endpointReady) {
+        stopAgentSetupTimer();
+        showAgentSetupDialog.value = false;
+        agentSetupTimedOut.value = false;
+        updateContextualTip();
+        return;
+      }
+
+      if (!showAgentSetupDialog.value) {
+        showAgentSetupDialog.value = true;
+        stopAgentSetupTimer();
+        agentSetupTimer = setInterval(() => {
+          agentSetupElapsed.value += 1;
+        }, 1000);
+      }
+    } catch (error) {
+      console.warn('Agent setup status check failed:', error);
+    }
+
+    if (attempts < maxAttempts) {
+      setTimeout(poll, 15000);
+    } else {
+      agentSetupTimedOut.value = true;
+      stopAgentSetupTimer();
+    }
+  };
+
+  poll();
 };
 
 // Indexing status tracking
@@ -3372,7 +3428,7 @@ onMounted(async () => {
   loadSavedChatCount();
   
   if (!isDeepLink.value) {
-    syncAgent();
+    startAgentSetupPolling();
     updateContextualTip();
     
     // Update tip immediately when context changes (no polling needed for these)

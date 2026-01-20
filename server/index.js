@@ -15,7 +15,7 @@ import { readFileSync, existsSync, readdirSync } from 'fs';
 import { CloudantClient, CloudantSessionStore, AuditLogService } from '../lib/cloudant/index.js';
 import { DigitalOceanClient } from '../lib/do-client/index.js';
 import { PasskeyService } from '../lib/passkey/index.js';
-import { EmailService } from './utils/email-service.js';
+import { generateCurrentMedicationsToken } from './utils/token-service.js';
 import { ChatClient } from '../lib/chat-client/index.js';
 import { findUserAgent } from './utils/agent-helper.js';
 import { normalizeStorageEnv } from './utils/storage-config.js';
@@ -559,15 +559,6 @@ async function runStartupUserValidation() {
   }
 }
 
-const emailService = new EmailService({
-  apiKey: process.env.RESEND_API_KEY,
-  fromEmail: process.env.RESEND_FROM_EMAIL,
-  adminEmail: process.env.RESEND_ADMIN_EMAIL,
-  // For deep links, use frontend URL (Vite dev server on 5173, or production frontend)
-  // Backend URL (PORT) is only needed for admin provisioning links
-  baseUrl: process.env.PUBLIC_APP_URL || process.env.FRONTEND_URL || 'http://localhost:5173'
-});
-
 const doClient = new DigitalOceanClient(process.env.DIGITALOCEAN_TOKEN, {
   region: process.env.DO_REGION || 'tor1'
 });
@@ -1055,7 +1046,7 @@ app.get('/health', (req, res) => {
 });
 
 // Passkey routes
-setupAuthRoutes(app, passkeyService, cloudant, doClient, auditLog, emailService);
+setupAuthRoutes(app, passkeyService, cloudant, doClient, auditLog);
 
 // Chat routes
 setupChatRoutes(app, chatClient, cloudant, doClient);
@@ -4324,7 +4315,7 @@ async function provisionUserAsync(userId, token) {
     if (agentEndpointUrl && apiKey) {
       try {
         console.log(`[CUR MEDS] Agent is ready - generating token unconditionally`);
-        const tokenData = await emailService.generateCurrentMedicationsToken(userId);
+        const tokenData = generateCurrentMedicationsToken(userId);
         console.log(`[CUR MEDS] Token generated: ${tokenData.token.substring(0, 8)}... (expires: ${tokenData.expiresAt})`);
         
         // Save token to user document (even if Current Medications content is empty)
@@ -4631,33 +4622,7 @@ async function provisionUserAsync(userId, token) {
       };
     }
     
-    // Step 10: Send success email
-    const userEmail = userDoc.email || null;
-    if (userEmail) {
-      try {
-        // Get current medications token from user document (if it was generated)
-        console.log(`[CUR MEDS] Getting final user document to retrieve token for email...`);
-        const finalUserDoc = await cloudant.getDocument('maia_users', userId);
-        const currentMedicationsToken = finalUserDoc?.currentMedicationsToken || null;
-        console.log(`[CUR MEDS] Token from user document: ${currentMedicationsToken ? currentMedicationsToken.substring(0, 8) + '...' : 'null'}`);
-        
-        await emailService.sendProvisioningCompletionEmail({
-          userId,
-          userEmail,
-          success: true,
-          errorDetails: null,
-          currentMedicationsToken: currentMedicationsToken
-        });
-        console.log(`[CUR MEDS] ✅ Provisioning completion email sent ${currentMedicationsToken ? 'with' : 'without'} medications token`);
-      } catch (emailError) {
-        console.log(`[CUR MEDS] ❌ Failed to send success email: ${emailError.message}`);
-        logProvisioning(userId, `⚠️  Failed to send success email: ${emailError.message}`, 'warning');
-        // Don't fail provisioning if email fails
-      }
-    } else {
-      console.log(`[CUR MEDS] ⚠️  No user email found, skipping success email`);
-      logProvisioning(userId, `⚠️  No user email found, skipping success email`, 'warning');
-    }
+    // No email notifications in self-hosted flow
   } catch (error) {
     logProvisioning(userId, `❌ Provisioning failed for user ${userId}: ${error.message}`, 'error');
     logProvisioning(userId, `❌ Error stack: ${error.stack}`, 'error');
@@ -4674,31 +4639,7 @@ async function provisionUserAsync(userId, token) {
       logProvisioning(userId, `❌ Document conflict detected - this is a concurrency issue`, 'error');
     }
     
-    // Send failure email
-    try {
-      let userDoc = null;
-      try {
-        userDoc = await cloudant.getDocument('maia_users', userId);
-      } catch (docError) {
-        logProvisioning(userId, `⚠️  Could not fetch user document for email: ${docError.message}`, 'warning');
-      }
-      
-      const userEmail = userDoc?.email || null;
-      if (userEmail) {
-        const errorDetails = error.message + (error.stack ? `\n\nStack trace:\n${error.stack}` : '');
-        await emailService.sendProvisioningCompletionEmail({
-          userId,
-          userEmail,
-          success: false,
-          errorDetails
-        });
-      } else {
-        logProvisioning(userId, `⚠️  No user email found, skipping failure email`, 'warning');
-      }
-    } catch (emailError) {
-      logProvisioning(userId, `⚠️  Failed to send failure email: ${emailError.message}`, 'warning');
-      // Don't fail provisioning if email fails
-    }
+    // No email notifications in self-hosted flow
   }
 }
 
@@ -6475,7 +6416,7 @@ app.post('/api/test-medications-token', async (req, res) => {
     }
 
     // Generate new token
-    const tokenData = await emailService.generateCurrentMedicationsToken(userId);
+    const tokenData = generateCurrentMedicationsToken(userId);
     
     // Save to user document
     userDoc.currentMedicationsToken = tokenData.token;
@@ -8388,13 +8329,6 @@ app.get('/api/shared-group-chats', async (req, res) => {
   }
 });
 
-// Get admin email (for email link)
-app.get('/api/admin-email', (req, res) => {
-  res.json({
-    email: process.env.RESEND_ADMIN_EMAIL || 'admin@yourdomain.com'
-  });
-});
-
 // Admin: Get all users with statistics
 app.get('/api/admin/users', async (req, res) => {
   try {
@@ -8757,7 +8691,7 @@ app.post('/api/admin/users/:userId/recover', async (req, res) => {
 
       // Generate Current Medications token if agent is ready
       try {
-        const tokenData = await emailService.generateCurrentMedicationsToken(userId);
+        const tokenData = generateCurrentMedicationsToken(userId);
         await updateUserDoc({
           currentMedicationsToken: tokenData.token,
           currentMedicationsTokenExpiresAt: tokenData.expiresAt
@@ -9038,19 +8972,6 @@ app.delete('/api/admin/users/:userId', async (req, res) => {
         error: 'Failed to delete user document',
         details: deletionDetails
       });
-    }
-
-    // 7. Send email notification to admin
-    try {
-      await emailService.sendUserDeletionNotification({
-        userId: userId,
-        userEmail: userDoc.email || null,
-        displayName: userDoc.displayName || userId,
-        deletionDetails: deletionDetails
-      });
-    } catch (error) {
-      console.error('Failed to send deletion notification email:', error);
-      // Don't fail the deletion if email fails
     }
 
     res.json({

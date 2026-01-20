@@ -2,19 +2,19 @@
 
 ## Overview
 
-This document outlines the modifications required to implement the complete automated provisioning flow, including Lists processing, Current Medications generation, and Patient Summary creation after user edits.
+This document outlines the modifications required to implement the complete automated provisioning flow, including Lists processing, Current Medications generation, and Patient Summary creation after user edits. Email notifications have been removed from the app.
 
 ## High-Level Flow (As Specified)
 
 1. New user creates passkey and provisional user document
 2. User provides initial health record file (Apple Health "Export PDF" preferred)
-3. Request email sent to administrator
-4. Upon admin approval, provisioning automation starts
+3. User proceeds without admin email/approval
+4. Provisioning automation starts under user control
 5. Knowledge base created from user-provided file and indexed
 6. Private AI agent created and deployed - ready as chatbot
 7. **Separately**, uploaded document used to create structured lists (code-based, not AI)
 8. Medication Records list used by Private AI to suggest Current Medications
-9. User receives email with link to edit Current Medications
+9. User opens Current Medications editor in the app
 10. User edits Current Medications and saves
 11. Patient Summary created after Current Medications is saved
 
@@ -33,8 +33,7 @@ This document outlines the modifications required to implement the complete auto
 - Update Phase 4 (Lists Processing) to show it's part of automation
 - Update Phase 7 (Current Medications) to show it's automated
 - **Remove** Phase 8 (Patient Summary) from provisioning flow
-- Add new Phase 9: "User Email with Current Medications Link"
-- Add new Phase 10: "Patient Summary Generation (After User Edits)"
+- Remove email-based steps and replace with in-app Current Medications edit
 
 **New Structure**:
 ```
@@ -47,9 +46,8 @@ This document outlines the modifications required to implement the complete auto
 ### Phase 5: File Indexing
 ### Phase 6: Agent Creation & Deployment
 ### Phase 7: Current Medications Generation (AUTOMATED)
-### Phase 8: User Email with Deep Link
-### Phase 9: User Edits Current Medications
-### Phase 10: Patient Summary Generation (Triggered by Save)
+### Phase 8: User Edits Current Medications
+### Phase 9: Patient Summary Generation (Triggered by Save)
 ```
 
 ---
@@ -113,50 +111,7 @@ This document outlines the modifications required to implement the complete auto
 
 ---
 
-### 4. Update Email with Deep Link to Current Medications Editor
-
-**Location**: `server/utils/email-service.js` - `sendProvisioningCompletionEmail()`
-
-**Current State**: Email contains basic text with no actionable links
-
-**Required Changes**:
-
-#### 4.1 Generate Deep Link Token
-- **New Function**: `generateCurrentMedicationsToken(userId)` in `email-service.js`
-- **Purpose**: Create a secure, time-limited token for accessing Current Medications editor
-- **Storage**: Store token in user document: `userDoc.currentMedicationsToken` and `userDoc.currentMedicationsTokenExpiresAt`
-- **Expiration**: 7 days (sufficient time for user to click link)
-- **Format**: Similar to `provisionToken` - cryptographically secure random string
-
-#### 4.2 Update Email Template
-- **Location**: `server/utils/email-service.js`, line 106-108
-- **New Email Body**:
-  ```
-  Hi ${userId},
-  
-  Your Private MAIA has been provisioned and is ready to use!
-  
-  **IMPORTANT**: Please review and edit your Current Medications list. This helps ensure your Patient Summary is accurate.
-  
-  [Edit Current Medications] (link)
-  
-  After you save your medications, your Patient Summary will be automatically generated.
-  
-  Your Private AI agent is ready to receive your health records and answer questions.
-  
-  -Adrian
-  ```
-- **Link Format**: `https://your-domain.com/?editMedications=${token}&userId=${userId}`
-- **Alternative**: Use path-based: `https://your-domain.com/edit-medications/${token}`
-
-#### 4.3 Generate Token During Provisioning
-- **Location**: `server/index.js` - `provisionUserAsync()`, after Current Medications generation
-- **Action**: Call `emailService.generateCurrentMedicationsToken(userId)` and store in user document
-- **Timing**: After Step 7.5 (Current Medications generation) completes
-
----
-
-### 5. Handle Deep Link in Frontend
+### 4. Handle Deep Link in Frontend
 
 **Location**: `src/App.vue` and `src/components/MyStuffDialog.vue`
 
@@ -251,11 +206,9 @@ This document outlines the modifications required to implement the complete auto
 3. ✅ Remove Patient Summary generation from provisioning
 4. ✅ Update AUTOMATION.md with new flow
 
-### Phase 2: Current Medications Email Link
-5. ✅ Add token generation to email service
-6. ✅ Update email template with deep link
-7. ✅ Generate token during provisioning
-8. ✅ Add token verification endpoint
+### Phase 2: Current Medications In-App Link
+5. ✅ Generate token during provisioning
+6. ✅ Add token verification endpoint
 
 ### Phase 3: Frontend Deep Link Handling
 9. ✅ Parse `editMedications` URL parameter in App.vue
@@ -317,9 +270,8 @@ Response: {
 - [ ] Lists markdown file is created in `userId/Lists/` folder
 - [ ] Current Medications generation succeeds (has Lists markdown)
 - [ ] Patient Summary is NOT generated during provisioning
-- [ ] Email contains deep link to Current Medications editor
 - [ ] Deep link token is generated and stored in user document
-- [ ] Clicking email link opens app and navigates to Lists tab
+- [ ] Opening the app with a deep link navigates to Lists tab
 - [ ] Current Medications editor opens automatically
 - [ ] Saving Current Medications triggers Patient Summary generation
 - [ ] Patient Summary is saved to user document
@@ -331,7 +283,7 @@ Response: {
 
 1. **Lists Processing Fails**: Log error, continue provisioning, user can manually trigger later
 2. **Current Medications Generation Fails**: Log error, continue provisioning, user can manually trigger later
-3. **Email Token Generation Fails**: Log error, continue provisioning, user can access editor manually
+3. **Deep Link Token Generation Fails**: Log error, continue provisioning, user can access editor manually
 4. **Deep Link Token Invalid/Expired**: Show error message, allow manual access to editor
 5. **Patient Summary Generation Fails**: Log error, allow user to retry from Patient Summary tab
 
@@ -342,13 +294,12 @@ Response: {
 1. `Documents/AUTOMATION.md` - Complete rewrite with new flow
 2. `server/routes/files.js` - Extract Lists processing function
 3. `server/index.js` - Add Lists processing, remove Patient Summary, add token generation
-4. `server/utils/email-service.js` - Add token generation, update email template
-5. `server/index.js` - Add token verification endpoint
-6. `server/index.js` - Add Patient Summary generation endpoint
-7. `src/App.vue` - Parse URL parameters, handle deep link
-8. `src/components/ChatInterface.vue` - Auto-open My Stuff dialog
-9. `src/components/MyStuffDialog.vue` - Pass auto-edit flag to Lists component
-10. `src/components/Lists.vue` - Auto-edit mode, call Patient Summary endpoint
+4. `server/index.js` - Add token verification endpoint
+5. `server/index.js` - Add Patient Summary generation endpoint
+6. `src/App.vue` - Parse URL parameters, handle deep link
+7. `src/components/ChatInterface.vue` - Auto-open My Stuff dialog
+8. `src/components/MyStuffDialog.vue` - Pass auto-edit flag to Lists component
+9. `src/components/Lists.vue` - Auto-edit mode, call Patient Summary endpoint
 
 ---
 
@@ -357,7 +308,7 @@ Response: {
 This plan ensures:
 1. ✅ Lists processing happens automatically during provisioning
 2. ✅ Current Medications is generated automatically
-3. ✅ User receives email with actionable link
+3. ✅ User can open Current Medications via in-app deep link
 4. ✅ Current Medications editor opens automatically from link
 5. ✅ Patient Summary is generated AFTER user edits, not during provisioning
 6. ✅ All steps are logged for terminal visibility
