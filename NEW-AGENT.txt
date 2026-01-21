@@ -60,7 +60,7 @@ Tips for each stage can be added below:
 
 1. Creating your Private AI agent. This can take several minutes.
   
-2. Add your Apple Health "Export PDF" file to get started. If don't have an Apple Health file, click Not yet. You will be able to add a file or manage your current medications manually on the My Lists tab.
+2. Add your Apple Health "Export PDF" file to get started. If you don't have an Apple Health file, click NOT YET. You will be able to add a file or manage your current medications manually on the My Lists tab.
    - Stage 2 is never disabled. A user can add the PDF even after they have other files.
    - OK displays the file chooser, saves the file as imported, and then launches the My Lists tab.
     - Not yet dismisses the wizard until the next page reload.
@@ -75,6 +75,39 @@ Tips for each stage can be added below:
    - OK is enabled if there are files in the knowledge base. It displays the Patient Summary tab.
    - Not yet just closes the modal.
 
+---
+
+## PRIVATE AI SETUP WIZARD DESIGN NOTES
+
+The Setup Wizard is a UI guide driven by user state and a small amount of per-session persistence. Stage 1 completes when the agent is deployed and has a live endpoint. Stage 2 completes only when a Current Medications list exists in the user document; uploading the Apple Health PDF starts list extraction but does not complete Stage 2 by itself. Stage 3 is intentionally conservative: it only completes when the user explicitly clicks "Not yet" (and KB has indexed files), or when we later decide to mark it from objective signals. Stage 4 completes once a Patient Summary exists; when Stage 4 is complete, the wizard is hidden.
+
+The wizard is shown on load until Stage 4 is complete, and it can be dismissed for the current page session by "Not yet" without changing completion state. Clicking Stage 2 OK opens the file chooser, marks the upload as the initial file, and auto-starts list extraction when My Lists opens. After lists and Current Medications are generated, the user is prompted to verify or edit them, and Edit/Verify clears that prompt state. The top wizard message is read from this file and always corresponds to the highest-numbered incomplete stage, which keeps wizard behavior aligned with the Status Tip messages as they evolve.
+
+---
+
+## PRIVATE AI SETUP WIZARD STATE PLACEHOLDERS
+
+This section provides variable names and <placeholders> that a Private AI can use to explain the wizard state to the user. Fill in the placeholders before adding this file to chat context.
+
+Wizard summary template:
+User <USER_ID> wizard state:
+- showAgentSetupDialog=<SHOW_WIZARD> (true unless Stage 4 complete)
+- wizardActiveStage=<WIZARD_ACTIVE_STAGE> (highest incomplete stage)
+- wizardTopMessage="<WIZARD_TOP_MESSAGE>"
+- wizardAgentReady=<WIZARD_AGENT_READY> (agent endpoint ready)
+- wizardCurrentMedications=<WIZARD_CURRENT_MEDS> (Current Medications list exists)
+- wizardHasFilesInKB=<WIZARD_HAS_KB_FILES> (KB has indexed files)
+- wizardPatientSummary=<WIZARD_PATIENT_SUMMARY> (Patient Summary exists)
+- wizardStage3Complete=<WIZARD_STAGE3_COMPLETE> (localStorage wizard-completion-<USER_ID>)
+- sessionStorage.autoProcessInitialFile=<AUTO_PROCESS_INITIAL_FILE>
+
+Recommended explanation for the user (fill placeholders, then speak it plainly):
+"Your Private AI setup is currently on Stage <WIZARD_ACTIVE_STAGE> because:
+Agent ready: <WIZARD_AGENT_READY>, Current Medications: <WIZARD_CURRENT_MEDS>,
+KB files indexed: <WIZARD_HAS_KB_FILES>, Patient Summary: <WIZARD_PATIENT_SUMMARY>.
+The wizard will hide only after Stage 4 is complete (Patient Summary exists).
+If you just uploaded an Apple Health PDF, lists extraction may still be running;
+once Current Medications is generated and verified, Stage 2 will check off."
 
 ---
 

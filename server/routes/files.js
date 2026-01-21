@@ -773,6 +773,20 @@ export default function setupFileRoutes(app, cloudant, doClient) {
       
       if (isInitialImport) {
         console.log(`[NEW FLOW 2] ✅ Initial import file uploaded successfully: ${fileName} to ${bucketKey}`);
+        try {
+          const userDoc = await cloudant.getDocument('maia_users', userId);
+          if (userDoc) {
+            userDoc.initialFile = {
+              fileName: fileName,
+              bucketKey: bucketKey,
+              fileSize: req.file.size,
+              uploadedAt: new Date().toISOString()
+            };
+            await cloudant.saveDocument('maia_users', userDoc);
+          }
+        } catch (updateError) {
+          console.warn(`[NEW FLOW 2] ⚠️ Failed to store initial file metadata: ${updateError.message}`);
+        }
       }
 
       // Generate signed URL for reading (valid for 7 days)

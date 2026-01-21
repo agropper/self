@@ -291,18 +291,30 @@
           <p class="text-body2" v-if="wizardTopMessage">
             {{ wizardTopMessage }}
           </p>
-          <div v-if="!wizardAgentReady" class="q-mt-sm">
+          <div v-if="agentSetupPollingActive || agentSetupTimedOut" class="q-mt-sm">
             <p class="text-caption text-grey-7" v-if="agentSetupElapsed">
               Elapsed: {{ Math.floor(agentSetupElapsed / 60) }}m {{ agentSetupElapsed % 60 }}s
             </p>
             <p class="text-caption text-grey-7" v-if="agentSetupStatus">
               Status: {{ agentSetupStatus }}
             </p>
+            <p class="text-caption text-negative q-mt-sm" v-if="agentSetupTimedOut">
+              Agent setup did not complete in 15 minutes. Please try again later.
+            </p>
+            <q-btn
+              v-if="agentSetupTimedOut"
+              flat
+              dense
+              color="negative"
+              label="CLOSE"
+              class="q-mt-xs"
+              @click="dismissWizard"
+            />
           </div>
 
           <div class="q-mt-md">
             <div class="row items-center q-py-xs">
-              <q-checkbox :model-value="wizardAgentReady" disable />
+              <q-checkbox :model-value="wizardStage1Complete" disable />
               <div class="q-ml-sm">1 - Creating your Private AI agent</div>
               <div class="col" />
             </div>
@@ -314,19 +326,19 @@
                 unelevated
                 dense
                 size="sm"
-                :color="step2Enabled ? 'primary' : 'grey-4'"
+                :color="step2Active ? 'primary' : 'grey-4'"
                 label="OK"
-                :disable="!step2Enabled"
-                @click="() => { wizardUploadIntent = 'apple'; triggerFileInput(); }"
+                :disable="!step2Enabled || !stage1Complete || wizardStage2Complete"
+                @click="handleStage2Ok"
               />
               <q-btn
                 unelevated
                 dense
                 size="sm"
-                :color="step2Enabled ? 'primary' : 'grey-4'"
+                :color="step2Active ? 'primary' : 'grey-4'"
                 label="Not yet"
                 class="q-ml-sm"
-                :disable="!step2Enabled"
+                :disable="!step2Enabled || !stage1Complete || wizardStage2Complete"
                 @click="dismissWizard"
               />
             </div>
@@ -338,19 +350,19 @@
                 unelevated
                 dense
                 size="sm"
-                :color="step3OkEnabled ? 'primary' : 'grey-4'"
+                :color="step3OkActive ? 'primary' : 'grey-4'"
                 label="OK"
-                :disable="!step3OkEnabled"
-                @click="() => { wizardUploadIntent = 'other'; triggerFileInput(); }"
+                :disable="!step3OkEnabled || !stage1Complete"
+                @click="() => { wizardUploadIntent = 'other'; triggerWizardFileInput(); }"
               />
               <q-btn
                 unelevated
                 dense
                 size="sm"
-                :color="step3NotYetEnabled ? 'primary' : 'grey-4'"
+                :color="step3NotYetActive ? 'primary' : 'grey-4'"
                 label="Not yet"
                 class="q-ml-sm"
-                :disable="!step3NotYetEnabled"
+                :disable="!step3NotYetEnabled || !stage1Complete"
                 @click="() => { wizardStage3Complete = true; persistWizardCompletion(); dismissWizard(); }"
               />
             </div>
@@ -362,28 +374,24 @@
                 unelevated
                 dense
                 size="sm"
-                :color="step4Enabled ? 'primary' : 'grey-4'"
+                :color="step4Active ? 'primary' : 'grey-4'"
                 label="OK"
-                :disable="!step4Enabled"
+                :disable="!step4Enabled || !stage1Complete"
                 @click="() => { myStuffInitialTab = 'summary'; showMyStuffDialog = true; }"
               />
               <q-btn
                 unelevated
                 dense
                 size="sm"
-                :color="step4Enabled ? 'primary' : 'grey-4'"
+                :color="step4Active ? 'primary' : 'grey-4'"
                 label="Not yet"
                 class="q-ml-sm"
-                :disable="!step4Enabled"
+                :disable="!step4Enabled || !stage1Complete"
                 @click="dismissWizard"
               />
             </div>
           </div>
 
-          <p class="text-caption text-amber-8 q-mt-sm" v-if="agentSetupTimedOut">
-            Setup is taking longer than expected. You can keep using the app and this
-            will update when the agent is ready.
-          </p>
         </q-card-section>
       </q-card>
     </q-dialog>
@@ -618,6 +626,7 @@ const showAgentSetupDialog = ref(false);
 const agentSetupStatus = ref('');
 const agentSetupElapsed = ref(0);
 const agentSetupTimedOut = ref(false);
+const agentSetupPollingActive = ref(false);
 let agentSetupTimer: ReturnType<typeof setInterval> | null = null;
 const wizardHasAppleHealthFile = ref(false);
 const wizardOtherFilesCount = ref(0);
@@ -625,6 +634,7 @@ const wizardHasFilesInKB = ref(false);
 const wizardCurrentMedications = ref(false);
 const wizardPatientSummary = ref(false);
 const wizardAgentReady = ref(false);
+const wizardStage1Complete = ref(false);
 const wizardUploadIntent = ref<'apple' | 'other' | null>(null);
 const wizardMessages = ref<Record<number, string>>({});
 const wizardDismissed = ref(false);
@@ -632,13 +642,18 @@ const step2Enabled = computed(() => true);
 const step3OkEnabled = computed(() => true);
 const step3NotYetEnabled = computed(() => wizardHasFilesInKB.value);
 const step4Enabled = computed(() => wizardHasFilesInKB.value);
+const stage1Complete = computed(() => wizardStage1Complete.value);
+const step2Active = computed(() => step2Enabled.value && stage1Complete.value && !wizardStage2Complete.value);
+const step3OkActive = computed(() => step3OkEnabled.value && stage1Complete.value);
+const step3NotYetActive = computed(() => step3NotYetEnabled.value && stage1Complete.value);
+const step4Active = computed(() => step4Enabled.value && stage1Complete.value);
 const wizardStage2Complete = ref(false);
 const wizardStage3Complete = ref(false);
 const wizardStage2Pending = ref(false);
 const wizardUserStorageKey = computed(() => props.user?.userId ? `wizard-completion-${props.user.userId}` : null);
 
 const wizardActiveStage = computed(() => {
-  if (!wizardAgentReady.value) return 1;
+  if (!wizardStage1Complete.value) return 1;
   if (!wizardStage2Complete.value) return 2;
   if (!wizardStage3Complete.value) return 3;
   if (!wizardPatientSummary.value) return 4;
@@ -802,7 +817,14 @@ const providerLabels: Record<string, string> = {
 
 // Computed provider options for dropdown
 const providerOptions = computed(() => {
-  return providers.value.map(p => providerLabels[p] || p.charAt(0).toUpperCase() + p.slice(1));
+  return providers.value.map(p => {
+    const label = providerLabels[p] || p.charAt(0).toUpperCase() + p.slice(1);
+    return {
+      label,
+      value: label,
+      disable: p === 'digitalocean' && !wizardStage1Complete.value
+    };
+  });
 });
 
 // Helper to get provider key from label
@@ -813,6 +835,32 @@ const getProviderKey = (label: string) => {
 
 const isPrivateAISelected = computed(() => getProviderKey(selectedProvider.value) === 'digitalocean');
 const PRIVATE_AI_DEFAULT_PROMPT = 'Click SEND to get the patient summary';
+
+const selectFirstNonPrivateProvider = () => {
+  const fallback = providers.value.find(p => p !== 'digitalocean');
+  if (fallback) {
+    selectedProvider.value = providerLabels[fallback] || fallback;
+  }
+};
+
+const logWizardEvent = async (event: string, details?: Record<string, unknown>) => {
+  try {
+    await fetch('/api/wizard-log', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      credentials: 'include',
+      body: JSON.stringify({
+        event,
+        userId: props.user?.userId,
+        details: details || {}
+      })
+    });
+  } catch (error) {
+    // Ignore logging errors
+  }
+};
 
 // Clear preset prompt when user clicks into the input
 function clearPresetPrompt() {
@@ -915,6 +963,9 @@ const loadProviders = async () => {
       if (getProviderKey(selectedProvider.value) === 'digitalocean' && !providers.value.includes('digitalocean')) {
         selectedProvider.value = providerLabels[providers.value[0]] || providers.value[0];
       }
+      if (!wizardStage1Complete.value && getProviderKey(selectedProvider.value) === 'digitalocean') {
+        selectFirstNonPrivateProvider();
+      }
     }
   } catch (error) {
     console.error('Failed to load providers:', error);
@@ -925,6 +976,9 @@ const loadProviders = async () => {
     }
     providers.value = fallbackProviders;
     selectedProvider.value = providerLabels[fallbackProviders[0]] || fallbackProviders[0];
+    if (!wizardStage1Complete.value && getProviderKey(selectedProvider.value) === 'digitalocean') {
+      selectFirstNonPrivateProvider();
+    }
   }
 };
 
@@ -939,6 +993,16 @@ watch(
       inputMessage.value = PRIVATE_AI_DEFAULT_PROMPT;
     } else if (!shouldPrefill && inputMessage.value === PRIVATE_AI_DEFAULT_PROMPT) {
       inputMessage.value = '';
+    }
+  },
+  { immediate: true }
+);
+
+watch(
+  [() => wizardStage1Complete.value, () => providers.value.length],
+  ([stage1CompleteNow]) => {
+    if (!stage1CompleteNow && getProviderKey(selectedProvider.value) === 'digitalocean') {
+      selectFirstNonPrivateProvider();
     }
   },
   { immediate: true }
@@ -1339,12 +1403,48 @@ const triggerFileInput = () => {
   fileInput.value?.click();
 };
 
+const triggerWizardFileInput = async () => {
+  logWizardEvent('stage2_file_input_trigger', {
+    hasRef: !!fileInput.value,
+    intent: wizardUploadIntent.value
+  });
+  if (fileInput.value) {
+    fileInput.value.click();
+    return;
+  }
+  await nextTick();
+  if (fileInput.value) {
+    fileInput.value.click();
+    return;
+  }
+  const fallbackInput = document.querySelector<HTMLInputElement>('input[type="file"]');
+  fallbackInput?.click();
+};
+
+const handleStage2Ok = () => {
+  wizardUploadIntent.value = 'apple';
+  try {
+    if (typeof sessionStorage !== 'undefined') {
+      sessionStorage.setItem('autoProcessInitialFile', 'true');
+      sessionStorage.setItem('wizardMyListsAuto', 'true');
+    }
+  } catch (error) {
+    console.warn('Unable to set autoProcessInitialFile flag:', error);
+  }
+  logWizardEvent('stage2_ok_clicked', { intent: wizardUploadIntent.value });
+  triggerWizardFileInput();
+};
+
 const handleWizardFileSelect = () => {
   if (wizardUploadIntent.value === 'apple') {
     myStuffInitialTab.value = 'lists';
     wizardStage2Pending.value = true;
+    sessionStorage.setItem('autoProcessInitialFile', 'true');
+    sessionStorage.setItem('wizardMyListsAuto', 'true');
+    logWizardEvent('stage2_file_selected', { tab: 'lists' });
   } else {
     myStuffInitialTab.value = 'files';
+    logWizardEvent('stage3_file_selected', { tab: 'files' });
   }
   showMyStuffDialog.value = true;
   wizardUploadIntent.value = null;
@@ -1440,6 +1540,22 @@ const uploadPDFFile = async (file: File) => {
   // Upload to bucket
   const uploadFormData = new FormData();
   uploadFormData.append('file', file);
+  if (wizardUploadIntent.value === 'apple') {
+    uploadFormData.append('isInitialImport', 'true');
+    try {
+      const statusResponse = await fetch(`/api/user-files?userId=${encodeURIComponent(props.user?.userId || '')}`, {
+        credentials: 'include'
+      });
+      if (statusResponse.ok) {
+        const statusResult = await statusResponse.json();
+        if (statusResult?.kbName) {
+          uploadFormData.append('subfolder', statusResult.kbName);
+        }
+      }
+    } catch (error) {
+      console.warn('Unable to fetch KB name for initial import:', error);
+    }
+  }
 
   const uploadResponse = await fetch('/api/files/upload', {
     method: 'POST',
@@ -1473,7 +1589,8 @@ const uploadPDFFile = async (file: File) => {
             fileSize: uploadResult.fileInfo.size,
             fileType: 'pdf',
             uploadedAt: uploadResult.fileInfo.uploadedAt
-          }
+          },
+          updateInitialFile: wizardUploadIntent.value === 'apple'
         })
       });
     } catch (error) {
@@ -3270,6 +3387,8 @@ const startSetupWizardPolling = () => {
   const maxAttempts = 60; // 15 minutes at 15s
   let attempts = 0;
   agentSetupTimedOut.value = false;
+  agentSetupPollingActive.value = true;
+  wizardStage1Complete.value = false;
   agentSetupElapsed.value = 0;
 
   refreshWizardState().then(() => {
@@ -3300,6 +3419,7 @@ const startSetupWizardPolling = () => {
 
       if (shouldHideSetupWizard.value) {
         stopAgentSetupTimer();
+        agentSetupPollingActive.value = false;
         showAgentSetupDialog.value = false;
         agentSetupTimedOut.value = false;
         return;
@@ -3307,7 +3427,11 @@ const startSetupWizardPolling = () => {
 
       if (result?.endpointReady) {
         agentSetupStatus.value = 'READY';
+        wizardStage1Complete.value = true;
+        agentSetupPollingActive.value = false;
+        stopAgentSetupTimer();
         updateContextualTip();
+        return;
       }
 
       if (!shouldHideSetupWizard.value && !showAgentSetupDialog.value && !wizardDismissed.value) {
@@ -3325,6 +3449,7 @@ const startSetupWizardPolling = () => {
       setTimeout(poll, 15000);
     } else {
       agentSetupTimedOut.value = true;
+      agentSetupPollingActive.value = false;
       stopAgentSetupTimer();
     }
   };
@@ -3692,9 +3817,7 @@ onMounted(async () => {
     watch(() => showMyStuffDialog.value, (isOpen, wasOpen) => {
       if (wasOpen && !isOpen) {
         if (wizardStage2Pending.value) {
-          wizardStage2Complete.value = true;
           wizardStage2Pending.value = false;
-          persistWizardCompletion();
           refreshWizardState();
         }
       }

@@ -9080,6 +9080,20 @@ app.get('/api/user-status', async (req, res) => {
   }
 });
 
+// Wizard debug logging (client -> server terminal)
+app.post('/api/wizard-log', (req, res) => {
+  try {
+    const userId = req.session?.userId || req.body?.userId || 'unknown';
+    const event = req.body?.event || 'unknown_event';
+    const details = req.body?.details || {};
+    const timestamp = new Date().toISOString();
+    console.log(`[WIZARD] ${timestamp} ${userId} ${event}`, details);
+    res.json({ success: true });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
 // Toggle KB connection to Agent endpoint (attach/detach)
 app.post('/api/toggle-kb-connection', async (req, res) => {
   try {

@@ -64,6 +64,29 @@ const ensureAgentProfileApiKey = (userDoc, agentId, apiKey) => {
  */
 export async function getOrCreateAgentApiKey(doClient, cloudant, userId, agentId) {
   try {
+    const saveUserDocWithRetry = async (applyUpdate, maxRetries = 3) => {
+      let attempt = 0;
+      let lastError = null;
+      while (attempt < maxRetries) {
+        attempt += 1;
+        const latestDoc = await cloudant.getDocument('maia_users', userId);
+        const updatedDoc = applyUpdate(latestDoc);
+        try {
+          await cloudant.saveDocument('maia_users', updatedDoc);
+          return updatedDoc;
+        } catch (error) {
+          const isConflict = error?.statusCode === 409 || error?.error === 'conflict' || /conflict/i.test(error?.message || '');
+          if (!isConflict || attempt >= maxRetries) {
+            throw error;
+          }
+          lastError = error;
+        }
+      }
+      if (lastError) {
+        throw lastError;
+      }
+    };
+
     // Get user document
     const userDoc = await cloudant.getDocument('maia_users', userId);
     
@@ -73,8 +96,11 @@ export async function getOrCreateAgentApiKey(doClient, cloudant, userId, agentId
       );
       if (profileWithKey?.apiKey) {
         if (!userDoc.agentApiKey || userDoc.agentApiKey !== profileWithKey.apiKey) {
-          userDoc.agentApiKey = profileWithKey.apiKey;
-          await cloudant.saveDocument('maia_users', userDoc);
+          await saveUserDocWithRetry(latestDoc => {
+            latestDoc.agentApiKey = profileWithKey.apiKey;
+            ensureAgentProfileApiKey(latestDoc, agentId, profileWithKey.apiKey);
+            return latestDoc;
+          });
         }
         return profileWithKey.apiKey;
       }
@@ -100,9 +126,11 @@ export async function getOrCreateAgentApiKey(doClient, cloudant, userId, agentId
     }
     
     // Save the new API key to the user document
-    userDoc.agentApiKey = apiKey;
-    ensureAgentProfileApiKey(userDoc, agentId, apiKey);
-    await cloudant.saveDocument('maia_users', userDoc);
+    await saveUserDocWithRetry(latestDoc => {
+      latestDoc.agentApiKey = apiKey;
+      ensureAgentProfileApiKey(latestDoc, agentId, apiKey);
+      return latestDoc;
+    });
     
     return apiKey;
   } catch (error) {
@@ -116,9 +144,29 @@ export async function getOrCreateAgentApiKey(doClient, cloudant, userId, agentId
  */
 export async function recreateAgentApiKey(doClient, cloudant, userId, agentId) {
   try {
-    // Get user document
-    const userDoc = await cloudant.getDocument('maia_users', userId);
-    
+    const saveUserDocWithRetry = async (applyUpdate, maxRetries = 3) => {
+      let attempt = 0;
+      let lastError = null;
+      while (attempt < maxRetries) {
+        attempt += 1;
+        const latestDoc = await cloudant.getDocument('maia_users', userId);
+        const updatedDoc = applyUpdate(latestDoc);
+        try {
+          await cloudant.saveDocument('maia_users', updatedDoc);
+          return updatedDoc;
+        } catch (error) {
+          const isConflict = error?.statusCode === 409 || error?.error === 'conflict' || /conflict/i.test(error?.message || '');
+          if (!isConflict || attempt >= maxRetries) {
+            throw error;
+          }
+          lastError = error;
+        }
+      }
+      if (lastError) {
+        throw lastError;
+      }
+    };
+
     const agentClient = new AgentClient(doClient);
     const apiKey = await agentClient.createApiKey(agentId, `agent-${agentId}-api-key`);
     
@@ -127,9 +175,11 @@ export async function recreateAgentApiKey(doClient, cloudant, userId, agentId) {
     }
     
     // Save the new API key to the user document
-    userDoc.agentApiKey = apiKey;
-    ensureAgentProfileApiKey(userDoc, agentId, apiKey);
-    await cloudant.saveDocument('maia_users', userDoc);
+    await saveUserDocWithRetry(latestDoc => {
+      latestDoc.agentApiKey = apiKey;
+      ensureAgentProfileApiKey(latestDoc, agentId, apiKey);
+      return latestDoc;
+    });
     
     return apiKey;
   } catch (error) {

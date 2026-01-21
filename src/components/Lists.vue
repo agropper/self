@@ -48,7 +48,10 @@
         
         <!-- Empty State -->
         <div v-else-if="!isEditingCurrentMedications && !currentMedications" class="text-body2 text-grey-7 q-pa-md text-center">
-          <div v-if="hasMedicationRecords">
+          <div v-if="wizardPreparingMeds">
+            Current medications are being prepared...
+          </div>
+          <div v-else-if="hasMedicationRecords">
             No current medications identified yet. Click "Generate" to review your medication records.
           </div>
           <div v-else>
@@ -86,7 +89,7 @@
         
         <div class="q-mt-sm">
           <q-btn
-            v-if="!isEditingCurrentMedications && !currentMedications && hasMedicationRecords"
+            v-if="!isEditingCurrentMedications && !currentMedications && hasMedicationRecords && !wizardAutoFlow && !wizardPreparingMeds"
             flat
             dense
             icon="play_arrow"
@@ -104,6 +107,17 @@
             label="Edit"
             @click="startEditingCurrentMedications"
             class="q-mr-sm"
+            :class="{ 'verify-highlight': needsVerifyAction }"
+          />
+          <q-btn
+            v-if="!isEditingCurrentMedications && currentMedications"
+            flat
+            dense
+            icon="verified"
+            label="Verify"
+            @click="handleVerifyCurrentMedications"
+            class="q-mr-sm"
+            :class="{ 'verify-highlight': needsVerifyAction }"
           />
           <q-btn
             v-if="hasMedicationRecords && !isEditingCurrentMedications && currentMedications"
@@ -150,6 +164,30 @@
       </q-card>
     </q-dialog>
 
+    <!-- Verify Current Medications Dialog -->
+    <q-dialog v-model="showVerifyPrompt" persistent>
+      <q-card style="min-width: 380px">
+        <q-card-section>
+          <div class="text-h6">Please verify or edit your Current Medications</div>
+        </q-card-section>
+        <q-card-actions align="right">
+          <q-btn flat label="OK" color="primary" @click="showVerifyPrompt = false" />
+        </q-card-actions>
+      </q-card>
+    </q-dialog>
+
+  <!-- Verify Current Medications Dialog -->
+  <q-dialog v-model="showVerifyPrompt" persistent>
+    <q-card style="min-width: 380px">
+      <q-card-section>
+        <div class="text-h6">Please verify or edit your Current Medications</div>
+      </q-card-section>
+      <q-card-actions align="right">
+        <q-btn flat label="OK" color="primary" @click="showVerifyPrompt = false" />
+      </q-card-actions>
+    </q-card>
+  </q-dialog>
+
     <!-- Update Lists from Initial File -->
     <q-card v-if="!hasSavedResults" class="q-mb-md">
       <q-card-section>
@@ -157,12 +195,17 @@
         <div class="text-body2 text-grey q-mb-md">
           Process your initial health record file to extract structured lists (Clinical Notes, Medications, etc.)
         </div>
+        <div v-if="isProcessing" class="q-pa-sm">
+          <q-spinner size="2em" color="primary" />
+          <div class="q-mt-sm">{{ processingMessage || 'Processing initial file...' }}</div>
+          <div class="text-caption text-grey q-mt-xs">Parsing and extracting lists from your file.</div>
+        </div>
         <q-btn
+          v-else
           color="primary"
           label="Create Lists from Initial File"
           icon="create"
           @click="processInitialFile"
-          :loading="isProcessing"
           :disable="!hasInitialFile"
         />
         <div v-if="!hasInitialFile" class="text-caption text-grey q-mt-sm">
@@ -170,13 +213,6 @@
         </div>
       </q-card-section>
     </q-card>
-
-    <!-- Loading State -->
-    <div v-if="isProcessing" class="text-center q-pa-lg">
-      <q-spinner size="3em" color="primary" />
-      <div class="q-mt-md">Processing PDF... This may take a moment.</div>
-      <div class="text-caption text-grey q-mt-sm">Extracting text with page boundaries preserved</div>
-    </div>
 
     <!-- Error State -->
     <q-banner v-if="error" rounded class="bg-negative text-white q-mb-md">
@@ -443,7 +479,7 @@
 
 <script setup lang="ts">
 import PdfViewerModal from './PdfViewerModal.vue';
-import { ref, computed, onMounted, watch, onActivated, nextTick } from 'vue';
+import { ref, computed, onMounted, watch, onActivated, onDeactivated, nextTick } from 'vue';
 import { useQuasar } from 'quasar';
 
 const $q = useQuasar();
@@ -494,6 +530,7 @@ interface PdfData {
 
 const selectedFileName = ref<string>('');
 const isProcessing = ref(false);
+const processingMessage = ref('');
 const error = ref<string>('');
 const pdfData = ref<PdfData | null>(null);
 const categories = ref<MarkdownCategory[]>([]);
@@ -533,10 +570,35 @@ const editingOriginalCurrentMedications = ref('');
 const isSavingCurrentMedications = ref(false);
 const isCurrentMedicationsEdited = ref(false);
 const currentMedicationsStatus = ref<'reviewing' | 'consulting' | ''>('');
+const wizardAutoFlow = ref(false);
+const wizardAutoFlowStorageKey = 'wizardMyListsAuto';
+const wizardPreparingMeds = computed(() =>
+  wizardAutoFlow.value &&
+  !currentMedications.value &&
+  (isProcessing.value || isLoadingCurrentMedications.value || hasSavedResults.value || hasMedicationRecords.value)
+);
 const showSummaryDialog = ref(false);
 const showRefreshConfirmDialog = ref(false);
 const showMarkdownContent = ref(false);
 const isReplacingFile = ref(false);
+const showVerifyPrompt = ref(false);
+const needsVerifyAction = ref(false);
+const verifyPromptPending = ref(false);
+const verifyStorageKey = computed(() => props.userId ? `verify-meds-${props.userId}` : null);
+const wizardCompletionKey = computed(() => props.userId ? `wizard-completion-${props.userId}` : null);
+const stage3Complete = computed(() => {
+  if (!wizardCompletionKey.value) return false;
+  try {
+    const stored = sessionStorage.getItem(wizardCompletionKey.value);
+    if (!stored) return false;
+    const parsed = JSON.parse(stored);
+    return !!parsed.stage3Complete;
+  } catch (error) {
+    return false;
+  }
+});
+const autoProcessAttempts = ref(0);
+let autoProcessTimer: ReturnType<typeof setTimeout> | null = null;
 
 const checkInitialFile = async () => {
   try {
@@ -794,7 +856,9 @@ const copyItemToClipboard = async (item: any, categoryName: string) => {
 };
 
 const processInitialFile = async () => {
+  logWizardEvent('lists_processing_start');
   isProcessing.value = true;
+  processingMessage.value = 'Parsing initial file...';
   error.value = '';
   pdfData.value = null;
   categories.value = [];
@@ -815,6 +879,7 @@ const processInitialFile = async () => {
     }
 
     const data = await response.json();
+    processingMessage.value = 'Extracting lists and categories...';
     
     pdfData.value = {
       totalPages: data.totalPages,
@@ -861,12 +926,114 @@ const processInitialFile = async () => {
     if (data.pages && data.pages.length > 0) {
       activePageTab.value = data.pages[0].page;
     }
+    logWizardEvent('lists_processing_complete', {
+      hasMarkdown: !!data.fullMarkdown,
+      pageCount: data.totalPages || 0
+    });
   } catch (err) {
     const errorMessage = err instanceof Error ? err.message : 'Failed to process initial file';
     error.value = errorMessage;
     console.error('Initial file processing error:', err);
+    logWizardEvent('lists_processing_error', { error: errorMessage });
   } finally {
     isProcessing.value = false;
+    processingMessage.value = '';
+  }
+};
+
+const persistVerifyState = () => {
+  if (!verifyStorageKey.value) return;
+  sessionStorage.setItem(
+    verifyStorageKey.value,
+    JSON.stringify({
+      needsVerifyAction: needsVerifyAction.value
+    })
+  );
+};
+
+const markVerifyRequired = () => {
+  needsVerifyAction.value = true;
+  showVerifyPrompt.value = true;
+  persistVerifyState();
+};
+
+const clearVerifyRequirement = () => {
+  needsVerifyAction.value = false;
+  verifyPromptPending.value = false;
+  persistVerifyState();
+};
+
+const handleVerifyCurrentMedications = async () => {
+  if (!currentMedications.value) {
+    clearVerifyRequirement();
+    return;
+  }
+  await saveCurrentMedicationsValue(currentMedications.value, true, true);
+};
+
+const logWizardEvent = async (event: string, details?: Record<string, unknown>) => {
+  try {
+    await fetch('/api/wizard-log', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      credentials: 'include',
+      body: JSON.stringify({
+        event,
+        userId: props.userId,
+        details: details || {}
+      })
+    });
+  } catch (error) {
+    // Ignore logging errors
+  }
+};
+
+const loadWizardAutoFlow = () => {
+  try {
+    wizardAutoFlow.value = sessionStorage.getItem(wizardAutoFlowStorageKey) === 'true';
+  } catch (error) {
+    wizardAutoFlow.value = false;
+  }
+  if (wizardAutoFlow.value) {
+    logWizardEvent('lists_wizard_auto_flag', { value: wizardAutoFlow.value });
+  }
+};
+
+const clearWizardAutoFlow = () => {
+  wizardAutoFlow.value = false;
+  try {
+    sessionStorage.removeItem(wizardAutoFlowStorageKey);
+  } catch (error) {
+    // ignore
+  }
+};
+
+const attemptAutoProcessInitialFile = async () => {
+  if (isProcessing.value) return;
+  const autoProcess = sessionStorage.getItem('autoProcessInitialFile');
+  if (autoProcess !== 'true') return;
+
+  logWizardEvent('lists_auto_start_attempt', {
+    attempt: autoProcessAttempts.value + 1,
+    hasSavedResults: hasSavedResults.value
+  });
+
+  await checkInitialFile();
+  if (hasInitialFile.value) {
+    sessionStorage.removeItem('autoProcessInitialFile');
+    logWizardEvent('lists_auto_start_begin', { hasInitialFile: true });
+    processInitialFile();
+    return;
+  }
+
+  if (autoProcessAttempts.value < 10) {
+    autoProcessAttempts.value += 1;
+    autoProcessTimer = setTimeout(attemptAutoProcessInitialFile, 1000);
+  } else {
+    sessionStorage.removeItem('autoProcessInitialFile');
+    logWizardEvent('lists_auto_start_failed', { hasInitialFile: false });
   }
 };
 
@@ -2055,12 +2222,18 @@ const reloadCategories = async () => {
 };
 
 onMounted(async () => {
+  loadWizardAutoFlow();
   // Load initial file info first (needed for PDF viewing)
   await checkInitialFile();
   loadClinicalNotes();
   await loadSavedResults(); // Check for saved results first
   // Load current medications from user document
   loadCurrentMedications();
+
+  if (!hasSavedResults.value) {
+    await nextTick();
+    attemptAutoProcessInitialFile();
+  }
   
   // Check if we should auto-edit medications (from deep link)
   const autoEdit = sessionStorage.getItem('autoEditMedications');
@@ -2073,6 +2246,46 @@ onMounted(async () => {
       startEditingCurrentMedications();
     }, 500);
   }
+
+  if (verifyStorageKey.value) {
+    const storedVerify = sessionStorage.getItem(verifyStorageKey.value);
+    if (storedVerify) {
+      try {
+        const parsed = JSON.parse(storedVerify);
+        needsVerifyAction.value = !!parsed.needsVerifyAction;
+      } catch (error) {
+        // Ignore malformed storage
+      }
+    }
+  }
+});
+
+watch([currentMedications, hasSavedResults, isProcessing], ([meds, saved, processing], [prevMeds]) => {
+  if (processing) return;
+  if (!saved || !meds || isCurrentMedicationsEdited.value || needsVerifyAction.value) {
+    return;
+  }
+  if (!prevMeds) {
+    markVerifyRequired();
+  }
+  if (meds && wizardAutoFlow.value) {
+    clearWizardAutoFlow();
+  }
+});
+
+onActivated(() => {
+  loadWizardAutoFlow();
+  if (verifyPromptPending.value && needsVerifyAction.value) {
+    showVerifyPrompt.value = true;
+    verifyPromptPending.value = false;
+  }
+});
+
+onDeactivated(() => {
+  if (needsVerifyAction.value && !isEditingCurrentMedications.value) {
+    showVerifyPrompt.value = true;
+    verifyPromptPending.value = true;
+  }
 });
 
 // Load current medications from user document or Medication Records
@@ -2082,6 +2295,7 @@ const loadCurrentMedications = async (forceRefresh = false) => {
     return;
   }
 
+  logWizardEvent('current_meds_load_start', { forceRefresh });
   // First try to load from user document
   if (!forceRefresh) {
     try {
@@ -2093,6 +2307,7 @@ const loadCurrentMedications = async (forceRefresh = false) => {
         if (statusResult.currentMedications) {
           currentMedications.value = statusResult.currentMedications;
           isCurrentMedicationsEdited.value = true; // Mark as edited since it came from user doc
+          logWizardEvent('current_meds_loaded_from_user_doc', { length: statusResult.currentMedications.length });
           return;
         }
       }
@@ -2108,6 +2323,7 @@ const loadCurrentMedications = async (forceRefresh = false) => {
 
   if (!medicationCategory || !medicationCategory.observations || medicationCategory.observations.length === 0) {
     currentMedications.value = null;
+    logWizardEvent('current_meds_no_records');
     return;
   }
 
@@ -2142,15 +2358,21 @@ const loadCurrentMedications = async (forceRefresh = false) => {
       const cleaned = removeHeadingsFromResponse(result.currentMedications);
       currentMedications.value = cleaned;
       isCurrentMedicationsEdited.value = false; // Reset edited flag when loading from AI
+      logWizardEvent('current_meds_generated', { length: cleaned.length });
     } else {
       currentMedications.value = null;
+      logWizardEvent('current_meds_empty_response');
     }
   } catch (err) {
     console.error('Error loading current medications:', err);
     currentMedications.value = null;
+    logWizardEvent('current_meds_error', { error: err instanceof Error ? err.message : 'Unknown error' });
   } finally {
     isLoadingCurrentMedications.value = false;
     currentMedicationsStatus.value = '';
+    if (wizardAutoFlow.value && !currentMedications.value) {
+      clearWizardAutoFlow();
+    }
   }
 };
 
@@ -2189,6 +2411,7 @@ const startEditingCurrentMedications = () => {
   isEditingCurrentMedications.value = true;
   editingCurrentMedications.value = currentMedications.value || '';
   editingOriginalCurrentMedications.value = currentMedications.value || '';
+  clearVerifyRequirement();
 };
 
 // Cancel editing current medications
@@ -2198,8 +2421,7 @@ const cancelEditingCurrentMedications = () => {
   editingOriginalCurrentMedications.value = '';
 };
 
-// Save current medications to user document
-const saveCurrentMedications = async () => {
+const saveCurrentMedicationsValue = async (value: string, markEdited: boolean, clearVerify = false) => {
   isSavingCurrentMedications.value = true;
   try {
     const response = await fetch('/api/user-current-medications', {
@@ -2210,7 +2432,7 @@ const saveCurrentMedications = async () => {
       credentials: 'include',
       body: JSON.stringify({
         userId: props.userId,
-        currentMedications: editingCurrentMedications.value
+        currentMedications: value
       })
     });
 
@@ -2219,14 +2441,19 @@ const saveCurrentMedications = async () => {
       throw new Error(errorData.error || 'Failed to save current medications');
     }
 
-    currentMedications.value = editingCurrentMedications.value;
-    isCurrentMedicationsEdited.value = true;
+    currentMedications.value = value;
+    isCurrentMedicationsEdited.value = markEdited;
     isEditingCurrentMedications.value = false;
     editingCurrentMedications.value = '';
     editingOriginalCurrentMedications.value = '';
+    if (clearVerify) {
+      clearVerifyRequirement();
+    }
     
-    // Show dialog about Patient Summary update
-    showSummaryDialog.value = true;
+    // Show dialog about Patient Summary update only after Stage 3 is complete
+    if (stage3Complete.value) {
+      showSummaryDialog.value = true;
+    }
   } catch (err) {
     console.error('Error saving current medications:', err);
     if ($q && typeof $q.notify === 'function') {
@@ -2239,6 +2466,11 @@ const saveCurrentMedications = async () => {
   } finally {
     isSavingCurrentMedications.value = false;
   }
+};
+
+// Save current medications to user document
+const saveCurrentMedications = async () => {
+  await saveCurrentMedicationsValue(editingCurrentMedications.value, true, false);
 };
 
 // Handle SHOW SUMMARY button click
@@ -2275,6 +2507,17 @@ const hasMedicationRecords = computed(() => {
 // Reload categories when component is activated (if using KeepAlive)
 onActivated(() => {
   reloadCategories();
+  if (!hasSavedResults.value) {
+    attemptAutoProcessInitialFile();
+  }
+});
+
+watch(hasInitialFile, (value) => {
+  if (!value) return;
+  const autoProcess = sessionStorage.getItem('autoProcessInitialFile');
+  if (autoProcess === 'true' && !isProcessing.value && !hasSavedResults.value) {
+    attemptAutoProcessInitialFile();
+  }
 });
 
 // Watch for markdown content changes and recompute categories/observations on-the-fly
@@ -2314,6 +2557,11 @@ defineExpose({
   overflow-y: auto;
   font-family: 'Courier New', monospace;
   font-size: 0.9em;
+}
+
+.verify-highlight {
+  box-shadow: 0 0 0 2px #e53935;
+  border-radius: 6px;
 }
 </style>
 

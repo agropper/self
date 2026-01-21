@@ -552,17 +552,64 @@ export default function setupAuthRoutes(app, passkeyService, cloudant, doClient,
         });
       }
 
-      const userDoc = await cloudant.getDocument('maia_users', userId);
-      if (!userDoc || !userDoc.assignedAgentId) {
-        return res.json({
-          success: true,
-          status: 'not_started',
-          endpointReady: false
+      let userDoc = await cloudant.getDocument('maia_users', userId);
+      if (!userDoc) {
+        return res.status(404).json({
+          success: false,
+          message: 'User not found',
+          error: 'USER_NOT_FOUND'
         });
       }
 
-      const agentId = userDoc.assignedAgentId;
-      const agent = await doClient.agent.get(agentId);
+      let provisionAttempted = false;
+      let agentId = userDoc.assignedAgentId;
+      let agent = null;
+
+      if (!agentId) {
+        try {
+          userDoc = await ensureUserAgent(doClient, cloudant, userDoc);
+          provisionAttempted = true;
+          agentId = userDoc.assignedAgentId;
+        } catch (error) {
+          return res.json({
+            success: false,
+            status: 'provision_failed',
+            endpointReady: false,
+            error: error.message || 'Agent provisioning failed'
+          });
+        }
+      }
+
+      if (agentId) {
+        try {
+          agent = await doClient.agent.get(agentId);
+        } catch (error) {
+          try {
+            userDoc = await ensureUserAgent(doClient, cloudant, userDoc);
+            provisionAttempted = true;
+            agentId = userDoc.assignedAgentId;
+            if (agentId) {
+              agent = await doClient.agent.get(agentId);
+            }
+          } catch (provisionError) {
+            return res.json({
+              success: false,
+              status: 'provision_failed',
+              endpointReady: false,
+              error: provisionError.message || 'Agent provisioning failed'
+            });
+          }
+        }
+      }
+
+      if (!agent) {
+        return res.json({
+          success: true,
+          status: 'not_started',
+          endpointReady: false,
+          provisionAttempted
+        });
+      }
       const deploymentStatus = agent?.deployment?.status || agent?.deployment_status || agent?.status || 'unknown';
       const endpoint = agent?.deployment?.url ? `${agent.deployment.url}/api/v1` : null;
 
@@ -592,7 +639,8 @@ export default function setupAuthRoutes(app, passkeyService, cloudant, doClient,
         success: true,
         status: deploymentStatus,
         endpointReady: !!endpoint,
-        endpoint
+        endpoint,
+        provisionAttempted
       });
     } catch (error) {
       console.error('Error checking agent setup status:', error);
