@@ -133,9 +133,13 @@
 </template>
 
 <script setup lang="ts">
-import { ref, nextTick } from 'vue';
+import { ref, nextTick, watch } from 'vue';
 import { startRegistration } from '@simplewebauthn/browser';
 import { startAuthentication } from '@simplewebauthn/browser';
+
+const props = defineProps<{
+  prefillUserId?: string | null;
+}>();
 
 const emit = defineEmits(['authenticated', 'cancelled']);
 
@@ -175,6 +179,25 @@ const resetFlow = () => {
   showConfirmWithoutFileDialog.value = false;
   kbName.value = null;
 };
+
+const applyPrefill = async (prefill: string | null | undefined) => {
+  if (!prefill) return;
+  userId.value = prefill;
+  action.value = 'signin';
+  currentStep.value = 'userId';
+  await nextTick();
+  userIdInputRef.value?.focus();
+};
+
+watch(
+  () => props.prefillUserId,
+  (prefill) => {
+    if (prefill) {
+      applyPrefill(prefill);
+    }
+  },
+  { immediate: true }
+);
 
 const handleEnterKey = () => {
   if (userId.value && userId.value.length >= 3 && !loading.value) {

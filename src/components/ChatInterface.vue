@@ -301,15 +301,15 @@
             <p class="text-caption text-negative q-mt-sm" v-if="agentSetupTimedOut">
               Agent setup did not complete in 15 minutes. Please try again later.
             </p>
-            <q-btn
-              v-if="agentSetupTimedOut"
-              flat
-              dense
-              color="negative"
-              label="CLOSE"
-              class="q-mt-xs"
-              @click="dismissWizard"
-            />
+          <q-btn
+            v-if="agentSetupTimedOut"
+            flat
+            dense
+            color="negative"
+            label="CLOSE"
+            class="q-mt-xs"
+            @click="dismissWizard"
+          />
           </div>
 
           <div class="q-mt-md">
@@ -396,6 +396,20 @@
       </q-card>
     </q-dialog>
 
+    <q-dialog v-model="showPrivateUnavailableDialog" persistent>
+      <q-card style="min-width: 520px; max-width: 640px">
+        <q-card-section>
+          <div class="text-h6">Private AI Unavailable</div>
+        </q-card-section>
+        <q-card-section class="text-body2">
+          Your Private AI agent is not available. You may access the public AIs but they will not have any access to your health records knowledge base.
+        </q-card-section>
+        <q-card-actions align="right">
+          <q-btn flat label="OK" color="primary" @click="showPrivateUnavailableDialog = false" />
+        </q-card-actions>
+      </q-card>
+    </q-dialog>
+
     <!-- PDF Viewer Modal -->
     <PdfViewerModal
       v-model="showPdfViewer"
@@ -445,6 +459,7 @@
       @messages-filtered="handleMessagesFiltered"
       @diary-posted="handleDiaryPosted"
       @reference-file-added="handleReferenceFileAdded"
+      @current-medications-saved="handleCurrentMedicationsSaved"
       v-if="canAccessMyStuff"
     />
 
@@ -647,6 +662,7 @@ const step2Active = computed(() => step2Enabled.value && stage1Complete.value &&
 const step3OkActive = computed(() => step3OkEnabled.value && stage1Complete.value);
 const step3NotYetActive = computed(() => step3NotYetEnabled.value && stage1Complete.value);
 const step4Active = computed(() => step4Enabled.value && stage1Complete.value);
+const showPrivateUnavailableDialog = ref(false);
 const wizardStage2Complete = ref(false);
 const wizardStage3Complete = ref(false);
 const wizardStage2Pending = ref(false);
@@ -821,8 +837,7 @@ const providerOptions = computed(() => {
     const label = providerLabels[p] || p.charAt(0).toUpperCase() + p.slice(1);
     return {
       label,
-      value: label,
-      disable: p === 'digitalocean' && !wizardStage1Complete.value
+      value: label
     };
   });
 });
@@ -955,15 +970,10 @@ const loadProviders = async () => {
     providers.value = availableProviders;
     
     if (providers.value.length > 0) {
-      // Set to the first provider's label
-      const firstProvider = providers.value[0];
-      selectedProvider.value = providerLabels[firstProvider] || firstProvider;
-      
-      // If Private AI was filtered out and it was selected, switch to first available
-      if (getProviderKey(selectedProvider.value) === 'digitalocean' && !providers.value.includes('digitalocean')) {
-        selectedProvider.value = providerLabels[providers.value[0]] || providers.value[0];
-      }
-      if (!wizardStage1Complete.value && getProviderKey(selectedProvider.value) === 'digitalocean') {
+      if (providers.value.includes('digitalocean')) {
+        selectedProvider.value = providerLabels.digitalocean;
+      } else {
+        showPrivateUnavailableDialog.value = true;
         selectFirstNonPrivateProvider();
       }
     }
@@ -975,8 +985,10 @@ const loadProviders = async () => {
       fallbackProviders = fallbackProviders.filter(p => p !== 'digitalocean');
     }
     providers.value = fallbackProviders;
-    selectedProvider.value = providerLabels[fallbackProviders[0]] || fallbackProviders[0];
-    if (!wizardStage1Complete.value && getProviderKey(selectedProvider.value) === 'digitalocean') {
+    if (providers.value.includes('digitalocean')) {
+      selectedProvider.value = providerLabels.digitalocean;
+    } else {
+      showPrivateUnavailableDialog.value = true;
       selectFirstNonPrivateProvider();
     }
   }
@@ -999,9 +1011,15 @@ watch(
 );
 
 watch(
-  [() => wizardStage1Complete.value, () => providers.value.length],
-  ([stage1CompleteNow]) => {
-    if (!stage1CompleteNow && getProviderKey(selectedProvider.value) === 'digitalocean') {
+  () => providers.value,
+  (available) => {
+    if (!available.length) return;
+    if (available.includes('digitalocean')) {
+      selectedProvider.value = providerLabels.digitalocean;
+      return;
+    }
+    if (getProviderKey(selectedProvider.value) === 'digitalocean') {
+      showPrivateUnavailableDialog.value = true;
       selectFirstNonPrivateProvider();
     }
   },
@@ -3626,6 +3644,10 @@ const handleReferenceFileAdded = async (file: { fileName: string; bucketKey: str
   } catch (error) {
     console.error('Error adding reference file to chat:', error);
   }
+};
+
+const handleCurrentMedicationsSaved = async () => {
+  await refreshWizardState();
 };
 
 // Parse contextual tip to extract clickable links

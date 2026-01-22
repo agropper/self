@@ -53,8 +53,21 @@
                     color="primary"
                     size="lg"
                     class="full-width q-mb-lg"
-                    @click="showAuth = true"
+                    :loading="tempStartLoading"
+                    @click="startTemporarySession"
                   />
+                  <div v-if="tempStartError" class="text-negative text-center q-mb-md">
+                    {{ tempStartError }}
+                  </div>
+                  <div class="text-center q-mb-lg">
+                    <q-btn
+                      flat
+                      dense
+                      color="primary"
+                      label="Use Passkey Instead"
+                      @click="() => { passkeyPrefillUserId = null; showAuth = true; }"
+                    />
+                  </div>
 
                   <!-- Video and Caption Section - at bottom, side by side -->
                   <div class="row q-col-gutter-md q-mt-lg">
@@ -98,6 +111,7 @@
 
                 <PasskeyAuth
                   v-if="showAuth"
+                  :prefill-user-id="passkeyPrefillUserId"
                   @authenticated="handleAuthenticated"
                   @cancelled="showAuth = false"
                 />
@@ -123,6 +137,51 @@
     
     <!-- Privacy Dialog -->
     <PrivacyDialog v-model="showPrivacyDialog" />
+
+    <!-- Temporary account sign-out confirmation -->
+    <q-dialog v-model="showTempSignOutDialog" persistent>
+      <q-card style="min-width: 520px; max-width: 640px">
+        <q-card-section>
+          <div class="text-h6">Delete Temporary Account?</div>
+        </q-card-section>
+        <q-card-section class="text-body2">
+          <p>
+            If you sign out, your temporary account as <strong>{{ user?.userId }}</strong> will be deleted and you will need to import any files in your health record when you return under some other pseudonym. Your deep links will no longer respond.
+          </p>
+          <p class="q-mt-md">
+            Click <strong>CANCEL</strong> to return to MAIA and download any Saved Chats you want to keep.
+            Click <strong>DELETE MY MAIA</strong> to destroy this account.
+          </p>
+        </q-card-section>
+        <q-card-actions align="right">
+          <q-btn flat label="CANCEL" color="primary" @click="showTempSignOutDialog = false" />
+          <q-btn flat label="DELETE MY MAIA" color="negative" @click="openDestroyDialog" />
+        </q-card-actions>
+      </q-card>
+    </q-dialog>
+
+    <!-- Confirm destroy dialog -->
+    <q-dialog v-model="showDestroyDialog" persistent>
+      <q-card style="min-width: 520px; max-width: 640px">
+        <q-card-section>
+          <div class="text-h6">Destroy Temporary Account</div>
+        </q-card-section>
+        <q-card-section class="text-body2">
+          <p>Type <strong>{{ user?.userId }}</strong> to confirm deletion.</p>
+          <q-input v-model="destroyConfirm" outlined dense />
+        </q-card-section>
+        <q-card-actions align="right">
+          <q-btn flat label="CANCEL" color="primary" @click="showDestroyDialog = false" />
+          <q-btn
+            label="DESTROY"
+            color="negative"
+            :disable="destroyConfirm !== user?.userId"
+            :loading="destroyLoading"
+            @click="destroyTemporaryAccount"
+          />
+        </q-card-actions>
+      </q-card>
+    </q-dialog>
   </q-layout>
 </template>
 
@@ -154,6 +213,7 @@ interface User {
   userId: string;
   displayName: string;
   isDeepLink?: boolean;
+  isTemporary?: boolean;
   deepLinkInfo?: DeepLinkInfo | null;
 }
 
@@ -176,6 +236,13 @@ const deepLinkError = ref('');
 const showPrivacyDialog = ref(false);
 const showAdminPage = ref(false);
 const welcomeCaption = ref<string>('');
+const tempStartLoading = ref(false);
+const tempStartError = ref('');
+const showTempSignOutDialog = ref(false);
+const showDestroyDialog = ref(false);
+const destroyConfirm = ref('');
+const destroyLoading = ref(false);
+const passkeyPrefillUserId = ref<string | null>(null);
 
 const setAuthenticatedUser = (userData: any, deepLink: DeepLinkInfo | null = null) => {
   if (!userData) return;
@@ -183,6 +250,7 @@ const setAuthenticatedUser = (userData: any, deepLink: DeepLinkInfo | null = nul
     userId: userData.userId,
     displayName: userData.displayName || userData.userId,
     isDeepLink: !!userData.isDeepLink,
+    isTemporary: !!userData.isTemporary,
     deepLinkInfo: userData.deepLinkInfo || null
   };
 
@@ -263,6 +331,7 @@ const resetAuthState = () => {
   isDeepLinkUser.value = false;
   deepLinkInfo.value = null;
   showAuth.value = false;
+  passkeyPrefillUserId.value = null;
   showDeepLinkAccess.value = !!deepLinkShareId.value;
 
   if (typeof document !== 'undefined') {
@@ -303,6 +372,10 @@ const checkDeepLinkSession = async (shareId: string) => {
 };
 
 const handleSignOut = async () => {
+  if (user.value?.isTemporary) {
+    showTempSignOutDialog.value = true;
+    return;
+  }
   try {
     const response = await fetch('/api/sign-out', {
       method: 'POST',
@@ -317,6 +390,68 @@ const handleSignOut = async () => {
     }
   } catch (error) {
     console.error('Sign out error:', error);
+  }
+};
+
+const startTemporarySession = async () => {
+  tempStartLoading.value = true;
+  tempStartError.value = '';
+  try {
+    const response = await fetch('/api/temporary/start', {
+      method: 'POST',
+      credentials: 'include'
+    });
+    const data = await response.json();
+    if (!response.ok) {
+      throw new Error(data.error || 'Unable to create temporary account');
+    }
+    if (data.requiresPasskey && data.user) {
+      tempStartError.value = `A passkey already exists for ${data.user.userId}. Please use Passkey instead.`;
+      passkeyPrefillUserId.value = data.user.userId;
+      showAuth.value = true;
+      return;
+    }
+    if (!data.authenticated || !data.user) {
+      throw new Error(data.error || 'Unable to create temporary account');
+    }
+    setAuthenticatedUser(data.user, null);
+  } catch (error) {
+    tempStartError.value = error instanceof Error ? error.message : 'Unable to create temporary account';
+  } finally {
+    tempStartLoading.value = false;
+  }
+};
+
+const openDestroyDialog = () => {
+  showTempSignOutDialog.value = false;
+  destroyConfirm.value = '';
+  showDestroyDialog.value = true;
+};
+
+const destroyTemporaryAccount = async () => {
+  if (!user.value?.userId || destroyConfirm.value !== user.value.userId) {
+    return;
+  }
+  destroyLoading.value = true;
+  try {
+    const response = await fetch('/api/temporary/delete', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      credentials: 'include',
+      body: JSON.stringify({ userId: user.value.userId })
+    });
+    if (!response.ok) {
+      const data = await response.json().catch(() => ({}));
+      throw new Error(data.error || 'Failed to delete temporary account');
+    }
+    resetAuthState();
+    showDestroyDialog.value = false;
+  } catch (error) {
+    console.error('Temporary account deletion error:', error);
+  } finally {
+    destroyLoading.value = false;
   }
 };
 

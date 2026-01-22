@@ -493,6 +493,7 @@ const props = defineProps<Props>();
 const emit = defineEmits<{
   'back-to-chat': [];
   'show-patient-summary': [];
+  'current-medications-saved': [data: { value: string; edited: boolean }];
 }>();
 
 
@@ -2449,6 +2450,8 @@ const saveCurrentMedicationsValue = async (value: string, markEdited: boolean, c
     if (clearVerify) {
       clearVerifyRequirement();
     }
+
+    emit('current-medications-saved', { value, edited: markEdited });
     
     // Show dialog about Patient Summary update only after Stage 3 is complete
     if (stage3Complete.value) {

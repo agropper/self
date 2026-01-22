@@ -421,6 +421,7 @@
               :userId="userId"
               @back-to-chat="closeDialog"
               @show-patient-summary="handleShowPatientSummary"
+              @current-medications-saved="handleCurrentMedicationsSaved"
             />
           </q-tab-panel>
 
@@ -1007,6 +1008,7 @@ const emit = defineEmits<{
   'messages-filtered': [messages: Message[]]; // Emit filtered messages with pseudonyms
   'diary-posted': [content: string]; // Emit diary content to add to chat
   'reference-file-added': [file: { fileName: string; bucketKey: string; fileSize: number; uploadedAt: string; fileType?: string; fileUrl?: string; isReference: boolean }]; // Emit reference file to add to chat
+  'current-medications-saved': [data: { value: string; edited: boolean }];
 }>();
 
 // Handle show patient summary from Lists component
@@ -1019,6 +1021,10 @@ const handleShowPatientSummary = async () => {
   setTimeout(() => {
     requestNewSummary();
   }, 300);
+};
+
+const handleCurrentMedicationsSaved = (payload: { value: string; edited: boolean }) => {
+  emit('current-medications-saved', payload);
 };
 
 const isOpen = ref(props.modelValue);

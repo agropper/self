@@ -144,6 +144,54 @@ function getSetupWizardMessages() {
 }
 
 const agentStatusCache = new Map();
+const TEMP_USER_COOKIE = 'maia_temp_user';
+const TEMP_USER_COOKIE_MAX_AGE = 1000 * 60 * 60 * 24 * 90;
+let cachedTempUserNames = null;
+let tempUserNamesLoadFailed = false;
+
+function getTempUserFirstNames() {
+  try {
+    if (cachedTempUserNames) {
+      return cachedTempUserNames;
+    }
+    const newAgentFilePath = path.join(__dirname, '../..', 'NEW-AGENT.txt');
+    const fileContent = readFileSync(newAgentFilePath, 'utf-8');
+    const marker = '## Random Names';
+    const startIndex = fileContent.indexOf(marker);
+    if (startIndex === -1) {
+      return [];
+    }
+    const lines = fileContent.slice(startIndex + marker.length).split('\n');
+    const names = [];
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+      if (trimmed.startsWith('## ')) break;
+      const firstName = trimmed.split(/\s+/)[0];
+      if (firstName) names.push(firstName);
+    }
+    cachedTempUserNames = names;
+    return cachedTempUserNames;
+  } catch (error) {
+    if (!tempUserNamesLoadFailed) {
+      console.warn('Unable to read temp user names:', error.message);
+      tempUserNamesLoadFailed = true;
+    }
+    return [];
+  }
+}
+
+function pickRandomTempName() {
+  const names = getTempUserFirstNames();
+  if (!names.length) return 'Guest';
+  const idx = Math.floor(Math.random() * names.length);
+  return names[idx];
+}
+
+function formatTempUserId(name, suffix) {
+  const base = name.toLowerCase().replace(/[^a-z]/g, '') || 'user';
+  return `${base}${suffix}`;
+}
 
 async function ensureUserAgent(doClient, cloudant, userDoc) {
   if (!userDoc) return userDoc;
@@ -191,7 +239,29 @@ async function ensureUserAgent(doClient, cloudant, userDoc) {
   userDoc.agentSetupInProgress = !endpoint;
   userDoc.updatedAt = new Date().toISOString();
 
-  await cloudant.saveDocument('maia_users', userDoc);
+  // Save with conflict retry
+  let saved = false;
+  let retries = 3;
+  while (!saved && retries > 0) {
+    try {
+      await cloudant.saveDocument('maia_users', userDoc);
+      saved = true;
+    } catch (error) {
+      if ((error.statusCode === 409 || error.error === 'conflict') && retries > 1) {
+        retries -= 1;
+        userDoc = await cloudant.getDocument('maia_users', userId);
+        userDoc.assignedAgentId = resolvedAgent.uuid || resolvedAgent.id;
+        userDoc.assignedAgentName = resolvedAgent.name || userDoc.assignedAgentName;
+        userDoc.agentEndpoint = endpoint || userDoc.agentEndpoint || null;
+        userDoc.agentModelName = resolvedAgent.model?.inference_name || resolvedAgent.model?.name || userDoc.agentModelName || null;
+        userDoc.workflowStage = endpoint ? 'agent_deployed' : 'agent_named';
+        userDoc.agentSetupInProgress = !endpoint;
+        userDoc.updatedAt = new Date().toISOString();
+      } else {
+        throw error;
+      }
+    }
+  }
   return userDoc;
 }
 
@@ -492,6 +562,7 @@ export default function setupAuthRoutes(app, passkeyService, cloudant, doClient,
       }
       try {
         res.clearCookie('maia_deep_link_user');
+        res.clearCookie(TEMP_USER_COOKIE);
       } catch (cookieError) {
         console.warn('Unable to clear deep-link cookie on sign-out:', cookieError);
       }
@@ -510,6 +581,121 @@ export default function setupAuthRoutes(app, passkeyService, cloudant, doClient,
     });
   });
 
+  // Temporary user start (cookie-backed)
+  app.post('/api/temporary/start', async (req, res) => {
+    try {
+      const cookieUserId = req.cookies?.[TEMP_USER_COOKIE];
+      if (cookieUserId) {
+        try {
+          const existingUser = await cloudant.getDocument('maia_users', cookieUserId);
+          if (existingUser?.credentialID) {
+            return res.json({
+              authenticated: false,
+              requiresPasskey: true,
+              user: {
+                userId: existingUser.userId,
+                displayName: existingUser.displayName || existingUser.userId
+              }
+            });
+          }
+          if (existingUser?.temporaryAccount) {
+            req.session.userId = existingUser.userId;
+            req.session.username = existingUser.userId;
+            req.session.displayName = existingUser.displayName || existingUser.userId;
+            req.session.isTemporary = true;
+            req.session.authenticatedAt = new Date().toISOString();
+            req.session.expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
+            res.cookie(TEMP_USER_COOKIE, existingUser.userId, {
+              maxAge: TEMP_USER_COOKIE_MAX_AGE,
+              httpOnly: true,
+              sameSite: 'lax'
+            });
+            return res.json({
+              authenticated: true,
+              user: {
+                userId: existingUser.userId,
+                displayName: existingUser.displayName || existingUser.userId,
+                isTemporary: true
+              }
+            });
+          }
+        } catch (error) {
+          // Ignore and create a fresh temp user
+        }
+      }
+
+      let userId = null;
+      let displayName = null;
+      let userDoc = null;
+      let attempts = 0;
+      while (!userId && attempts < 30) {
+        attempts += 1;
+        const name = pickRandomTempName();
+        const suffix = String(Math.floor(Math.random() * 100)).padStart(2, '0');
+        const candidateId = formatTempUserId(name, suffix);
+        const candidateDisplayName = `${name}${suffix}`;
+        const candidateDoc = {
+          _id: candidateId,
+          userId: candidateId,
+          displayName: candidateDisplayName,
+          email: null,
+          domain: passkeyService.rpID,
+          type: 'user',
+          workflowStage: 'active',
+          temporaryAccount: true,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString()
+        };
+        try {
+          await cloudant.saveDocument('maia_users', candidateDoc);
+          userId = candidateId;
+          displayName = candidateDisplayName;
+          userDoc = candidateDoc;
+        } catch (error) {
+          if (error.statusCode === 409 || error.error === 'conflict') {
+            continue;
+          }
+          throw error;
+        }
+      }
+
+      if (!userId || !userDoc) {
+        return res.status(500).json({
+          authenticated: false,
+          error: 'Unable to create temporary user'
+        });
+      }
+
+      req.session.userId = userId;
+      req.session.username = userId;
+      req.session.displayName = displayName;
+      req.session.isTemporary = true;
+      req.session.authenticatedAt = new Date().toISOString();
+      req.session.expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
+
+      res.cookie(TEMP_USER_COOKIE, userId, {
+        maxAge: TEMP_USER_COOKIE_MAX_AGE,
+        httpOnly: true,
+        sameSite: 'lax'
+      });
+
+      return res.json({
+        authenticated: true,
+        user: {
+          userId,
+          displayName,
+          isTemporary: true
+        }
+      });
+    } catch (error) {
+      console.error('Temporary user start error:', error);
+      return res.status(500).json({
+        authenticated: false,
+        error: error.message || 'Failed to create temporary user'
+      });
+    }
+  });
+
   // Current user
   app.get('/api/current-user', (req, res) => {
     if (!req.session || !req.session.userId) {
@@ -522,6 +708,7 @@ export default function setupAuthRoutes(app, passkeyService, cloudant, doClient,
         userId: req.session.userId,
         username: req.session.username,
         displayName: req.session.displayName,
+        isTemporary: !!req.session.isTemporary,
         isDeepLink: !!req.session.isDeepLink,
         deepLinkInfo: req.session.isDeepLink ? {
           shareIds: Array.isArray(req.session.deepLinkShareIds)
@@ -571,6 +758,7 @@ export default function setupAuthRoutes(app, passkeyService, cloudant, doClient,
           provisionAttempted = true;
           agentId = userDoc.assignedAgentId;
         } catch (error) {
+          console.error(`[AGENT] Provisioning failed for ${userId}:`, error.message);
           return res.json({
             success: false,
             status: 'provision_failed',
@@ -592,6 +780,7 @@ export default function setupAuthRoutes(app, passkeyService, cloudant, doClient,
               agent = await doClient.agent.get(agentId);
             }
           } catch (provisionError) {
+            console.error(`[AGENT] Provisioning retry failed for ${userId}:`, provisionError.message);
             return res.json({
               success: false,
               status: 'provision_failed',
@@ -643,7 +832,7 @@ export default function setupAuthRoutes(app, passkeyService, cloudant, doClient,
         provisionAttempted
       });
     } catch (error) {
-      console.error('Error checking agent setup status:', error);
+      console.error(`[AGENT] Status check failed for ${req.session?.userId || 'unknown'}:`, error.message || error);
       res.status(500).json({
         success: false,
         error: error.message || 'Failed to check agent status'
