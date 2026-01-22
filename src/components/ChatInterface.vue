@@ -274,7 +274,9 @@
               </span>
             </div>
             <div class="col-auto" style="display: flex; align-items: center; justify-content: flex-end; gap: 8px;">
-              <span class="text-body2 text-grey-7">User: {{ props.user?.userId || 'Guest' }}</span>
+              <span class="text-body2 text-grey-7">
+                {{ props.user?.isTemporary ? 'Local only user:' : 'User:' }} {{ props.user?.userId || 'Guest' }}
+              </span>
               <q-btn flat dense label="SIGN OUT" color="grey-8" @click="handleSignOut" />
             </div>
           </div>

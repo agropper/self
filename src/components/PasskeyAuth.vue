@@ -25,6 +25,8 @@
         v-model="userId"
         label="User ID"
         outlined
+        :readonly="!!props.prefillUserId"
+        :disable="!!props.prefillUserId"
         :rules="[
           (val) => !!val || 'User ID is required',
           (val) => val.length >= 3 || 'User ID must be at least 3 characters',
@@ -60,7 +62,7 @@
           {{ currentStep === 'registering' ? 'Please complete passkey registration...' : 'Please complete passkey authentication...' }}
         </p>
       </div>
-      <q-btn label="Cancel" flat @click="resetFlow" />
+      <q-btn label="Cancel" flat @click="cancelFlow" />
     </div>
 
 
@@ -139,6 +141,7 @@ import { startAuthentication } from '@simplewebauthn/browser';
 
 const props = defineProps<{
   prefillUserId?: string | null;
+  prefillAction?: 'signin' | 'register' | null;
 }>();
 
 const emit = defineEmits(['authenticated', 'cancelled']);
@@ -180,13 +183,21 @@ const resetFlow = () => {
   kbName.value = null;
 };
 
+const cancelFlow = () => {
+  resetFlow();
+  emit('cancelled');
+};
+
 const applyPrefill = async (prefill: string | null | undefined) => {
   if (!prefill) return;
   userId.value = prefill;
-  action.value = 'signin';
+  action.value = props.prefillAction === 'register' ? 'register' : 'signin';
   currentStep.value = 'userId';
   await nextTick();
   userIdInputRef.value?.focus();
+  if (props.prefillAction === 'register') {
+    continueAction();
+  }
 };
 
 watch(
@@ -240,54 +251,63 @@ const continueAction = async () => {
 
 const handleRegistration = async () => {
   currentStep.value = 'registering';
+  try {
+    // Step 1: Get registration options
+    const optionsResponse = await fetch('/api/passkey/register', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify({
+        userId: userId.value,
+        displayName: userId.value,
+        email: null
+      })
+    });
 
-  // Step 1: Get registration options
-  const optionsResponse = await fetch('/api/passkey/register', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    credentials: 'include',
-    body: JSON.stringify({
-      userId: userId.value,
-      displayName: userId.value,
-      email: null
-    })
-  });
-
-  if (!optionsResponse.ok) {
-    const errorData = await optionsResponse.json();
-    throw new Error(errorData.error || 'Failed to start registration');
-  }
-
-  const options = await optionsResponse.json();
-
-  // Step 2: Create passkey
-  const credential = await startRegistration({ optionsJSON: options });
-
-  // Step 3: Verify registration
-  const verifyResponse = await fetch('/api/passkey/register-verify', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    credentials: 'include',
-    body: JSON.stringify({
-      userId: userId.value,
-      response: credential
-    })
-  });
-
-  const result = await verifyResponse.json();
-
-  if (result.success) {
-    // If showFileImport flag is set, show file import dialog instead of immediately authenticating
-    if (result.showFileImport && result.kbName) {
-      console.log('[NEW FLOW 2] Showing file import dialog');
-      kbName.value = result.kbName;
-      showFileImportDialog.value = true;
-      // Don't emit authenticated yet - wait for file upload or user to proceed
-    } else {
-      emit('authenticated', result.user);
+    if (!optionsResponse.ok) {
+      const errorData = await optionsResponse.json();
+      throw new Error(errorData.error || 'Failed to start registration');
     }
-  } else {
-    throw new Error(result.error || 'Registration verification failed');
+
+    const options = await optionsResponse.json();
+
+    // Step 2: Create passkey
+    const credential = await startRegistration({ optionsJSON: options });
+
+    // Step 3: Verify registration
+    const verifyResponse = await fetch('/api/passkey/register-verify', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify({
+        userId: userId.value,
+        response: credential
+      })
+    });
+
+    if (!verifyResponse.ok) {
+      const errorData = await verifyResponse.json().catch(() => ({}));
+      throw new Error(errorData.error || 'Registration verification failed');
+    }
+
+    const result = await verifyResponse.json();
+
+    if (result.success) {
+      // If showFileImport flag is set, show file import dialog instead of immediately authenticating
+      if (result.showFileImport && result.kbName) {
+        console.log('[NEW FLOW 2] Showing file import dialog');
+        kbName.value = result.kbName;
+        showFileImportDialog.value = true;
+        // Don't emit authenticated yet - wait for file upload or user to proceed
+      } else {
+        emit('authenticated', result.user);
+      }
+    } else {
+      throw new Error(result.error || 'Registration verification failed');
+    }
+  } catch (err: any) {
+    currentStep.value = 'userId';
+    throw err;
   }
 };
 
@@ -405,44 +425,53 @@ const sendRequestWithoutFile = async () => {
 
 const handleSignIn = async () => {
   currentStep.value = 'authenticating';
+  try {
+    // Step 1: Get authentication options
+    const optionsResponse = await fetch('/api/passkey/authenticate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify({
+        userId: userId.value
+      })
+    });
 
-  // Step 1: Get authentication options
-  const optionsResponse = await fetch('/api/passkey/authenticate', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    credentials: 'include',
-    body: JSON.stringify({
-      userId: userId.value
-    })
-  });
+    if (!optionsResponse.ok) {
+      const errorData = await optionsResponse.json();
+      throw new Error(errorData.error || 'Failed to start authentication');
+    }
 
-  if (!optionsResponse.ok) {
-    const errorData = await optionsResponse.json();
-    throw new Error(errorData.error || 'Failed to start authentication');
-  }
+    const options = await optionsResponse.json();
 
-  const options = await optionsResponse.json();
+    // Step 2: Authenticate with passkey
+    const assertion = await startAuthentication({ optionsJSON: options });
 
-  // Step 2: Authenticate with passkey
-  const assertion = await startAuthentication({ optionsJSON: options });
+    // Step 3: Verify authentication
+    const verifyResponse = await fetch('/api/passkey/authenticate-verify', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify({
+        userId: userId.value,
+        response: assertion
+      })
+    });
 
-  // Step 3: Verify authentication
-  const verifyResponse = await fetch('/api/passkey/authenticate-verify', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    credentials: 'include',
-    body: JSON.stringify({
-      userId: userId.value,
-      response: assertion
-    })
-  });
+    if (!verifyResponse.ok) {
+      const errorData = await verifyResponse.json().catch(() => ({}));
+      throw new Error(errorData.error || 'Authentication verification failed');
+    }
 
-  const result = await verifyResponse.json();
+    const result = await verifyResponse.json();
 
-  if (result.success) {
-    emit('authenticated', result.user);
-  } else {
-    throw new Error(result.error || 'Authentication verification failed');
+    if (result.success) {
+      emit('authenticated', result.user);
+    } else {
+      throw new Error(result.error || 'Authentication verification failed');
+    }
+  } catch (err: any) {
+    currentStep.value = 'userId';
+    throw err;
   }
 };
 </script>

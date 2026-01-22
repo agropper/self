@@ -31,6 +31,12 @@
         </q-td>
       </template>
 
+  <template v-slot:body-cell-hasPasskey="props">
+    <q-td :props="props">
+      <q-badge :color="props.value ? 'green' : 'grey'" :label="props.value ? 'Yes' : 'No'" />
+    </q-td>
+  </template>
+
       <template v-slot:body-cell-provisionedDate="props">
         <q-td :props="props">
           {{ formatDate(props.value) }}
@@ -101,6 +107,7 @@ interface User {
   filesIndexed: number;
   savedChatsCount: number;
   deepLinkUsersCount: number;
+  hasPasskey: boolean;
 }
 
 interface PasskeyConfig {
@@ -137,6 +144,13 @@ const columns = [
     label: 'Workflow Stage',
     align: 'left' as const,
     field: 'workflowStage',
+    sortable: true
+  },
+  {
+    name: 'hasPasskey',
+    label: 'Passkey',
+    align: 'center' as const,
+    field: 'hasPasskey',
     sortable: true
   },
   {

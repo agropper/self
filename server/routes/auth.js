@@ -375,6 +375,7 @@ export default function setupAuthRoutes(app, passkeyService, cloudant, doClient,
       console.log(`[NEW FLOW 2] Passkey verified; minimal user setup for ${updatedUser.userId}`);
       updatedUser.workflowStage = 'active';
       updatedUser.initialFile = null;
+      updatedUser.temporaryAccount = false;
       
       const agentReadyUser = await ensureUserAgent(doClient, cloudant, updatedUser);
       console.log(`[NEW FLOW 2] ✅ User document saved (agent ready)`);
@@ -383,6 +384,7 @@ export default function setupAuthRoutes(app, passkeyService, cloudant, doClient,
       req.session.userId = agentReadyUser.userId;
       req.session.username = agentReadyUser.userId;
       req.session.displayName = agentReadyUser.displayName;
+      req.session.isTemporary = false;
       req.session.authenticatedAt = new Date().toISOString();
       req.session.expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
 
@@ -404,7 +406,8 @@ export default function setupAuthRoutes(app, passkeyService, cloudant, doClient,
         success: true, 
         user: {
           userId: agentReadyUser.userId,
-          displayName: agentReadyUser.displayName
+          displayName: agentReadyUser.displayName,
+          isTemporary: false
         },
         showFileImport: false
       });
@@ -527,6 +530,7 @@ export default function setupAuthRoutes(app, passkeyService, cloudant, doClient,
       req.session.userId = agentReadyUser.userId;
       req.session.username = agentReadyUser.userId;
       req.session.displayName = agentReadyUser.displayName;
+      req.session.isTemporary = !!agentReadyUser.temporaryAccount;
       req.session.authenticatedAt = new Date().toISOString();
       req.session.expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
 
@@ -542,7 +546,8 @@ export default function setupAuthRoutes(app, passkeyService, cloudant, doClient,
         success: true, 
         user: {
           userId: agentReadyUser.userId,
-          displayName: agentReadyUser.displayName
+          displayName: agentReadyUser.displayName,
+          isTemporary: !!agentReadyUser.temporaryAccount
         }
       });
     } catch (error) {

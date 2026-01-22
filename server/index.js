@@ -8510,7 +8510,8 @@ app.get('/api/admin/users', async (req, res) => {
         totalStorageMB: totalStorageMB,
         filesIndexed: filesIndexed,
         savedChatsCount: savedChatsCount,
-        deepLinkUsersCount: deepLinkUsersCount
+        deepLinkUsersCount: deepLinkUsersCount,
+        hasPasskey: !!userDoc.credentialID
       };
     }));
     

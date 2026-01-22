@@ -65,7 +65,7 @@
                       dense
                       color="primary"
                       label="Use Passkey Instead"
-                      @click="() => { passkeyPrefillUserId = null; showAuth = true; }"
+                      @click="() => { passkeyPrefillUserId = null; passkeyPrefillAction = null; showAuth = true; }"
                     />
                   </div>
 
@@ -112,6 +112,7 @@
                 <PasskeyAuth
                   v-if="showAuth"
                   :prefill-user-id="passkeyPrefillUserId"
+                  :prefill-action="passkeyPrefillAction"
                   @authenticated="handleAuthenticated"
                   @cancelled="showAuth = false"
                 />
@@ -138,6 +139,23 @@
     <!-- Privacy Dialog -->
     <PrivacyDialog v-model="showPrivacyDialog" />
 
+    <!-- Passkey dialog for authenticated users -->
+    <q-dialog v-model="showPasskeyDialog" persistent>
+      <q-card style="min-width: 420px; max-width: 520px">
+        <q-card-section>
+          <div class="text-h6 text-center q-mb-md">Add a Passkey</div>
+        </q-card-section>
+        <q-card-section>
+          <PasskeyAuth
+            :prefill-user-id="passkeyPrefillUserId"
+            :prefill-action="passkeyPrefillAction"
+            @authenticated="handlePasskeyAuthenticated"
+            @cancelled="showPasskeyDialog = false"
+          />
+        </q-card-section>
+      </q-card>
+    </q-dialog>
+
     <!-- Temporary account sign-out confirmation -->
     <q-dialog v-model="showTempSignOutDialog" persistent>
       <q-card style="min-width: 520px; max-width: 640px">
@@ -152,6 +170,18 @@
             Click <strong>CANCEL</strong> to return to MAIA and download any Saved Chats you want to keep.
             Click <strong>DELETE MY MAIA</strong> to destroy this account.
           </p>
+          <div class="q-mt-md q-pa-md" style="border: 1px solid #e0e0e0; border-radius: 4px;">
+            <strong>Note:</strong> You can add a passkey to your account instead of destroying it. You will then be able to sign-out the usual way and sign-in from other computers.
+            <div class="q-mt-sm">
+              <q-btn
+                flat
+                dense
+                color="primary"
+                label="CREATE A PASSKEY"
+                @click="startPasskeyRegistration"
+              />
+            </div>
+          </div>
         </q-card-section>
         <q-card-actions align="right">
           <q-btn flat label="CANCEL" color="primary" @click="showTempSignOutDialog = false" />
@@ -243,6 +273,8 @@ const showDestroyDialog = ref(false);
 const destroyConfirm = ref('');
 const destroyLoading = ref(false);
 const passkeyPrefillUserId = ref<string | null>(null);
+const passkeyPrefillAction = ref<'signin' | 'register' | null>(null);
+const showPasskeyDialog = ref(false);
 
 const setAuthenticatedUser = (userData: any, deepLink: DeepLinkInfo | null = null) => {
   if (!userData) return;
@@ -325,6 +357,11 @@ const handleDeepLinkAuthenticated = (payload: { user: User; deepLinkInfo: DeepLi
   deepLinkError.value = '';
 };
 
+const handlePasskeyAuthenticated = (userData: any) => {
+  showPasskeyDialog.value = false;
+  handleAuthenticated(userData);
+};
+
 const resetAuthState = () => {
   authenticated.value = false;
   user.value = null;
@@ -332,6 +369,8 @@ const resetAuthState = () => {
   deepLinkInfo.value = null;
   showAuth.value = false;
   passkeyPrefillUserId.value = null;
+  passkeyPrefillAction.value = null;
+  showPasskeyDialog.value = false;
   showDeepLinkAccess.value = !!deepLinkShareId.value;
 
   if (typeof document !== 'undefined') {
@@ -408,6 +447,7 @@ const startTemporarySession = async () => {
     if (data.requiresPasskey && data.user) {
       tempStartError.value = `A passkey already exists for ${data.user.userId}. Please use Passkey instead.`;
       passkeyPrefillUserId.value = data.user.userId;
+      passkeyPrefillAction.value = 'signin';
       showAuth.value = true;
       return;
     }
@@ -426,6 +466,27 @@ const openDestroyDialog = () => {
   showTempSignOutDialog.value = false;
   destroyConfirm.value = '';
   showDestroyDialog.value = true;
+};
+
+const startPasskeyRegistration = async () => {
+  if (!user.value?.userId) return;
+  passkeyPrefillUserId.value = user.value.userId;
+  passkeyPrefillAction.value = 'register';
+  try {
+    const checkResponse = await fetch(`/api/passkey/check-user?userId=${encodeURIComponent(user.value.userId)}`, {
+      credentials: 'include'
+    });
+    if (checkResponse.ok) {
+      const checkData = await checkResponse.json();
+      if (checkData.exists && checkData.hasPasskey) {
+        passkeyPrefillAction.value = 'signin';
+      }
+    }
+  } catch (error) {
+    // If check fails, default to registration
+  }
+  showTempSignOutDialog.value = false;
+  showPasskeyDialog.value = true;
 };
 
 const destroyTemporaryAccount = async () => {
