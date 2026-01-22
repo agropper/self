@@ -52,9 +52,10 @@
                   <q-item-section avatar>
                     <div class="row items-center q-gutter-xs">
                       <q-checkbox
-                        v-model="file.inKnowledgeBase"
-                        @update:model-value="onCheckboxChange(file)"
+                        :model-value="file.inKnowledgeBase"
+                        @click.stop="toggleKbCheckbox(file)"
                         :disable="updatingFiles.has(file.bucketKey) || indexingKB"
+                        :color="file.pendingKbAdd ? 'grey-6' : 'primary'"
                       />
                       <q-spinner
                         v-if="updatingFiles.has(file.bucketKey)"
@@ -79,9 +80,18 @@
                   </q-item-section>
                   <q-item-section side>
                     <div class="row items-center q-gutter-xs">
+                      <!-- Pending from wizard - show gray "To be added and indexed" -->
+                      <q-chip
+                        v-if="file.pendingKbAdd"
+                        color="grey-4"
+                        text-color="grey-8"
+                        size="sm"
+                      >
+                        To be added and indexed
+                      </q-chip>
                       <!-- Not in KB - show amber "Add to Knowledge Base" -->
                       <q-chip
-                        v-if="!file.inKnowledgeBase"
+                        v-else-if="!file.inKnowledgeBase"
                         color="amber"
                         text-color="white"
                         size="sm"
@@ -90,7 +100,7 @@
                       >
                         Add to Knowledge Base
                       </q-chip>
-                      <!-- In KB but not indexed - show warning "Needs Indexing" -->
+                      <!-- In KB but not indexed - show warning "To be added and indexed" -->
                       <q-chip
                         v-else-if="file.inKnowledgeBase && !isFileIndexed(file.bucketKey)"
                         color="orange"
@@ -99,7 +109,7 @@
                         clickable
                         @click="file.inKnowledgeBase = false; onCheckboxChange(file)"
                       >
-                        Needs Indexing
+                        To be added and indexed
                       </q-chip>
                       <!-- In KB and indexed - show primary "Indexed in Knowledge Base" -->
                       <q-chip
@@ -133,11 +143,11 @@
                 Your Private AI current knowledge base has a total {{ formatNumber(kbSummaryTokens) }} tokens from {{ formatNumber(kbSummaryFiles) }} files.
               </div>
               
-              <div v-if="kbNeedsUpdate || hasCheckboxChanges || kbIndexingOutOfSync" class="q-mt-md q-pt-md" style="border-top: 1px solid #e0e0e0;">
-                <div v-if="kbNeedsUpdate || hasCheckboxChanges" class="q-mb-md text-body2 text-amber-9">
+              <div v-if="kbNeedsUpdate || hasCheckboxChanges || kbIndexingOutOfSync || hasPendingKbAdds" class="q-mt-md q-pt-md" style="border-top: 1px solid #e0e0e0;">
+                <div v-if="kbNeedsUpdate || hasCheckboxChanges || hasPendingKbAdds" class="q-mb-md text-body2 text-amber-9">
                   You have changed the files to be indexed into your knowledge base. Click "Update and Index KB" when ready.
                 </div>
-                <div v-else-if="kbIndexingOutOfSync && !hasCheckboxChanges" class="q-mb-md text-body2 text-amber-9">
+                <div v-else-if="kbIndexingOutOfSync && !hasCheckboxChanges && !hasPendingKbAdds" class="q-mb-md text-body2 text-amber-9">
                   You have changed the files to be indexed into your knowledge base. Click to index when ready.
                 </div>
                 <div class="row q-gutter-sm">
@@ -945,6 +955,7 @@ interface UserFile {
   fileSize: number;
   uploadedAt: string;
   inKnowledgeBase: boolean;
+  pendingKbAdd?: boolean;
   knowledgeBases?: string[];
   fileType?: string;
 }
@@ -1092,9 +1103,11 @@ const hasCheckboxChanges = computed(() => {
   if (originalFiles.value.length !== userFiles.value.length) return true;
   return userFiles.value.some((file, index) => {
     const original = originalFiles.value[index];
-    return !original || file.inKnowledgeBase !== original.inKnowledgeBase;
+    return !original || file.inKnowledgeBase !== original.inKnowledgeBase || !!file.pendingKbAdd;
   });
 });
+
+const hasPendingKbAdds = computed(() => userFiles.value.some(file => !!file.pendingKbAdd));
 
 // Mark KB as dirty when files are moved
 watch(hasCheckboxChanges, (hasChanges) => {
@@ -1242,10 +1255,31 @@ const loadFiles = async () => {
         : false;
       return {
         ...file,
-        inKnowledgeBase: isInKB
+        inKnowledgeBase: isInKB,
+        pendingKbAdd: false
       };
     });
     originalFiles.value = JSON.parse(JSON.stringify(userFiles.value));
+
+    let pendingFileName: string | null = null;
+    try {
+      pendingFileName = localStorage.getItem(getWizardPendingKey());
+    } catch (error) {
+      pendingFileName = null;
+    }
+
+    if (pendingFileName) {
+      const pendingFile = userFiles.value.find(file => file.fileName === pendingFileName);
+      if (pendingFile) {
+        pendingFile.pendingKbAdd = true;
+        if (!pendingFile.inKnowledgeBase) {
+          pendingFile.inKnowledgeBase = true;
+          await onCheckboxChange(pendingFile, { silent: true });
+        }
+      } else {
+        clearWizardPendingStorage();
+      }
+    }
     
     // Load indexed files from user document (single source of truth)
     // Do NOT derive from userFiles - that creates a mismatch with server state
@@ -1269,8 +1303,8 @@ const loadFiles = async () => {
       kbSummaryTokens.value = null;
     }
     
-    // Reset dirty flag when files are loaded (dialog opened or refreshed)
-    kbNeedsUpdate.value = false;
+    // Sync dirty flag with server's KB indexing state
+    kbNeedsUpdate.value = !!result.kbIndexingNeeded;
     
   } catch (err) {
     filesError.value = err instanceof Error ? err.message : 'Failed to load files';
@@ -1589,8 +1623,43 @@ const formatNumber = (value: string | number) => {
   return parsed.toLocaleString();
 };
 
+const getWizardPendingKey = () =>
+  props.userId ? `wizardKbPendingFileName-${props.userId}` : 'wizardKbPendingFileName';
+
+const clearWizardPendingStorage = () => {
+  try {
+    localStorage.removeItem(getWizardPendingKey());
+  } catch (error) {
+    // ignore
+  }
+};
+
+const clearWizardPendingKbSelection = () => {
+  clearWizardPendingStorage();
+  userFiles.value.forEach(file => {
+    if (file.pendingKbAdd) {
+      file.pendingKbAdd = false;
+    }
+  });
+  if (!indexingKB.value) {
+    kbNeedsUpdate.value = hasCheckboxChanges.value;
+  }
+};
+
+const handleKbSelectionChange = async (file: UserFile, value: boolean) => {
+  if (!value && file.pendingKbAdd) {
+    clearWizardPendingKbSelection();
+  }
+  file.inKnowledgeBase = value;
+  await onCheckboxChange(file);
+};
+
+const toggleKbCheckbox = async (file: UserFile) => {
+  await handleKbSelectionChange(file, !file.inKnowledgeBase);
+};
+
 // File management methods
-const onCheckboxChange = async (file: UserFile) => {
+const onCheckboxChange = async (file: UserFile, options: { silent?: boolean; retry?: boolean } = {}) => {
   // Immediately move file when checkbox is toggled
   const oldBucketKey = file.bucketKey;
   const newStatus = file.inKnowledgeBase;
@@ -1614,7 +1683,17 @@ const onCheckboxChange = async (file: UserFile) => {
 
     if (!response.ok) {
       const errorData = await response.json().catch(() => ({}));
-      throw new Error(errorData.message || 'Failed to update knowledge base status');
+      const errorMsg = errorData.message || 'Failed to update knowledge base status';
+      if (response.status === 404 && errorData.error === 'FILE_NOT_FOUND' && options.retry !== false) {
+        await loadFiles();
+        const refreshed = userFiles.value.find(f => f.fileName === file.fileName);
+        if (refreshed) {
+          refreshed.inKnowledgeBase = newStatus;
+          await onCheckboxChange(refreshed, { silent: options.silent, retry: false });
+          return;
+        }
+      }
+      throw new Error(errorMsg);
     }
 
     const result = await response.json();
@@ -1630,7 +1709,7 @@ const onCheckboxChange = async (file: UserFile) => {
     
     if (updatedFile) {
       // Show success notification
-      if ($q && typeof $q.notify === 'function') {
+      if (!options.silent && $q && typeof $q.notify === 'function') {
         $q.notify({
           type: 'positive',
           message: `File ${newStatus ? 'added to' : 'removed from'} knowledge base`,
@@ -1640,10 +1719,7 @@ const onCheckboxChange = async (file: UserFile) => {
     }
     
     // Mark KB as dirty since a file was moved in/out of KB
-    // loadFiles() resets kbNeedsUpdate, but we need to restore it after a file change
-    if (!indexingKB.value) {
-      kbNeedsUpdate.value = true;
-    }
+    // loadFiles() now syncs from server, so no local override needed here
     
   } catch (err) {
     console.error(`Error toggling file ${file.fileName}:`, err);
@@ -1776,6 +1852,7 @@ const deleteFile = async (file: UserFile) => {
 
 const updateAndIndexKB = async () => {
   console.log('[KB] Update and Index KB button clicked');
+  clearWizardPendingKbSelection();
   indexingKB.value = true;
   indexingStatus.value = {
     phase: 'moving',

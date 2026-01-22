@@ -640,7 +640,7 @@ const wizardMessages = ref<Record<number, string>>({});
 const wizardDismissed = ref(false);
 const step2Enabled = computed(() => true);
 const step3OkEnabled = computed(() => true);
-const step3NotYetEnabled = computed(() => wizardHasFilesInKB.value);
+const step3NotYetEnabled = computed(() => true);
 const step4Enabled = computed(() => wizardHasFilesInKB.value);
 const stage1Complete = computed(() => wizardStage1Complete.value);
 const step2Active = computed(() => step2Enabled.value && stage1Complete.value && !wizardStage2Complete.value);
@@ -1462,6 +1462,16 @@ const handleFileSelect = async (event: Event) => {
   const file = input.files?.[0];
   
   if (!file) return;
+
+  if (wizardUploadIntent.value === 'other') {
+    try {
+      const pendingKey = props.user?.userId ? `wizardKbPendingFileName-${props.user.userId}` : 'wizardKbPendingFileName';
+      localStorage.setItem(pendingKey, file.name);
+      logWizardEvent('stage3_pending_file_set', { fileName: file.name });
+    } catch (error) {
+      // ignore storage errors
+    }
+  }
 
   isUploadingFile.value = true;
 

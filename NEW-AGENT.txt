@@ -83,6 +83,8 @@ The Setup Wizard is a UI guide driven by user state and a small amount of per-se
 
 The wizard is shown on load until Stage 4 is complete, and it can be dismissed for the current page session by "Not yet" without changing completion state. Clicking Stage 2 OK opens the file chooser, marks the upload as the initial file, and auto-starts list extraction when My Lists opens. After lists and Current Medications are generated, the user is prompted to verify or edit them, and Edit/Verify clears that prompt state. The top wizard message is read from this file and always corresponds to the highest-numbered incomplete stage, which keeps wizard behavior aligned with the Status Tip messages as they evolve.
 
+Stage 3 has additional Saved Files state: when the Stage 3 OK flow uploads a file, the UI marks it as "To be added and indexed" before the user clicks Update and Index KB. That pending state is represented by a per-user localStorage key and a temporary gray chip/checkmark. The Saved Files chips are always derived from actual `inKnowledgeBase` plus this pending flag, and the Update/Index button is shown when `kbIndexingNeeded` is true or when pending files exist. If the user unchecks the pending file before indexing, the pending flag is cleared and the chip reverts to "Add to Knowledge Base."
+
 ---
 
 ## PRIVATE AI SETUP WIZARD STATE PLACEHOLDERS
@@ -100,6 +102,8 @@ User <USER_ID> wizard state:
 - wizardPatientSummary=<WIZARD_PATIENT_SUMMARY> (Patient Summary exists)
 - wizardStage3Complete=<WIZARD_STAGE3_COMPLETE> (localStorage wizard-completion-<USER_ID>)
 - sessionStorage.autoProcessInitialFile=<AUTO_PROCESS_INITIAL_FILE>
+- localStorage.wizardKbPendingFileName-<USER_ID>=<PENDING_KB_FILE_NAME> (Stage 3 pending file)
+- kbIndexingNeeded=<KB_INDEXING_NEEDED> (server user-status flag)
 
 Recommended explanation for the user (fill placeholders, then speak it plainly):
 "Your Private AI setup is currently on Stage <WIZARD_ACTIVE_STAGE> because:

@@ -399,6 +399,33 @@ function getKBNameFromUserDoc(userDoc, userId) {
   return generateKBName(userId);
 }
 
+async function ensureKBNameOnUserDoc(userDoc, userId) {
+  if (!userDoc) return null;
+  const resolved = getKBNameFromUserDoc(userDoc, userId);
+  if (!userDoc.kbName && resolved) {
+    userDoc.kbName = resolved;
+    userDoc.updatedAt = new Date().toISOString();
+    let saved = false;
+    let retries = 3;
+    while (!saved && retries > 0) {
+      try {
+        await cloudant.saveDocument('maia_users', userDoc);
+        saved = true;
+      } catch (error) {
+        if ((error.statusCode === 409 || error.error === 'conflict') && retries > 1) {
+          retries -= 1;
+          userDoc = await cloudant.getDocument('maia_users', userId);
+          userDoc.kbName = resolved;
+          userDoc.updatedAt = new Date().toISOString();
+        } else {
+          throw error;
+        }
+      }
+    }
+  }
+  return resolved;
+}
+
 /**
  * Read MAIA instruction text from NEW-AGENT.txt file
  * Extracts the instruction text from the "## MAIA INSTRUCTION TEXT" section
@@ -3087,7 +3114,7 @@ async function provisionUserAsync(userId, token) {
     }
     
     const bucketName = bucketUrl.split('//')[1]?.split('.')[0] || 'maia';
-    const kbName = getKBNameFromUserDoc(userDoc, userId);
+    const kbName = await ensureKBNameOnUserDoc(userDoc, userId);
     const useEphemeralSpaces = shouldUseEphemeralSpaces();
     let indexingBucketName = bucketName;
     let indexingRegion = process.env.DO_REGION || 'tor1';
@@ -5683,7 +5710,7 @@ app.get('/api/user-files', async (req, res) => {
     
     // Deduplicate files by filename - prefer KB folder entries over archived/root entries
     // Get KB name for preference checking
-    const kbName = getKBNameFromUserDoc(userDoc, userId);
+    const kbName = await ensureKBNameOnUserDoc(userDoc, userId);
     
     const filesByFileName = new Map();
     
@@ -5751,6 +5778,7 @@ app.get('/api/user-files', async (req, res) => {
       files: files,
       indexedFiles: indexedFiles,
       kbLastIndexingTokens: userDoc.kbLastIndexingTokens || '0',
+      kbIndexingNeeded: !!userDoc.kbIndexingNeeded,
       kbName: kbName
     };
 
