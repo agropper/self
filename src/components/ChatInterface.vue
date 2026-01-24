@@ -462,6 +462,7 @@
       @diary-posted="handleDiaryPosted"
       @reference-file-added="handleReferenceFileAdded"
       @current-medications-saved="handleCurrentMedicationsSaved"
+      @patient-summary-saved="handlePatientSummarySaved"
       v-if="canAccessMyStuff"
     />
 
@@ -3649,6 +3650,10 @@ const handleReferenceFileAdded = async (file: { fileName: string; bucketKey: str
 };
 
 const handleCurrentMedicationsSaved = async () => {
+  await refreshWizardState();
+};
+
+const handlePatientSummarySaved = async () => {
   await refreshWizardState();
 };
 

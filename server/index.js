@@ -116,6 +116,10 @@ async function ensureBucketExists() {
 }
 
 function shouldUseEphemeralSpaces() {
+  const minioFlag = (process.env.MINIO || '').toLowerCase();
+  if (minioFlag === 'false' || minioFlag === '0') {
+    return false;
+  }
   if (process.env.KB_USE_EPHEMERAL_SPACES === 'true') {
     return true;
   }
@@ -207,9 +211,21 @@ async function copyKeysToSpaces({ sourceClient, sourceBucket, destClient, destBu
 
 const TEMP_KB_PREFIX = 'kb-src-';
 
+function normalizeDataSourcePath(path) {
+  if (!path) return null;
+  return path.endsWith('/') ? path.slice(0, -1) : path;
+}
+
 function buildTempKbFolder(userId, kbName, sourceKey) {
   const encoded = encodeURIComponent(sourceKey);
   return `${userId}/${kbName}/${TEMP_KB_PREFIX}${encoded}/`;
+}
+
+function buildKbDataSourcePath(userId, kbName, sourceKey, useEphemeralSpaces) {
+  if (useEphemeralSpaces) {
+    return buildTempKbFolder(userId, kbName, sourceKey);
+  }
+  return sourceKey;
 }
 
 function buildTempKbObjectKey(userId, kbName, sourceKey) {
@@ -231,6 +247,17 @@ function decodeSourceKeyFromTempPath(path, userId, kbName) {
   }
 }
 
+function resolveSourceKeyFromDataSourcePath(path, userId, kbName) {
+  if (!path) return null;
+  const decoded = decodeSourceKeyFromTempPath(path, userId, kbName);
+  if (decoded) return decoded;
+  const normalizedPath = normalizeDataSourcePath(path);
+  if (!normalizedPath) return null;
+  if (kbName && normalizedPath === `${userId}/${kbName}`) return null;
+  if (normalizedPath.endsWith('/.keep')) return null;
+  return normalizedPath.startsWith(`${userId}/`) ? normalizedPath : null;
+}
+
 async function verifyKbAgainstDo(userDoc, userId, kbName) {
   if (!userDoc || !userDoc.kbId || !kbName) return;
 
@@ -244,12 +271,13 @@ async function verifyKbAgainstDo(userDoc, userId, kbName) {
     for (const ds of dataSources || []) {
       const dsPath = ds?.item_path || ds?.path || ds?.spaces_data_source?.item_path;
       if (!dsPath) continue;
-      const decodedKey = decodeSourceKeyFromTempPath(dsPath, userId, kbName);
-      if (decodedKey) {
+      const decodedKey = resolveSourceKeyFromDataSourcePath(dsPath, userId, kbName);
+      const lastJob = ds?.last_datasource_indexing_job;
+      if (decodedKey && lastJob) {
         doSourceKeys.add(decodedKey);
         decodedSourceKeys.add(decodedKey);
-      } else {
-        const normalizedPath = dsPath.endsWith('/') ? dsPath.slice(0, -1) : dsPath;
+      } else if (!decodedKey) {
+        const normalizedPath = normalizeDataSourcePath(dsPath);
         if (normalizedPath === kbFolderPath) {
           continue;
         }
@@ -274,6 +302,22 @@ async function verifyKbAgainstDo(userDoc, userId, kbName) {
         unmappedPaths
       });
 
+      const reconcilePayload = (() => {
+        const latestFiles = Array.isArray(userDoc.files) ? userDoc.files : [];
+        const desiredKeys = latestFiles
+          .filter(file => Array.isArray(file.knowledgeBases) && file.knowledgeBases.includes(kbName))
+          .map(file => file.bucketKey)
+          .filter(Boolean);
+        const doKeys = Array.from(decodedSourceKeys).filter(Boolean);
+        const doKeySet = new Set(doKeys);
+        const desiredSet = new Set(desiredKeys);
+        const indexingNeeded = desiredKeys.length !== doKeys.length ||
+          desiredKeys.some(key => !doKeySet.has(key)) ||
+          doKeys.some(key => !desiredSet.has(key));
+
+        return { kbIndexedFiles: doKeys, kbIndexingNeeded: indexingNeeded };
+      })();
+
       const reconcile = async (maxRetries = 3) => {
         for (let attempt = 0; attempt < maxRetries; attempt += 1) {
           const latestDoc = await cloudant.getDocument('maia_users', userId);
@@ -285,7 +329,7 @@ async function verifyKbAgainstDo(userDoc, userId, kbName) {
             .map(file => file.bucketKey)
             .filter(Boolean);
 
-          const doKeys = Array.from(decodedSourceKeys).filter(Boolean);
+          const doKeys = reconcilePayload.kbIndexedFiles;
           const doKeySet = new Set(doKeys);
           const desiredSet = new Set(desiredKeys);
           const indexingNeeded = desiredKeys.length !== doKeys.length ||
@@ -313,6 +357,7 @@ async function verifyKbAgainstDo(userDoc, userId, kbName) {
       if (reconciled) {
         return reconciled;
       }
+      return reconcilePayload;
     }
   } catch (error) {
     console.error('[KB VERIFY] Failed to verify KB state', {
@@ -5250,10 +5295,60 @@ app.get('/api/user-files', async (req, res) => {
       indexedFiles = [];
     }
 
+    let indexedFileTokens = {};
+    let kbTotalTokens = null;
+    let kbDataSourceCount = null;
+    let kbIndexedDataSourceCount = null;
+    if (!subfolder && userDoc.kbId) {
+      try {
+        const dataSources = await doClient.kb.listDataSources(userDoc.kbId);
+        const kbNameForTokens = getKBNameFromUserDoc(userDoc, userId);
+        const tokensByKey = {};
+        let indexedCount = 0;
+        for (const ds of dataSources || []) {
+          const dsPath = ds?.item_path || ds?.path || ds?.spaces_data_source?.item_path;
+          const resolvedKey = resolveSourceKeyFromDataSourcePath(dsPath, userId, kbNameForTokens);
+          if (!resolvedKey) continue;
+          const lastJob = ds?.last_datasource_indexing_job;
+          const lastTokens = lastJob?.tokens ||
+            lastJob?.total_tokens ||
+            lastJob?.tokens_indexed ||
+            ds?.tokens ||
+            ds?.total_tokens;
+          if (lastTokens !== undefined && lastTokens !== null) {
+            tokensByKey[resolvedKey] = lastTokens;
+          }
+          if (lastJob) {
+            indexedCount += 1;
+          }
+        }
+        indexedFileTokens = tokensByKey;
+        kbDataSourceCount = Array.isArray(dataSources) ? dataSources.length : null;
+        kbIndexedDataSourceCount = indexedCount;
+        console.log('[KB Update] Per-file token counts', {
+          count: Object.keys(tokensByKey).length,
+          sample: Object.entries(tokensByKey).slice(0, 3)
+        });
+
+        try {
+          const kbDetails = await doClient.kb.get(userDoc.kbId);
+          kbTotalTokens = kbDetails?.total_tokens || kbDetails?.token_count || kbDetails?.tokens || null;
+        } catch (kbTokenError) {
+          console.warn('[KB Update] ⚠️ Failed to read KB total tokens:', kbTokenError.message);
+        }
+      } catch (tokenError) {
+        console.warn('[KB Update] ⚠️ Failed to read per-file token counts:', tokenError.message);
+      }
+    }
+
     const response = {
       success: true,
       files: files,
       indexedFiles: indexedFiles,
+      indexedFileTokens: indexedFileTokens,
+      kbTotalTokens: kbTotalTokens,
+      kbDataSourceCount: kbDataSourceCount,
+      kbIndexedDataSourceCount: kbIndexedDataSourceCount,
       kbLastIndexingTokens: userDoc.kbLastIndexingTokens || '0',
       kbIndexingNeeded: !!userDoc.kbIndexingNeeded,
       kbName: kbName
@@ -5312,37 +5407,19 @@ app.post('/api/toggle-file-knowledge-base', async (req, res) => {
     // Get KB name from user document
     const kbName = getKBNameFromUserDoc(userDoc, userId);
 
-    if (shouldUseEphemeralSpaces()) {
-      if (!userDoc.files[fileIndex].knowledgeBases) {
-        userDoc.files[fileIndex].knowledgeBases = [];
-      }
-
-      if (inKnowledgeBase) {
-        if (!userDoc.files[fileIndex].knowledgeBases.includes(kbName)) {
-          userDoc.files[fileIndex].knowledgeBases.push(kbName);
-        }
-      } else {
-        userDoc.files[fileIndex].knowledgeBases = userDoc.files[fileIndex].knowledgeBases.filter(name => name !== kbName);
-      }
-
-      userDoc.files[fileIndex].updatedAt = new Date().toISOString();
-
-      const currentFilesInKB = (userDoc.files || [])
-        .filter(file => Array.isArray(file.knowledgeBases) && file.knowledgeBases.includes(kbName))
-        .map(file => file.bucketKey);
-      const currentIndexedFiles = userDoc.kbIndexedFiles || [];
-      const filesChanged = JSON.stringify([...currentFilesInKB].sort()) !== JSON.stringify([...currentIndexedFiles].sort());
-      userDoc.kbIndexingNeeded = filesChanged;
-
-      await cloudant.saveDocument('maia_users', userDoc);
-
-      return res.json({
-        success: true,
-        message: 'Knowledge base status updated',
-        inKnowledgeBase: inKnowledgeBase,
-        newBucketKey: bucketKey
-      });
+    if (!userDoc.files[fileIndex].knowledgeBases) {
+      userDoc.files[fileIndex].knowledgeBases = [];
     }
+
+    if (inKnowledgeBase) {
+      if (!userDoc.files[fileIndex].knowledgeBases.includes(kbName)) {
+        userDoc.files[fileIndex].knowledgeBases.push(kbName);
+      }
+    } else {
+      userDoc.files[fileIndex].knowledgeBases = userDoc.files[fileIndex].knowledgeBases.filter(name => name !== kbName);
+    }
+
+    userDoc.files[fileIndex].updatedAt = new Date().toISOString();
     
     // Import S3 client operations for file moves
     const { S3Client, CopyObjectCommand, DeleteObjectCommand, HeadObjectCommand } = await import('@aws-sdk/client-s3');
@@ -5502,6 +5579,7 @@ app.post('/api/toggle-file-knowledge-base', async (req, res) => {
 
       // Update file's bucketKey in user document
       userDoc.files[fileIndex].bucketKey = destKey;
+      console.log(`[KB Update] Moved file ${fileName} into KB folder: ${destKey}`);
       }
     } catch (moveError) {
       // Rollback: restore original state in user document
@@ -6286,7 +6364,7 @@ app.delete('/api/delete-file', async (req, res) => {
  * @param {string|null} existingJobId - Existing indexing job ID (unused, kept for compatibility)
  * @returns {Promise<{kbId: string, kbDetails: object}|{error: string, message: string}>}
  */
-async function setupKnowledgeBase(userId, kbName, filesInKB, bucketName, existingJobId = null) {
+async function setupKnowledgeBase(userId, kbName, filesInKB, bucketName, existingJobId = null, useEphemeralSpaces = false) {
   // Step 1: Check DO API to see if KB already exists (by name)
   let kbId = null;
   let kbDetails = null;
@@ -6355,13 +6433,22 @@ async function setupKnowledgeBase(userId, kbName, filesInKB, bucketName, existin
     try {
       console.log(`📝 Creating new KB in DO: ${kbName}`);
       const firstFileKey = filesInKB[0];
+      const uniqueSourceKeys = Array.from(new Set(filesInKB.filter(Boolean)));
+      const datasources = uniqueSourceKeys.map((sourceKey) => ({
+        spaces_data_source: {
+          bucket_name: bucketName,
+          item_path: buildKbDataSourcePath(userId, kbName, sourceKey, useEphemeralSpaces),
+          region: process.env.DO_REGION || 'tor1'
+        }
+      }));
+
       const kbCreateOptions = {
         name: kbName,
         description: `Knowledge base for ${userId}`,
         projectId: projectId,
         databaseId: databaseId,
         bucketName: bucketName,
-        itemPath: buildTempKbFolder(userId, kbName, firstFileKey),
+        datasources,
         region: process.env.DO_REGION || 'tor1'
       };
       
@@ -6417,7 +6504,7 @@ app.post('/api/update-knowledge-base', async (req, res) => {
       });
     }
 
-    // Get user document (files already moved by checkboxes)
+    // Get user document (files may need relocation to KB folder)
     let userDoc = await cloudant.getDocument('maia_users', userId);
     
     if (!userDoc) {
@@ -6456,6 +6543,87 @@ app.post('/api/update-knowledge-base', async (req, res) => {
         secretAccessKey: process.env.DIGITALOCEAN_AWS_SECRET_ACCESS_KEY || ''
       }
     });
+
+    if (!useEphemeralSpaces) {
+      const { CopyObjectCommand, DeleteObjectCommand, HeadObjectCommand } = await import('@aws-sdk/client-s3');
+      const kbFolderPrefix = `${userId}/${kbName}/`;
+      const archivedPrefix = `${userId}/archived/`;
+      let movedCount = 0;
+
+      for (let idx = 0; idx < (userDoc.files || []).length; idx += 1) {
+        const file = userDoc.files[idx];
+        const isInKB = Array.isArray(file.knowledgeBases) && file.knowledgeBases.includes(kbName);
+        if (!isInKB) continue;
+        const sourceKey = file.bucketKey;
+        if (!sourceKey || sourceKey.startsWith(kbFolderPrefix)) continue;
+
+        const fileName = sourceKey.split('/').pop();
+        if (!fileName) continue;
+        let currentSource = sourceKey;
+        let intermediateKey = null;
+        const isRootLevel = currentSource.startsWith(`${userId}/`) &&
+          !currentSource.startsWith(archivedPrefix) &&
+          !currentSource.startsWith(kbFolderPrefix) &&
+          currentSource.split('/').length === 2;
+
+        if (isRootLevel) {
+          intermediateKey = `${archivedPrefix}${fileName}`;
+        }
+
+        const destKey = `${kbFolderPrefix}${fileName}`;
+        if (currentSource === destKey) continue;
+
+        try {
+          if (intermediateKey && currentSource !== intermediateKey) {
+            await storageClient.send(new CopyObjectCommand({
+              Bucket: bucketName,
+              CopySource: `${bucketName}/${currentSource}`,
+              Key: intermediateKey
+            }));
+            await storageClient.send(new HeadObjectCommand({
+              Bucket: bucketName,
+              Key: intermediateKey
+            }));
+            await storageClient.send(new DeleteObjectCommand({
+              Bucket: bucketName,
+              Key: currentSource
+            }));
+            currentSource = intermediateKey;
+          }
+
+          await storageClient.send(new CopyObjectCommand({
+            Bucket: bucketName,
+            CopySource: `${bucketName}/${currentSource}`,
+            Key: destKey
+          }));
+          await storageClient.send(new HeadObjectCommand({
+            Bucket: bucketName,
+            Key: destKey
+          }));
+          await storageClient.send(new DeleteObjectCommand({
+            Bucket: bucketName,
+            Key: currentSource
+          }));
+
+          userDoc.files[idx].bucketKey = destKey;
+          userDoc.files[idx].updatedAt = new Date().toISOString();
+          movedCount += 1;
+        } catch (moveError) {
+          console.error(`[KB Update] ❌ Failed to move file into KB folder: ${currentSource} -> ${destKey}:`, moveError.message);
+          return res.status(500).json({
+            success: false,
+            error: 'KB_FILE_MOVE_FAILED',
+            message: `Failed to move file into KB folder: ${fileName}`
+          });
+        }
+      }
+
+      if (movedCount > 0) {
+        await cloudant.saveDocument('maia_users', userDoc);
+        invalidateResourceCache(userId);
+        console.log(`[KB Update] Moved ${movedCount} KB file(s) into ${kbFolderPrefix}`);
+      }
+    }
 
     // Get list of files currently in KB (tracked in metadata, not bucket path)
     const filesInKB = (userDoc.files || [])
@@ -6517,7 +6685,8 @@ app.post('/api/update-knowledge-base', async (req, res) => {
       kbName,
       filesInKB,
       indexingBucketName,
-      null // No existing job ID needed
+      null, // No existing job ID needed
+      useEphemeralSpaces
     );
     
     if (kbSetupResult.error) {
@@ -6722,15 +6891,24 @@ app.post('/api/update-knowledge-base', async (req, res) => {
               }
               datasourcesByFileName.get(dsFileName).push(ds);
             }
-            const decodedKey = decodeSourceKeyFromTempPath(dsPath, userId, kbName);
+            const decodedKey = resolveSourceKeyFromDataSourcePath(dsPath, userId, kbName);
             if (decodedKey) {
               if (!datasourcesBySourceKey.has(decodedKey)) {
                 datasourcesBySourceKey.set(decodedKey, []);
               }
               datasourcesBySourceKey.get(decodedKey).push(ds);
-            } else if (useEphemeralSpaces) {
-              // Ephemeral mode expects only per-file temp datasources.
-              staleDatasources.push(ds);
+              if (!currentFileKeys.has(decodedKey)) {
+                staleDatasources.push(ds);
+              }
+            } else if (!useEphemeralSpaces) {
+              const normalizedPath = normalizeDataSourcePath(dsPath);
+              if (dsPath.includes(`/${TEMP_KB_PREFIX}`)) {
+                // Legacy ephemeral datasource in non-ephemeral mode: delete immediately.
+                staleDatasources.push(ds);
+              }
+              if (normalizedPath && normalizedPath.startsWith(`${userId}/`)) {
+                staleDatasources.push(ds);
+              }
             }
 
             if (useEphemeralSpaces) {
@@ -6746,23 +6924,21 @@ app.post('/api/update-knowledge-base', async (req, res) => {
             }
           }
 
-          if (useEphemeralSpaces) {
-            for (const [sourceKey, entries] of datasourcesBySourceKey.entries()) {
-              if (entries.length > 1) {
-                const sorted = [...entries].sort((a, b) => {
-                  const aDate = Date.parse(a.created_at || a.createdAt || '') || 0;
-                  const bDate = Date.parse(b.created_at || b.createdAt || '') || 0;
-                  return bDate - aDate;
-                });
-                const [, ...extras] = sorted;
-                for (const extra of extras) {
-                  duplicateDatasources.push(extra);
-                }
+          for (const [sourceKey, entries] of datasourcesBySourceKey.entries()) {
+            if (entries.length > 1) {
+              const sorted = [...entries].sort((a, b) => {
+                const aDate = Date.parse(a.created_at || a.createdAt || '') || 0;
+                const bDate = Date.parse(b.created_at || b.createdAt || '') || 0;
+                return bDate - aDate;
+              });
+              const [, ...extras] = sorted;
+              for (const extra of extras) {
+                duplicateDatasources.push(extra);
               }
             }
           }
 
-          if (useEphemeralSpaces && (staleDatasources.length > 0 || duplicateDatasources.length > 0)) {
+          if (staleDatasources.length > 0 || duplicateDatasources.length > 0) {
             const toDelete = [...staleDatasources, ...duplicateDatasources];
             const staleCount = staleDatasources.length;
             const duplicateCount = duplicateDatasources.length;
@@ -6794,8 +6970,8 @@ app.post('/api/update-knowledge-base', async (req, res) => {
           const newlyCreatedDsUuids = [];
           for (const filePath of actualFilesInKB) {
             const fileName = filePath.split('/').pop();
-            const expectedPath = buildTempKbFolder(userId, kbName, filePath);
-            const normalizedExpectedPath = expectedPath.endsWith('/') ? expectedPath.slice(0, -1) : expectedPath;
+            const expectedPath = buildKbDataSourcePath(userId, kbName, filePath, useEphemeralSpaces);
+            const normalizedExpectedPath = normalizeDataSourcePath(expectedPath);
             
             // Check if data source already exists (by path or by file's kbDataSourceUuid)
             const existingDsUuid = existingDsByPath.get(normalizedExpectedPath) || fileDsMap.get(filePath);
@@ -6899,6 +7075,21 @@ app.post('/api/update-knowledge-base', async (req, res) => {
           try {
             dataSourcesWithStatus = await doClient.kb.listDataSources(kbId);
             console.log(`[KB Update] Retrieved ${dataSourcesWithStatus.length} data source(s) with status from DO API`);
+            for (const ds of dataSourcesWithStatus) {
+              const dsUuid = ds.uuid || ds.id;
+              const dsPath = ds.item_path || ds.path || ds.spaces_data_source?.item_path;
+              const resolvedKey = resolveSourceKeyFromDataSourcePath(dsPath, userId, kbName);
+              const lastJob = ds?.last_datasource_indexing_job;
+              const lastStatus = lastJob?.status || lastJob?.job_status || lastJob?.state || null;
+              const lastTokens = lastJob?.tokens || lastJob?.total_tokens || lastJob?.tokens_indexed || null;
+              console.log('[KB Update] DO datasource', {
+                uuid: dsUuid || null,
+                path: dsPath || null,
+                resolvedKey,
+                lastStatus,
+                lastTokens
+              });
+            }
           } catch (dsStatusError) {
             console.warn(`[KB Update] ⚠️ Could not retrieve data source status from DO API:`, dsStatusError.message);
             // Fall back to using datasources from kbDetails
@@ -6911,8 +7102,8 @@ app.post('/api/update-knowledge-base', async (req, res) => {
             const dsUuid = ds.uuid || ds.id;
             if (!dsUuid) continue;
             const dsPath = ds.item_path || ds.path || ds.spaces_data_source?.item_path;
-            if (!dsPath || !dsPath.startsWith(kbFolderPath)) continue;
-            const decodedKey = decodeSourceKeyFromTempPath(dsPath, userId, kbName);
+            if (!dsPath) continue;
+            const decodedKey = resolveSourceKeyFromDataSourcePath(dsPath, userId, kbName);
             if (!decodedKey) continue;
             if (!uniqueBySourceKey.has(decodedKey)) {
               uniqueBySourceKey.set(decodedKey, dsUuid);
@@ -7182,8 +7373,8 @@ app.post('/api/update-knowledge-base', async (req, res) => {
                 const indexedPaths = dataSources
                   .filter(ds => ds?.last_datasource_indexing_job)
                   .map(ds => ds?.item_path || ds?.spaces_data_source?.item_path)
-                  .filter(path => path && path.startsWith(kbFolderPath))
-                  .map(path => decodeSourceKeyFromTempPath(path, userId, kbName) || path);
+                  .map(path => resolveSourceKeyFromDataSourcePath(path, userId, kbName))
+                  .filter(Boolean);
                 const uniqueIndexedPaths = Array.from(new Set(indexedPaths));
                 filesToIndex = uniqueIndexedPaths;
               } catch (dsError) {
@@ -7245,7 +7436,7 @@ app.post('/api/update-knowledge-base', async (req, res) => {
                   if (!dsUuid) continue;
                   const dsPath = ds.item_path || ds.path || ds.spaces_data_source?.item_path;
                   if (!dsPath) continue;
-                  const decodedKey = decodeSourceKeyFromTempPath(dsPath, userId, kbName);
+                  const decodedKey = resolveSourceKeyFromDataSourcePath(dsPath, userId, kbName);
                   if (decodedKey && !dsBySourceKey.has(decodedKey)) {
                     dsBySourceKey.set(decodedKey, dsUuid);
                   }
@@ -7652,18 +7843,14 @@ app.get('/api/kb-indexing-status/:jobId', async (req, res) => {
         try {
           const dataSources = await doClient.kb.listDataSources(userDoc.kbId);
           const kbName = getKBNameFromUserDoc(userDoc, userId);
-          const kbFolderPath = `${userId}/${kbName}/`;
           
           // Get all files that have been indexed (have last_datasource_indexing_job)
           const indexedFilesList = [];
           for (const ds of dataSources) {
             const dsPath = ds?.item_path || ds?.spaces_data_source?.item_path;
-            if (dsPath && dsPath.startsWith(kbFolderPath)) {
-              // If data source has a last_datasource_indexing_job, the file is indexed
-              if (ds?.last_datasource_indexing_job) {
-                const decodedKey = decodeSourceKeyFromTempPath(dsPath, userId, kbName);
-                indexedFilesList.push(decodedKey || dsPath);
-              }
+            const decodedKey = resolveSourceKeyFromDataSourcePath(dsPath, userId, kbName);
+            if (decodedKey && ds?.last_datasource_indexing_job) {
+              indexedFilesList.push(decodedKey);
             }
           }
 
@@ -7676,21 +7863,14 @@ app.get('/api/kb-indexing-status/:jobId', async (req, res) => {
           }
 
           if (jobId && Array.isArray(kbIndexedFilesFromDO)) {
-            const indexedMismatch = !Array.isArray(userDoc.kbIndexedFiles) ||
-              userDoc.kbIndexedFiles.length !== kbIndexedFilesFromDO.length;
-            const tokensMismatch = String(userDoc.kbLastIndexingTokens || '0') !== String(tokens);
-            const jobMismatch = userDoc.kbLastIndexingJobId !== jobId;
-
-            if (indexedMismatch || tokensMismatch || jobMismatch) {
-              userDoc.kbIndexedFiles = kbIndexedFilesFromDO;
-              userDoc.kbPendingFiles = undefined;
-              userDoc.kbIndexingNeeded = false;
-              userDoc.kbLastIndexedAt = new Date().toISOString();
-              userDoc.kbLastIndexingJobId = jobId;
-              userDoc.kbLastIndexingTokens = String(tokens);
-              await cloudant.saveDocument('maia_users', userDoc);
-              invalidateResourceCache(userId);
-            }
+            userDoc.kbIndexedFiles = kbIndexedFilesFromDO;
+            userDoc.kbPendingFiles = undefined;
+            userDoc.kbIndexingNeeded = false;
+            userDoc.kbLastIndexedAt = new Date().toISOString();
+            userDoc.kbLastIndexingJobId = jobId;
+            userDoc.kbLastIndexingTokens = String(tokens);
+            await cloudant.saveDocument('maia_users', userDoc);
+            invalidateResourceCache(userId);
           }
         } catch (dsError) {
           console.warn(`[KB Status] Could not query data sources for indexed files: ${dsError.message}`);

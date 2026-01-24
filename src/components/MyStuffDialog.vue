@@ -73,6 +73,13 @@
                     </q-item-label>
                     <q-item-label caption>
                       {{ formatFileSize(file.fileSize) }} • Uploaded {{ formatDate(file.uploadedAt) }}
+                      <span v-if="file.inKnowledgeBase">
+                        • KB tokens:
+                        <span v-if="indexedFileTokens[file.bucketKey] !== undefined">
+                          {{ formatTokenCount(indexedFileTokens[file.bucketKey]) }}
+                        </span>
+                        <span v-else>n/a</span>
+                      </span>
                       <span v-if="updatingFiles.has(file.bucketKey)" class="q-ml-sm text-primary">
                         Moving file...
                       </span>
@@ -140,7 +147,11 @@
                 v-if="kbSummaryTokens !== null && kbSummaryFiles !== null"
                 class="q-mt-sm text-caption text-grey-7"
               >
-                Your Private AI current knowledge base has a total {{ formatNumber(kbSummaryTokens) }} tokens from {{ formatNumber(kbSummaryFiles) }} files.
+                Your Private AI current knowledge base has a total {{ formatNumber(kbSummaryTokens) }} tokens from
+                {{ formatNumber(kbSummaryFiles) }} indexed files
+                <span v-if="kbDataSourceCount !== null">
+                  ({{ formatNumber(kbDataSourceCount) }} data sources)
+                </span>.
               </div>
               
               <div v-if="kbNeedsUpdate || hasCheckboxChanges || kbIndexingOutOfSync || hasPendingKbAdds" class="q-mt-md q-pt-md" style="border-top: 1px solid #e0e0e0;">
@@ -1012,6 +1023,7 @@ const emit = defineEmits<{
   'diary-posted': [content: string]; // Emit diary content to add to chat
   'reference-file-added': [file: { fileName: string; bucketKey: string; fileSize: number; uploadedAt: string; fileType?: string; fileUrl?: string; isReference: boolean }]; // Emit reference file to add to chat
   'current-medications-saved': [data: { value: string; edited: boolean }];
+  'patient-summary-saved': [data: { userId: string }];
 }>();
 
 // Handle show patient summary from Lists component
@@ -1107,6 +1119,9 @@ const indexedFiles = ref<string[]>([]); // Track which files are actually indexe
 const kbNeedsUpdate = ref(false); // Track if KB needs to be updated (files moved)
 const kbSummaryTokens = ref<string | number | null>(null);
 const kbSummaryFiles = ref<number | null>(null);
+const kbDataSourceCount = ref<number | null>(null);
+const kbIndexedDataSourceCount = ref<number | null>(null);
+const indexedFileTokens = ref<Record<string, number | string>>({});
 
 const hasCheckboxChanges = computed(() => {
   if (originalFiles.value.length !== userFiles.value.length) return true;
@@ -1149,6 +1164,12 @@ const isFileIndexed = computed(() => {
     return indexedSet.has(bucketKey);
   };
 });
+
+const formatTokenCount = (value: number | string) => {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return value;
+  return new Intl.NumberFormat().format(numeric);
+};
 const indexingKB = ref(false);
 const indexingStatus = ref({
   phase: 'moving', // 'moving' | 'kb_setup' | 'indexing_started' | 'indexing' | 'complete' | 'error'
@@ -1304,12 +1325,30 @@ const loadFiles = async () => {
       kbSummaryFiles.value = 0;
     }
 
-    if (kbSummaryFiles.value && kbSummaryFiles.value > 0 &&
+    if (result.indexedFileTokens && typeof result.indexedFileTokens === 'object') {
+      indexedFileTokens.value = result.indexedFileTokens;
+      console.log('[KB] indexedFileTokens received', {
+        count: Object.keys(indexedFileTokens.value || {}).length,
+        sample: Object.entries(indexedFileTokens.value || {}).slice(0, 3)
+      });
+    } else {
+      indexedFileTokens.value = {};
+    }
+
+    if (result.kbTotalTokens !== undefined && result.kbTotalTokens !== null) {
+      kbSummaryTokens.value = result.kbTotalTokens;
+    } else if (kbSummaryFiles.value && kbSummaryFiles.value > 0 &&
       result.kbLastIndexingTokens !== undefined &&
       result.kbLastIndexingTokens !== null) {
       kbSummaryTokens.value = result.kbLastIndexingTokens;
     } else {
       kbSummaryTokens.value = null;
+    }
+
+    kbDataSourceCount.value = typeof result.kbDataSourceCount === 'number' ? result.kbDataSourceCount : null;
+    kbIndexedDataSourceCount.value = typeof result.kbIndexedDataSourceCount === 'number' ? result.kbIndexedDataSourceCount : null;
+    if (kbIndexedDataSourceCount.value !== null) {
+      kbSummaryFiles.value = kbIndexedDataSourceCount.value;
     }
     
     // Sync dirty flag with server's KB indexing state
@@ -2640,6 +2679,7 @@ const handleReplaceSummaryByIndex = async (indexToReplace: number) => {
     
     // Reload summaries to get updated list
     await loadPatientSummary();
+    emit('patient-summary-saved', { userId: props.userId });
     
     if ($q && typeof $q.notify === 'function') {
       $q.notify({
@@ -2691,6 +2731,7 @@ const handleReplaceSummary = async (replaceStrategy: 'keep' | 'oldest' | 'newest
     
     // Reload summaries to get updated list
     await loadPatientSummary();
+    emit('patient-summary-saved', { userId: props.userId });
     
     if ($q && typeof $q.notify === 'function') {
       $q.notify({
@@ -2749,6 +2790,8 @@ const handleSaveSummary = async () => {
     patientSummary.value = newPatientSummary.value;
     summaryEditText.value = newPatientSummary.value;
     isEditingSummaryTab.value = false;
+
+    emit('patient-summary-saved', { userId: props.userId });
     
     showSummaryAvailableModal.value = false;
     if (showSummaryViewModal.value) {
@@ -2807,6 +2850,8 @@ const handleSaveEditedSummary = async () => {
     isEditingSummaryTab.value = false;
     editingSummary.value = false;
     showSummaryViewModal.value = false;
+    
+    emit('patient-summary-saved', { userId: props.userId });
     
     if ($q && typeof $q.notify === 'function') {
       $q.notify({

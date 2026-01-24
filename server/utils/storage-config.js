@@ -1,4 +1,14 @@
 export function normalizeStorageEnv() {
+  const minioFlag = (process.env.MINIO || '').toLowerCase();
+  if (minioFlag === 'false' || minioFlag === '0') {
+    if (!process.env.DIGITALOCEAN_AWS_ACCESS_KEY_ID && process.env.SPACES_AWS_ACCESS_KEY_ID) {
+      process.env.DIGITALOCEAN_AWS_ACCESS_KEY_ID = process.env.SPACES_AWS_ACCESS_KEY_ID;
+    }
+    if (!process.env.DIGITALOCEAN_AWS_SECRET_ACCESS_KEY && process.env.SPACES_AWS_SECRET_ACCESS_KEY) {
+      process.env.DIGITALOCEAN_AWS_SECRET_ACCESS_KEY = process.env.SPACES_AWS_SECRET_ACCESS_KEY;
+    }
+    return { backend: 'spaces' };
+  }
   const backend = (process.env.STORAGE_BACKEND || '').toLowerCase();
   if (backend !== 'minio') {
     return { backend: backend || 'spaces' };
