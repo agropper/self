@@ -599,7 +599,6 @@ const stage3Complete = computed(() => {
   }
 });
 const autoProcessAttempts = ref(0);
-let autoProcessTimer: ReturnType<typeof setTimeout> | null = null;
 
 const checkInitialFile = async () => {
   try {
@@ -1031,7 +1030,7 @@ const attemptAutoProcessInitialFile = async () => {
 
   if (autoProcessAttempts.value < 10) {
     autoProcessAttempts.value += 1;
-    autoProcessTimer = setTimeout(attemptAutoProcessInitialFile, 1000);
+    setTimeout(attemptAutoProcessInitialFile, 1000);
   } else {
     sessionStorage.removeItem('autoProcessInitialFile');
     logWizardEvent('lists_auto_start_failed', { hasInitialFile: false });

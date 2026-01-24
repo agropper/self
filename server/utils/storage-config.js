@@ -1,35 +1,25 @@
 export function normalizeStorageEnv() {
-  const minioFlag = (process.env.MINIO || '').toLowerCase();
-  if (minioFlag === 'false' || minioFlag === '0') {
-    if (!process.env.DIGITALOCEAN_AWS_ACCESS_KEY_ID && process.env.SPACES_AWS_ACCESS_KEY_ID) {
-      process.env.DIGITALOCEAN_AWS_ACCESS_KEY_ID = process.env.SPACES_AWS_ACCESS_KEY_ID;
-    }
-    if (!process.env.DIGITALOCEAN_AWS_SECRET_ACCESS_KEY && process.env.SPACES_AWS_SECRET_ACCESS_KEY) {
-      process.env.DIGITALOCEAN_AWS_SECRET_ACCESS_KEY = process.env.SPACES_AWS_SECRET_ACCESS_KEY;
-    }
-    return { backend: 'spaces' };
+  if (!process.env.DIGITALOCEAN_AWS_ACCESS_KEY_ID && process.env.SPACES_AWS_ACCESS_KEY_ID) {
+    process.env.DIGITALOCEAN_AWS_ACCESS_KEY_ID = process.env.SPACES_AWS_ACCESS_KEY_ID;
   }
-  const backend = (process.env.STORAGE_BACKEND || '').toLowerCase();
-  if (backend !== 'minio') {
-    return { backend: backend || 'spaces' };
+  if (!process.env.DIGITALOCEAN_AWS_SECRET_ACCESS_KEY && process.env.SPACES_AWS_SECRET_ACCESS_KEY) {
+    process.env.DIGITALOCEAN_AWS_SECRET_ACCESS_KEY = process.env.SPACES_AWS_SECRET_ACCESS_KEY;
   }
 
   const endpoint =
-    process.env.MINIO_ENDPOINT_URL ||
     process.env.DIGITALOCEAN_ENDPOINT_URL ||
-    'http://localhost:9000';
+    process.env.SPACES_ENDPOINT_URL ||
+    'https://tor1.digitaloceanspaces.com';
   const accessKeyId =
-    process.env.MINIO_ACCESS_KEY_ID ||
     process.env.DIGITALOCEAN_AWS_ACCESS_KEY_ID;
   const secretAccessKey =
-    process.env.MINIO_SECRET_ACCESS_KEY ||
     process.env.DIGITALOCEAN_AWS_SECRET_ACCESS_KEY;
   const bucket =
-    process.env.MINIO_BUCKET ||
     process.env.DIGITALOCEAN_BUCKET;
   const region =
-    process.env.MINIO_REGION ||
-    'us-east-1';
+    process.env.DO_REGION ||
+    process.env.SPACES_REGION ||
+    'tor1';
 
   if (endpoint) {
     process.env.DIGITALOCEAN_ENDPOINT_URL = endpoint;
@@ -43,10 +33,12 @@ export function normalizeStorageEnv() {
   if (bucket) {
     process.env.DIGITALOCEAN_BUCKET = bucket;
   }
-  process.env.S3_FORCE_PATH_STYLE = 'true';
+  if (process.env.S3_FORCE_PATH_STYLE === undefined) {
+    process.env.S3_FORCE_PATH_STYLE = 'false';
+  }
 
   return {
-    backend: 'minio',
+    backend: 'spaces',
     endpoint,
     accessKeyId,
     secretAccessKey,

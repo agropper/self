@@ -50,10 +50,6 @@ function logStorageConfig(config) {
   console.log(`🪣 [STORAGE] Endpoint: ${endpoint}`);
   console.log(`🪣 [STORAGE] Bucket: ${bucket}`);
   console.log(`🪣 [STORAGE] Path style: ${forcePathStyle}`);
-
-  if (backend === 'minio' && endpoint.includes('digitaloceanspaces.com')) {
-    console.warn('⚠️ [STORAGE] MinIO backend is set but endpoint looks like Spaces.');
-  }
 }
 
 function getBucketName(bucketUrl) {
@@ -116,14 +112,10 @@ async function ensureBucketExists() {
 }
 
 function shouldUseEphemeralSpaces() {
-  const minioFlag = (process.env.MINIO || '').toLowerCase();
-  if (minioFlag === 'false' || minioFlag === '0') {
-    return false;
-  }
   if (process.env.KB_USE_EPHEMERAL_SPACES === 'true') {
     return true;
   }
-  return storageConfig?.backend === 'minio';
+  return false;
 }
 
 function getSpacesConfig() {

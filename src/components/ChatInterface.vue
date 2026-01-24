@@ -576,6 +576,7 @@ interface User {
   userId: string;
   displayName: string;
   isDeepLink?: boolean;
+  isTemporary?: boolean;
 }
 
 interface DeepLinkInfo {
@@ -1430,12 +1431,12 @@ const triggerWizardFileInput = async () => {
     intent: wizardUploadIntent.value
   });
   if (fileInput.value) {
-    fileInput.value.click();
+    (fileInput.value as HTMLInputElement | null)?.click();
     return;
   }
   await nextTick();
   if (fileInput.value) {
-    fileInput.value.click();
+    (fileInput.value as HTMLInputElement | null)?.click();
     return;
   }
   const fallbackInput = document.querySelector<HTMLInputElement>('input[type="file"]');
@@ -3384,34 +3385,6 @@ const scrollToBottom = async () => {
 watch(() => [messages.value.length, messages.value[messages.value.length - 1]?.content], () => {
   scrollToBottom();
 }, { flush: 'post' });
-
-const syncAgent = async () => {
-  if (!props.user?.userId) return;
-  
-  try {
-    const response = await fetch('/api/sync-agent', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json'
-      },
-      credentials: 'include'
-    });
-    
-    if (response.ok) {
-      const result = await response.json();
-      if (result.success) {
-        console.log('Agent synced:', result.agent?.name);
-        return result.agent || null;
-      }
-      console.log('No agent found for user');
-      return null;
-    }
-    console.error('Failed to sync agent:', response.status, response.statusText);
-  } catch (error) {
-    console.error('Failed to sync agent:', error);
-  }
-  return null;
-};
 
 const startSetupWizardPolling = () => {
   if (!props.user?.userId) return;

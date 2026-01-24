@@ -1426,7 +1426,7 @@ const loadDeepLinkPrivateAISetting = async () => {
     if (response.ok) {
       const result = await response.json();
 
-      if (result.followupJobId && result.followupJobId !== jobId) {
+      if (result.followupJobId && result.followupJobId !== currentIndexingJobId.value) {
         console.log(`[KB] Switching to follow-up indexing job ${result.followupJobId}`);
         currentIndexingJobId.value = result.followupJobId;
         if (pollingInterval.value) {
@@ -2550,57 +2550,6 @@ const attachKBToAgentOnly = async () => {
 
   const attachResult = await attachResponse.json();
   console.log('[KB] KB attached to agent:', attachResult);
-};
-
-// Helper function to generate patient summary (actual generation logic)
-const doGeneratePatientSummary = async () => {
-  // Step 1: Attach KB to agent
-  await attachKBToAgentOnly();
-  
-  // Step 2: Generate patient summary
-  indexingStatus.value.message = 'Generating patient summary...';
-  emit('indexing-status-update', {
-    jobId: currentIndexingJobId.value || '',
-    phase: 'kb_setup',
-    tokens: indexingStatus.value.tokens,
-    filesIndexed: indexingStatus.value.filesIndexed,
-    progress: 1.0
-  });
-  
-  const summaryResponse = await fetch('/api/generate-patient-summary', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json'
-    },
-    credentials: 'include',
-    body: JSON.stringify({
-      userId: props.userId
-    })
-  });
-
-  if (!summaryResponse.ok) {
-    const errorData = await summaryResponse.json();
-    throw new Error(errorData.message || 'Failed to generate patient summary');
-  }
-
-  const summaryResult = await summaryResponse.json();
-  console.log('[KB] Patient summary generated:', summaryResult);
-  
-  // Check if there are empty slots
-  const hasEmptySlots = patientSummaries.value.length < 3;
-  
-  if (hasEmptySlots) {
-    // Automatically save with 'newest' strategy (just adds to array)
-    await handleReplaceSummary('newest', summaryResult.summary);
-  } else {
-    // All slots full - show dialog to choose replace strategy
-    savedCurrentSummaryForUndo.value = summaryResult.savedCurrentSummary || null;
-    newSummaryToReplace.value = summaryResult.summary || '';
-    showReplaceSummaryDialog.value = true;
-  }
-  
-  // Update indexing status to show completion
-  indexingStatus.value.message = 'Knowledge base indexed and patient summary generated!';
 };
 
 // Attach KB to agent (patient summary generation is disabled)
