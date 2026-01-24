@@ -573,10 +573,11 @@ const isCurrentMedicationsEdited = ref(false);
 const currentMedicationsStatus = ref<'reviewing' | 'consulting' | ''>('');
 const wizardAutoFlow = ref(false);
 const wizardAutoFlowStorageKey = 'wizardMyListsAuto';
+const wizardAutoStartPending = ref(false);
 const wizardPreparingMeds = computed(() =>
   wizardAutoFlow.value &&
   !currentMedications.value &&
-  (isProcessing.value || isLoadingCurrentMedications.value || hasSavedResults.value || hasMedicationRecords.value)
+  (wizardAutoStartPending.value || isProcessing.value || isLoadingCurrentMedications.value || hasSavedResults.value || hasMedicationRecords.value)
 );
 const showSummaryDialog = ref(false);
 const showRefreshConfirmDialog = ref(false);
@@ -857,6 +858,7 @@ const copyItemToClipboard = async (item: any, categoryName: string) => {
 
 const processInitialFile = async () => {
   logWizardEvent('lists_processing_start');
+  wizardAutoStartPending.value = false;
   isProcessing.value = true;
   processingMessage.value = 'Parsing initial file...';
   error.value = '';
@@ -998,11 +1000,24 @@ const loadWizardAutoFlow = () => {
   }
   if (wizardAutoFlow.value) {
     logWizardEvent('lists_wizard_auto_flag', { value: wizardAutoFlow.value });
+    wizardAutoStartPending.value = true;
+    try {
+      const autoProcess = sessionStorage.getItem('autoProcessInitialFile');
+      if (autoProcess === 'true' && !currentMedications.value) {
+        isLoadingCurrentMedications.value = true;
+        currentMedicationsStatus.value = 'consulting';
+      }
+    } catch (error) {
+      // ignore
+    }
   }
 };
 
 const clearWizardAutoFlow = () => {
   wizardAutoFlow.value = false;
+  wizardAutoStartPending.value = false;
+  isLoadingCurrentMedications.value = false;
+  currentMedicationsStatus.value = '';
   try {
     sessionStorage.removeItem(wizardAutoFlowStorageKey);
   } catch (error) {
