@@ -190,6 +190,9 @@
                   class="q-mb-sm"
                 />
                 <div class="text-body2">Indexing in progress...</div>
+                <div v-if="indexingStatus.message" class="text-caption text-grey-7 q-mt-xs">
+                  {{ indexingStatus.message }}
+                </div>
                 <div class="text-caption text-grey-7 q-mt-xs">
                   <span v-if="indexingStatus.kb">KB: {{ indexingStatus.kb }} • </span>
                   <span v-if="indexingElapsedTime">Time: {{ indexingElapsedTime }} • </span>
@@ -1383,6 +1386,22 @@ const loadDeepLinkPrivateAISetting = async () => {
     });
     if (response.ok) {
       const result = await response.json();
+
+      if (result.followupJobId && result.followupJobId !== jobId) {
+        console.log(`[KB] Switching to follow-up indexing job ${result.followupJobId}`);
+        currentIndexingJobId.value = result.followupJobId;
+        if (pollingInterval.value) {
+          clearInterval(pollingInterval.value);
+          pollingInterval.value = null;
+        }
+        if (elapsedTimeInterval.value) {
+          clearInterval(elapsedTimeInterval.value);
+          elapsedTimeInterval.value = null;
+        }
+        indexingStatus.value.message = result.message || 'Indexing remaining files...';
+        await pollIndexingProgress(result.followupJobId);
+        return;
+      }
       // Default to true if not set (backward compatibility)
       allowDeepLinkPrivateAI.value = result.allowDeepLinkPrivateAI !== undefined ? result.allowDeepLinkPrivateAI : true;
     }
@@ -2298,8 +2317,8 @@ const pollIndexingProgress = async (jobId: string) => {
           await loadAgent();
         }
         
-        // Attach KB to agent and generate patient summary
-        await attachKBAndGenerateSummary();
+        // Attach KB to agent (patient summary generation is disabled)
+        await attachKBToAgentOnlyDuringIndexing();
         
         // Clear dirty flag since indexing completed successfully
         kbNeedsUpdate.value = false;
@@ -2472,9 +2491,8 @@ const deleteChat = async (chat: SavedChat) => {
   }
 };
 
-// Helper function to generate patient summary (actual generation logic)
-const doGeneratePatientSummary = async () => {
-  // Step 1: Attach KB to agent
+// Helper function to attach KB to agent
+const attachKBToAgentOnly = async () => {
   const attachResponse = await fetch('/api/attach-kb-to-agent', {
     method: 'POST',
     headers: {
@@ -2493,6 +2511,12 @@ const doGeneratePatientSummary = async () => {
 
   const attachResult = await attachResponse.json();
   console.log('[KB] KB attached to agent:', attachResult);
+};
+
+// Helper function to generate patient summary (actual generation logic)
+const doGeneratePatientSummary = async () => {
+  // Step 1: Attach KB to agent
+  await attachKBToAgentOnly();
   
   // Step 2: Generate patient summary
   indexingStatus.value.message = 'Generating patient summary...';
@@ -2540,10 +2564,10 @@ const doGeneratePatientSummary = async () => {
   indexingStatus.value.message = 'Knowledge base indexed and patient summary generated!';
 };
 
-// Attach KB to agent and generate patient summary
-const attachKBAndGenerateSummary = async () => {
+// Attach KB to agent (patient summary generation is disabled)
+const attachKBToAgentOnlyDuringIndexing = async () => {
   try {
-    console.log('[KB] Attaching KB to agent and generating patient summary...');
+    console.log('[KB] Attaching KB to agent (patient summary generation disabled)...');
     
     // Keep indexing status visible and update message
     indexingStatus.value.message = 'Attaching knowledge base to agent...';
@@ -2555,16 +2579,14 @@ const attachKBAndGenerateSummary = async () => {
       progress: 1.0
     });
     
-    // Always proceed directly - no pre-generation confirmation
-    // If slots are full, the replace dialog will show after generation
-    await doGeneratePatientSummary();
+    await attachKBToAgentOnly();
   } catch (error) {
-    console.error('[KB] Error in attachKBAndGenerateSummary:', error);
-    indexingStatus.value.message = `Error: ${error instanceof Error ? error.message : 'Failed to attach KB or generate summary'}`;
+    console.error('[KB] Error attaching KB after indexing:', error);
+    indexingStatus.value.message = `Error: ${error instanceof Error ? error.message : 'Failed to attach KB'}`;
     if ($q && typeof $q.notify === 'function') {
       $q.notify({
         type: 'negative',
-        message: error instanceof Error ? error.message : 'Failed to attach KB or generate summary'
+        message: error instanceof Error ? error.message : 'Failed to attach KB'
       });
     }
   }
