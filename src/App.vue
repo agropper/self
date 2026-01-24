@@ -478,7 +478,7 @@ const startPasskeyRegistration = async () => {
     });
     if (checkResponse.ok) {
       const checkData = await checkResponse.json();
-      if (checkData.exists && checkData.hasPasskey) {
+      if (checkData.exists && checkData.hasPasskey && !checkData.isAdminUser) {
         passkeyPrefillAction.value = 'signin';
       }
     }

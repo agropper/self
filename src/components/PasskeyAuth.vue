@@ -38,12 +38,23 @@
         @keyup.enter="handleEnterKey"
         class="q-mb-md"
       />
+      <q-input
+        v-if="adminSecretRequired"
+        v-model="adminSecret"
+        label="Admin Secret"
+        outlined
+        type="password"
+        :rules="[(val) => !!val || 'Admin secret is required']"
+        hint="Required to update the admin passkey"
+        class="q-mb-md"
+        @keyup.enter="handleEnterKey"
+      />
       <div class="row q-gutter-sm q-mt-md">
         <q-btn
           label="Continue"
           color="primary"
           :loading="loading"
-          :disable="!userId || userId.length < 3"
+          :disable="!userId || userId.length < 3 || (adminSecretRequired && !adminSecret)"
           @click="continueAction"
         />
         <q-btn
@@ -152,6 +163,8 @@ const loading = ref(false);
 const error = ref('');
 const action = ref(''); // 'signin' or 'register'
 const userIdInputRef = ref<HTMLInputElement | null>(null);
+const adminSecret = ref('');
+const adminSecretRequired = ref(false);
 const showFileImportDialog = ref(false);
 const showConfirmWithoutFileDialog = ref(false);
 const fileInputRef = ref<HTMLInputElement | null>(null);
@@ -178,6 +191,8 @@ const resetFlow = () => {
   error.value = '';
   action.value = '';
   loading.value = false;
+  adminSecret.value = '';
+  adminSecretRequired.value = false;
   showFileImportDialog.value = false;
   showConfirmWithoutFileDialog.value = false;
   kbName.value = null;
@@ -210,6 +225,13 @@ watch(
   { immediate: true }
 );
 
+watch(userId, (next, prev) => {
+  if (next && prev && next !== prev) {
+    adminSecret.value = '';
+    adminSecretRequired.value = false;
+  }
+});
+
 const handleEnterKey = () => {
   if (userId.value && userId.value.length >= 3 && !loading.value) {
     continueAction();
@@ -234,8 +256,11 @@ const continueAction = async () => {
 
       const checkData = await checkResponse.json();
       
-      if (checkData.exists && checkData.hasPasskey) {
+      if (checkData.exists && checkData.hasPasskey && !checkData.isAdminUser) {
         throw new Error('This user ID already has a passkey. Please sign in instead.');
+      }
+      if (checkData.isAdminUser) {
+        adminSecretRequired.value = true;
       }
       
       await handleRegistration();
@@ -260,12 +285,18 @@ const handleRegistration = async () => {
       body: JSON.stringify({
         userId: userId.value,
         displayName: userId.value,
-        email: null
+        email: null,
+        adminSecret: adminSecretRequired.value ? adminSecret.value : undefined
       })
     });
 
     if (!optionsResponse.ok) {
-      const errorData = await optionsResponse.json();
+      const errorData = await optionsResponse.json().catch(() => ({}));
+      if (errorData.errorCode === 'ADMIN_SECRET_REQUIRED' || errorData.errorCode === 'ADMIN_SECRET_INVALID') {
+        adminSecretRequired.value = true;
+        currentStep.value = 'userId';
+        throw new Error(errorData.error || 'Admin secret required to continue');
+      }
       throw new Error(errorData.error || 'Failed to start registration');
     }
 
@@ -281,12 +312,18 @@ const handleRegistration = async () => {
       credentials: 'include',
       body: JSON.stringify({
         userId: userId.value,
-        response: credential
+        response: credential,
+        adminSecret: adminSecretRequired.value ? adminSecret.value : undefined
       })
     });
 
     if (!verifyResponse.ok) {
       const errorData = await verifyResponse.json().catch(() => ({}));
+      if (errorData.errorCode === 'ADMIN_SECRET_REQUIRED' || errorData.errorCode === 'ADMIN_SECRET_INVALID') {
+        adminSecretRequired.value = true;
+        currentStep.value = 'userId';
+        throw new Error(errorData.error || 'Admin secret required to continue');
+      }
       throw new Error(errorData.error || 'Registration verification failed');
     }
 

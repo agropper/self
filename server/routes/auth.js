@@ -113,6 +113,24 @@ function getMaiaInstructionText() {
   }
 }
 
+function requireAdminSecretForUser(userId, adminSecret) {
+  const adminUsername = process.env.ADMIN_USERNAME;
+  if (!adminUsername || userId !== adminUsername) {
+    return { required: false, ok: true };
+  }
+  const configuredSecret = process.env.ADMIN_SECRET;
+  if (!configuredSecret) {
+    return { required: true, ok: false, error: 'ADMIN_SECRET_NOT_CONFIGURED' };
+  }
+  if (!adminSecret) {
+    return { required: true, ok: false, error: 'ADMIN_SECRET_REQUIRED' };
+  }
+  if (adminSecret !== configuredSecret) {
+    return { required: true, ok: false, error: 'ADMIN_SECRET_INVALID' };
+  }
+  return { required: true, ok: true };
+}
+
 function getSetupWizardMessages() {
   try {
     const newAgentFilePath = path.join(__dirname, '../../NEW-AGENT.txt');
@@ -275,17 +293,22 @@ export default function setupAuthRoutes(app, passkeyService, cloudant, doClient,
         return res.status(400).json({ error: 'User ID required' });
       }
 
+      const adminUsername = process.env.ADMIN_USERNAME;
+      const isAdminUser = !!adminUsername && userId === adminUsername;
+
       try {
         const userDoc = await cloudant.getDocument('maia_users', userId);
         res.json({
           exists: true,
-          hasPasskey: !!userDoc.credentialID
+          hasPasskey: !!userDoc.credentialID,
+          isAdminUser
         });
       } catch (error) {
         // User doesn't exist
         res.json({
           exists: false,
-          hasPasskey: false
+          hasPasskey: false,
+          isAdminUser
         });
       }
     } catch (error) {
@@ -297,15 +320,23 @@ export default function setupAuthRoutes(app, passkeyService, cloudant, doClient,
   // Passkey registration - generate options
   app.post('/api/passkey/register', async (req, res) => {
     try {
-      const { userId, displayName } = req.body;
+      const { userId, displayName, adminSecret } = req.body;
 
       if (!userId || !displayName) {
         return res.status(400).json({ error: 'User ID and display name required' });
       }
 
+      const adminSecretCheck = requireAdminSecretForUser(userId, adminSecret);
+      if (adminSecretCheck.required && !adminSecretCheck.ok) {
+        return res.status(403).json({
+          error: 'Admin secret required to create or update the admin passkey.',
+          errorCode: adminSecretCheck.error
+        });
+      }
+
       // Check if user already exists
       const existingUser = await cloudant.getDocument('maia_users', userId);
-      if (existingUser && existingUser.credentialID) {
+      if (existingUser && existingUser.credentialID && !adminSecretCheck.required) {
         return res.status(400).json({ 
           error: 'User already has a passkey',
           hasExistingPasskey: true
@@ -345,10 +376,18 @@ export default function setupAuthRoutes(app, passkeyService, cloudant, doClient,
   // Passkey registration - verify
   app.post('/api/passkey/register-verify', async (req, res) => {
     try {
-      const { userId, response } = req.body;
+      const { userId, response, adminSecret } = req.body;
 
       if (!userId || !response) {
         return res.status(400).json({ error: 'User ID and response required' });
+      }
+
+      const adminSecretCheck = requireAdminSecretForUser(userId, adminSecret);
+      if (adminSecretCheck.required && !adminSecretCheck.ok) {
+        return res.status(403).json({
+          error: 'Admin secret required to verify the admin passkey.',
+          errorCode: adminSecretCheck.error
+        });
       }
 
       // Get user document with challenge
