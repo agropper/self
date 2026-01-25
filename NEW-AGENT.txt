@@ -170,7 +170,7 @@ Your Private AI agent is ready to receive your health records and answer questio
 
 ## Welcome Page Video Caption
 
-First, download your records from your patient portal. This can take 48 hours or more. You can also download your records using Apple Health in minutes using the "Export PDF" button. However, the Apple Health export will not have the full text notes you get via a pateint portal download. You will then import your records for indexing into a private knowledge base that your private AI agent can access. The other, public AIs like ChatGPT, will not have access to your records except as part of a chat that you see and control. Doctors and other users you invite by sharing a deep link will have access to your records by asking your Private AI questions in the chat. You can disable this option in your My Agent settings.
+*Privacy Note:* You can also download your records using Apple Health in minutes using the "Export PDF" button. However, the Apple Health export will not have the full text notes you get via a pateint portal download. You will then import your records for indexing into a private knowledge base that your private AI agent can access. The other, public AIs like ChatGPT, will not have access to your records except as part of a chat that you see and control. Doctors and other users you invite by sharing a deep link will have access to your records by asking your Private AI questions in the chat. You can disable this option in your My Agent settings.
 
 
 ---

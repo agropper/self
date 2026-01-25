@@ -577,6 +577,7 @@ interface User {
   displayName: string;
   isDeepLink?: boolean;
   isTemporary?: boolean;
+  isAdmin?: boolean;
 }
 
 interface DeepLinkInfo {
@@ -1392,7 +1393,7 @@ const refreshWizardState = async () => {
   }
 };
 
-const shouldHideSetupWizard = computed(() => wizardPatientSummary.value);
+const shouldHideSetupWizard = computed(() => wizardPatientSummary.value || !!props.user?.isAdmin);
 
 const savePatientSummary = async (summary: string) => {
   if (!props.user?.userId || !summary) return;

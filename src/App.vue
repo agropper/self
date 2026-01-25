@@ -244,6 +244,7 @@ interface User {
   displayName: string;
   isDeepLink?: boolean;
   isTemporary?: boolean;
+  isAdmin?: boolean;
   deepLinkInfo?: DeepLinkInfo | null;
 }
 
@@ -283,6 +284,7 @@ const setAuthenticatedUser = (userData: any, deepLink: DeepLinkInfo | null = nul
     displayName: userData.displayName || userData.userId,
     isDeepLink: !!userData.isDeepLink,
     isTemporary: !!userData.isTemporary,
+    isAdmin: !!userData.isAdmin,
     deepLinkInfo: userData.deepLinkInfo || null
   };
 
@@ -304,7 +306,7 @@ const setAuthenticatedUser = (userData: any, deepLink: DeepLinkInfo | null = nul
     // In production (non-localhost), redirect away from /admin after authentication
     // This prevents new users from seeing the admin page after registration
     // The backend will enforce admin access if they try to access admin routes
-    if (isAdminPage && !isLocalhost) {
+    if (isAdminPage && !isLocalhost && !normalizedUser.isAdmin) {
       // Redirect to root - backend will enforce admin access if needed
       window.history.replaceState({}, '', '/');
       showAdminPage.value = false;
@@ -341,7 +343,7 @@ const handleAuthenticated = (userData: any) => {
     const isAdminPage = window.location.pathname === '/admin';
     const isLocalhost = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
     
-    if (isAdminPage && !isLocalhost) {
+    if (isAdminPage && !isLocalhost && !userData?.isAdmin) {
       // Redirect to root after a brief delay to ensure state is updated
       setTimeout(() => {
         window.location.href = '/';
@@ -669,12 +671,9 @@ onMounted(async () => {
     if (path === '/admin') {
       if (isLocalhost) {
         showAdminPage.value = true;
-      } else if (authenticated.value) {
-        // In production, only show admin page if user is actually on /admin
-        // Backend will enforce admin access
+      } else if (authenticated.value && user.value?.isAdmin) {
         showAdminPage.value = true;
       } else {
-        // Not authenticated and not localhost - don't show admin page
         showAdminPage.value = false;
       }
     } else {

@@ -441,12 +441,14 @@ export default function setupAuthRoutes(app, passkeyService, cloudant, doClient,
 
       // Return success with flag indicating file import dialog should be shown
       // The frontend will handle showing the dialog and uploading files
+      const isAdminUser = agentReadyUser.userId === process.env.ADMIN_USERNAME;
       res.json({ 
         success: true, 
         user: {
           userId: agentReadyUser.userId,
           displayName: agentReadyUser.displayName,
-          isTemporary: false
+          isTemporary: false,
+          isAdmin: isAdminUser
         },
         showFileImport: false
       });
@@ -479,11 +481,13 @@ export default function setupAuthRoutes(app, passkeyService, cloudant, doClient,
       await cloudant.saveDocument('maia_users', userDoc);
       console.log(`[NEW FLOW 2] User document updated - no admin provisioning`);
 
+      const isAdminUser = userDoc.userId === process.env.ADMIN_USERNAME;
       res.json({ 
         success: true, 
         user: {
           userId: userDoc.userId,
-          displayName: userDoc.displayName
+          displayName: userDoc.displayName,
+          isAdmin: isAdminUser
         }
       });
     } catch (error) {
@@ -581,12 +585,14 @@ export default function setupAuthRoutes(app, passkeyService, cloudant, doClient,
         userAgent: clientInfo.userAgent
       });
 
+      const isAdminUser = agentReadyUser.userId === process.env.ADMIN_USERNAME;
       res.json({ 
         success: true, 
         user: {
           userId: agentReadyUser.userId,
           displayName: agentReadyUser.displayName,
-          isTemporary: !!agentReadyUser.temporaryAccount
+          isTemporary: !!agentReadyUser.temporaryAccount,
+          isAdmin: isAdminUser
         }
       });
     } catch (error) {
@@ -746,6 +752,7 @@ export default function setupAuthRoutes(app, passkeyService, cloudant, doClient,
       return res.json({ authenticated: false });
     }
 
+    const isAdminUser = req.session.userId === process.env.ADMIN_USERNAME;
     res.json({
       authenticated: true,
       user: {
@@ -754,6 +761,7 @@ export default function setupAuthRoutes(app, passkeyService, cloudant, doClient,
         displayName: req.session.displayName,
         isTemporary: !!req.session.isTemporary,
         isDeepLink: !!req.session.isDeepLink,
+        isAdmin: isAdminUser,
         deepLinkInfo: req.session.isDeepLink ? {
           shareIds: Array.isArray(req.session.deepLinkShareIds)
             ? req.session.deepLinkShareIds

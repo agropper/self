@@ -5288,6 +5288,7 @@ app.get('/api/user-files', async (req, res) => {
     }
 
     let indexedFileTokens = {};
+    let indexedFileJobInfo = {};
     let kbTotalTokens = null;
     let kbDataSourceCount = null;
     let kbIndexedDataSourceCount = null;
@@ -5296,11 +5297,16 @@ app.get('/api/user-files', async (req, res) => {
         const dataSources = await doClient.kb.listDataSources(userDoc.kbId);
         const kbNameForTokens = getKBNameFromUserDoc(userDoc, userId);
         const tokensByKey = {};
+        const dataSourceKeyByUuid = new Map();
         let indexedCount = 0;
         for (const ds of dataSources || []) {
           const dsPath = ds?.item_path || ds?.path || ds?.spaces_data_source?.item_path;
           const resolvedKey = resolveSourceKeyFromDataSourcePath(dsPath, userId, kbNameForTokens);
           if (!resolvedKey) continue;
+          const dsUuid = ds?.uuid || ds?.id;
+          if (dsUuid) {
+            dataSourceKeyByUuid.set(dsUuid, resolvedKey);
+          }
           const lastJob = ds?.last_datasource_indexing_job;
           const lastTokens = lastJob?.tokens ||
             lastJob?.total_tokens ||
@@ -5328,6 +5334,61 @@ app.get('/api/user-files', async (req, res) => {
         } catch (kbTokenError) {
           console.warn('[KB Update] ⚠️ Failed to read KB total tokens:', kbTokenError.message);
         }
+
+        // Pull latest indexing job details for per-file debugging
+        try {
+          const recentJobs = await doClient.indexing.listForKB(userDoc.kbId);
+          const jobsArray = Array.isArray(recentJobs)
+            ? recentJobs
+            : (recentJobs?.jobs || recentJobs?.indexing_jobs || recentJobs?.data || []);
+          const sortedJobs = jobsArray
+            .filter(job => job && (job.uuid || job.id || job.indexing_job_id))
+            .sort((a, b) => {
+              const aTime = new Date(a.updated_at || a.finished_at || a.created_at || 0).getTime();
+              const bTime = new Date(b.updated_at || b.finished_at || b.created_at || 0).getTime();
+              return bTime - aTime;
+            });
+
+          const latestJob = sortedJobs[0];
+          const latestJobId = latestJob?.uuid || latestJob?.id || latestJob?.indexing_job_id || null;
+
+          if (latestJobId) {
+            const jobDetails = await doClient.indexing.getStatus(latestJobId);
+            const jobPayload = jobDetails?.job || jobDetails?.indexing_job || jobDetails || null;
+            if (jobPayload) {
+              const jobTokens = jobPayload.tokens;
+              const jobTotalTokens = jobPayload.total_tokens;
+              const jobTotalDatasources = jobPayload.total_datasources ||
+                (Array.isArray(jobPayload.data_source_uuids) ? jobPayload.data_source_uuids.length : null);
+              const jobCompletedDatasources = jobPayload.completed_datasources;
+              const jobStatus = jobPayload.status;
+              const jobPhase = jobPayload.phase;
+              const dataSourceJobs = Array.isArray(jobPayload.data_source_jobs)
+                ? jobPayload.data_source_jobs
+                : [];
+              const dataSourceJobByUuid = new Map(
+                dataSourceJobs
+                  .filter(dsJob => dsJob?.data_source_uuid)
+                  .map(dsJob => [dsJob.data_source_uuid, dsJob])
+              );
+
+              for (const [dsUuid, resolvedKey] of dataSourceKeyByUuid.entries()) {
+                indexedFileJobInfo[resolvedKey] = {
+                  jobId: latestJobId,
+                  tokens: jobTokens,
+                  totalTokens: jobTotalTokens,
+                  totalDatasources: jobTotalDatasources,
+                  completedDatasources: jobCompletedDatasources,
+                  status: jobStatus,
+                  phase: jobPhase,
+                  dataSourceJob: dataSourceJobByUuid.get(dsUuid) || null
+                };
+              }
+            }
+          }
+        } catch (jobError) {
+          console.warn('[KB Update] ⚠️ Failed to read indexing job details:', jobError.message);
+        }
       } catch (tokenError) {
         console.warn('[KB Update] ⚠️ Failed to read per-file token counts:', tokenError.message);
       }
@@ -5338,6 +5399,7 @@ app.get('/api/user-files', async (req, res) => {
       files: files,
       indexedFiles: indexedFiles,
       indexedFileTokens: indexedFileTokens,
+      indexedFileJobInfo: indexedFileJobInfo,
       kbTotalTokens: kbTotalTokens,
       kbDataSourceCount: kbDataSourceCount,
       kbIndexedDataSourceCount: kbIndexedDataSourceCount,

@@ -84,6 +84,13 @@
                         Moving file...
                       </span>
                     </q-item-label>
+                    <q-item-label
+                      v-if="indexedFileJobInfo[file.bucketKey]"
+                      caption
+                      class="text-grey-6"
+                    >
+                      {{ formatIndexedJobInfo(file.bucketKey) }}
+                    </q-item-label>
                   </q-item-section>
                   <q-item-section side>
                     <div class="row items-center q-gutter-xs">
@@ -1122,6 +1129,7 @@ const kbSummaryFiles = ref<number | null>(null);
 const kbDataSourceCount = ref<number | null>(null);
 const kbIndexedDataSourceCount = ref<number | null>(null);
 const indexedFileTokens = ref<Record<string, number | string>>({});
+const indexedFileJobInfo = ref<Record<string, any>>({});
 
 const hasCheckboxChanges = computed(() => {
   if (originalFiles.value.length !== userFiles.value.length) return true;
@@ -1169,6 +1177,48 @@ const formatTokenCount = (value: number | string) => {
   const numeric = Number(value);
   if (!Number.isFinite(numeric)) return value;
   return new Intl.NumberFormat().format(numeric);
+};
+
+const formatIndexedJobInfo = (bucketKey: string) => {
+  const info = indexedFileJobInfo.value[bucketKey];
+  if (!info) return '';
+
+  const jobParts: string[] = [];
+  if (info.tokens !== undefined && info.tokens !== null) {
+    jobParts.push(`job tokens: ${formatTokenCount(info.tokens)}`);
+  }
+  if (info.totalTokens !== undefined && info.totalTokens !== null) {
+    jobParts.push(`job total tokens: ${formatTokenCount(info.totalTokens)}`);
+  }
+  if (info.totalDatasources !== undefined && info.totalDatasources !== null) {
+    jobParts.push(`job total datasources: ${info.totalDatasources}`);
+  }
+  if (info.completedDatasources !== undefined && info.completedDatasources !== null) {
+    jobParts.push(`job completed datasources: ${info.completedDatasources}`);
+  }
+  if (info.status) {
+    jobParts.push(`job status: ${info.status}`);
+  }
+  if (info.phase) {
+    jobParts.push(`job phase: ${info.phase}`);
+  }
+
+  const ds = info.dataSourceJob;
+  if (ds) {
+    if (ds.status) jobParts.push(`ds status: ${ds.status}`);
+    if (ds.indexed_file_count) jobParts.push(`ds indexed files: ${ds.indexed_file_count}`);
+    if (ds.total_file_count) jobParts.push(`ds total files: ${ds.total_file_count}`);
+    if (ds.indexed_item_count) jobParts.push(`ds indexed items: ${ds.indexed_item_count}`);
+    if (ds.failed_item_count) jobParts.push(`ds failed items: ${ds.failed_item_count}`);
+    if (ds.removed_item_count) jobParts.push(`ds removed items: ${ds.removed_item_count}`);
+    if (ds.skipped_item_count) jobParts.push(`ds skipped items: ${ds.skipped_item_count}`);
+    if (ds.total_bytes) jobParts.push(`ds total bytes: ${ds.total_bytes}`);
+    if (ds.total_bytes_indexed) jobParts.push(`ds bytes indexed: ${ds.total_bytes_indexed}`);
+    if (ds.error_msg) jobParts.push(`ds error: ${ds.error_msg}`);
+    if (ds.error_details) jobParts.push(`ds error details: ${ds.error_details}`);
+  }
+
+  return jobParts.join(' • ');
 };
 const indexingKB = ref(false);
 const indexingStatus = ref({
@@ -1333,6 +1383,12 @@ const loadFiles = async () => {
       });
     } else {
       indexedFileTokens.value = {};
+    }
+
+    if (result.indexedFileJobInfo && typeof result.indexedFileJobInfo === 'object') {
+      indexedFileJobInfo.value = result.indexedFileJobInfo;
+    } else {
+      indexedFileJobInfo.value = {};
     }
 
     if (result.kbTotalTokens !== undefined && result.kbTotalTokens !== null) {
