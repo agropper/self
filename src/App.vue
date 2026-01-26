@@ -129,7 +129,9 @@
             :user="user"
             :is-deep-link-user="isDeepLinkUser"
             :deep-link-info="deepLinkInfo"
+            :restore-chat-state="restoredChatState"
             @sign-out="handleSignOut"
+            @restore-applied="restoredChatState = null"
             @update:deep-link-info="handleDeepLinkInfoUpdate"
           />
         </div>
@@ -225,6 +227,40 @@
       </q-card>
     </q-dialog>
 
+    <!-- Restore local backup dialog -->
+    <q-dialog v-model="showRestoreDialog" persistent>
+      <q-card style="min-width: 520px; max-width: 640px">
+        <q-card-section>
+          <div class="text-h6">Restore Local Backup?</div>
+        </q-card-section>
+        <q-card-section class="text-body2">
+          <p>
+            We found a local backup from <strong>{{ restoreSnapshot?.user?.userId }}</strong>.
+            This can restore your saved chats and current chat draft to the new temporary account.
+          </p>
+          <p class="q-mt-md">
+            Your files must be re-uploaded if the server was deleted.
+          </p>
+        </q-card-section>
+        <q-card-actions align="right">
+          <q-btn
+            flat
+            label="SKIP"
+            color="primary"
+            :disable="restoreLoading"
+            @click="handleSkipRestore"
+          />
+          <q-btn
+            flat
+            label="RESTORE"
+            color="negative"
+            :disable="restoreLoading"
+            @click="handleRestoreSnapshot"
+          />
+        </q-card-actions>
+      </q-card>
+    </q-dialog>
+
     <!-- Confirm destroy dialog -->
     <q-dialog v-model="showDestroyDialog" persistent>
       <q-card style="min-width: 520px; max-width: 640px">
@@ -273,7 +309,8 @@ import ChatInterface from './components/ChatInterface.vue';
 import DeepLinkAccess from './components/DeepLinkAccess.vue';
 import PrivacyDialog from './components/PrivacyDialog.vue';
 import AdminUsers from './components/AdminUsers.vue';
-import { saveUserSnapshot } from './utils/localDb';
+import { useQuasar } from 'quasar';
+import { saveUserSnapshot, getLastSnapshotUserId, getUserSnapshot, clearLastSnapshotUserId } from './utils/localDb';
 
 interface User {
   userId: string;
@@ -328,6 +365,12 @@ const showDormantDialog = ref(false);
 const dormantDeepLinkCount = ref(0);
 const dormantLoading = ref(false);
 const signOutSnapshot = ref<SignOutSnapshot | null>(null);
+const showRestoreDialog = ref(false);
+const restoreLoading = ref(false);
+const restoreSnapshot = ref<any | null>(null);
+const restoredChatState = ref<any | null>(null);
+
+const $q = useQuasar();
 
 const setAuthenticatedUser = (userData: any, deepLink: DeepLinkInfo | null = null) => {
   if (!userData) return;
@@ -510,6 +553,64 @@ const handleLiveSignOut = async () => {
   }
 };
 
+const restoreSavedChats = async (snapshot: any) => {
+  const savedChats = snapshot?.savedChats?.chats;
+  if (!Array.isArray(savedChats) || savedChats.length === 0) return;
+
+  for (const chat of savedChats) {
+    try {
+      await fetch('/api/save-group-chat', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        credentials: 'include',
+        body: JSON.stringify({
+          chatHistory: chat.chatHistory || [],
+          uploadedFiles: chat.uploadedFiles || [],
+          connectedKB: chat.connectedKB || 'No KB connected'
+        })
+      });
+    } catch (error) {
+      console.warn('Failed to restore saved chat:', error);
+    }
+  }
+};
+
+const handleRestoreSnapshot = async () => {
+  if (!restoreSnapshot.value || !user.value?.userId) return;
+  restoreLoading.value = true;
+  try {
+    restoredChatState.value = restoreSnapshot.value.currentChat || null;
+    await restoreSavedChats(restoreSnapshot.value);
+    clearLastSnapshotUserId();
+    if ($q && typeof $q.notify === 'function') {
+      $q.notify({
+        type: 'positive',
+        message: 'Local backup restored to your new temporary account.',
+        timeout: 4000
+      });
+    }
+  } catch (error) {
+    console.error('Restore failed:', error);
+    if ($q && typeof $q.notify === 'function') {
+      $q.notify({
+        type: 'negative',
+        message: 'Failed to restore local backup.',
+        timeout: 4000
+      });
+    }
+  } finally {
+    restoreLoading.value = false;
+    showRestoreDialog.value = false;
+  }
+};
+
+const handleSkipRestore = () => {
+  showRestoreDialog.value = false;
+  restoreSnapshot.value = null;
+};
+
 const checkDeepLinkSession = async (shareId: string) => {
   deepLinkLoading.value = true;
   deepLinkError.value = '';
@@ -589,6 +690,18 @@ const startTemporarySession = async () => {
       throw new Error(data.error || 'Unable to create temporary account');
     }
     setAuthenticatedUser(data.user, null);
+    try {
+      const lastSnapshotUserId = getLastSnapshotUserId();
+      if (lastSnapshotUserId && lastSnapshotUserId !== data.user.userId) {
+        const snapshot = await getUserSnapshot(lastSnapshotUserId);
+        if (snapshot) {
+          restoreSnapshot.value = snapshot;
+          showRestoreDialog.value = true;
+        }
+      }
+    } catch (restoreError) {
+      console.warn('Unable to read local backup:', restoreError);
+    }
   } catch (error) {
     tempStartError.value = error instanceof Error ? error.message : 'Unable to create temporary account';
   } finally {

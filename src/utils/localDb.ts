@@ -27,6 +27,8 @@ type SnapshotDoc = SnapshotPayload & {
   updatedAt: string;
 };
 
+const LAST_SNAPSHOT_KEY = 'maia_last_snapshot_user';
+
 const dbCache = new Map<string, PouchDB.Database>();
 
 export const getUserDb = (userId: string): PouchDB.Database => {
@@ -59,5 +61,30 @@ export const saveUserSnapshot = async (payload: SnapshotPayload) => {
     ...payload
   };
   await upsertDoc(db, snapshot);
+  if (typeof window !== 'undefined' && window.localStorage) {
+    window.localStorage.setItem(LAST_SNAPSHOT_KEY, payload.user.userId);
+  }
+};
+
+export const getLastSnapshotUserId = () => {
+  if (typeof window === 'undefined' || !window.localStorage) return null;
+  return window.localStorage.getItem(LAST_SNAPSHOT_KEY);
+};
+
+export const clearLastSnapshotUserId = () => {
+  if (typeof window === 'undefined' || !window.localStorage) return;
+  window.localStorage.removeItem(LAST_SNAPSHOT_KEY);
+};
+
+export const getUserSnapshot = async (userId: string) => {
+  if (!userId) return null;
+  const db = getUserDb(userId);
+  try {
+    const doc = await db.get<SnapshotDoc>('user_snapshot');
+    return doc || null;
+  } catch (error: any) {
+    if (error?.status === 404) return null;
+    throw error;
+  }
 };
 

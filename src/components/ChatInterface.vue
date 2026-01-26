@@ -604,6 +604,15 @@ interface Props {
   user?: User | null;
   isDeepLinkUser?: boolean;
   deepLinkInfo?: DeepLinkInfo | null;
+  restoreChatState?: {
+    messages: any[];
+    uploadedFiles: any[];
+    inputMessage: string;
+    providerKey: string;
+    providerLabel: string;
+    savedChatId?: string | null;
+    savedChatShareId?: string | null;
+  } | null;
 }
 
 interface SignOutSnapshot {
@@ -622,6 +631,7 @@ const props = defineProps<Props>();
 
 const emit = defineEmits<{
   'sign-out': [SignOutSnapshot];
+  'restore-applied': [];
   'update:deepLinkInfo': [DeepLinkInfo | null];
 }>();
 
@@ -731,6 +741,36 @@ watch(
 const deepLinkShareId = computed(() => deepLinkInfoLocal.value?.shareId || null);
 const deepLinkChatId = computed(() => deepLinkInfoLocal.value?.chatId || null);
 const canAccessMyStuff = computed(() => !isDeepLink.value && !props.user?.isDeepLink);
+const restoreApplied = ref(false);
+
+const applyRestoredChatState = (state: NonNullable<Props['restoreChatState']>) => {
+  if (restoreApplied.value) return;
+  if (!state) return;
+  messages.value = Array.isArray(state.messages) ? state.messages : [];
+  uploadedFiles.value = Array.isArray(state.uploadedFiles) ? state.uploadedFiles : [];
+  inputMessage.value = state.inputMessage || '';
+  currentSavedChatId.value = state.savedChatId || null;
+  currentSavedChatShareId.value = state.savedChatShareId || null;
+
+  const providerLabel = state.providerLabel || getProviderLabelFromKey(state.providerKey || '');
+  if (providerLabel) {
+    selectedProvider.value = providerLabel;
+  }
+
+  originalMessages.value = JSON.parse(JSON.stringify(messages.value));
+  trulyOriginalMessages.value = JSON.parse(JSON.stringify(messages.value));
+  restoreApplied.value = true;
+  emit('restore-applied');
+};
+
+watch(
+  () => props.restoreChatState,
+  (state) => {
+    if (state) {
+      applyRestoredChatState(state);
+    }
+  }
+);
 
 type UploadedFilePayload = {
   id: string;
