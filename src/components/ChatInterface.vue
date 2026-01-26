@@ -606,10 +606,22 @@ interface Props {
   deepLinkInfo?: DeepLinkInfo | null;
 }
 
+interface SignOutSnapshot {
+  currentChat: {
+    messages: any[];
+    uploadedFiles: any[];
+    inputMessage: string;
+    providerKey: string;
+    providerLabel: string;
+    savedChatId?: string | null;
+    savedChatShareId?: string | null;
+  };
+}
+
 const props = defineProps<Props>();
 
 const emit = defineEmits<{
-  'sign-out': [];
+  'sign-out': [SignOutSnapshot];
   'update:deepLinkInfo': [DeepLinkInfo | null];
 }>();
 
@@ -1296,7 +1308,19 @@ const sendMessage = async () => {
 };
 
 const handleSignOut = () => {
-  emit('sign-out');
+  const providerKey = getProviderKey(selectedProvider.value);
+  const providerLabel = getProviderLabelFromKey(providerKey);
+  emit('sign-out', {
+    currentChat: {
+      messages: buildChatHistoryPayload(),
+      uploadedFiles: buildUploadedFilePayload(),
+      inputMessage: inputMessage.value,
+      providerKey,
+      providerLabel,
+      savedChatId: currentSavedChatId.value,
+      savedChatShareId: currentSavedChatShareId.value
+    }
+  });
 };
 
 const stopAgentSetupTimer = () => {

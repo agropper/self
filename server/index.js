@@ -5298,6 +5298,7 @@ app.get('/api/user-files', async (req, res) => {
         const kbNameForTokens = getKBNameFromUserDoc(userDoc, userId);
         const tokensByKey = {};
         const dataSourceKeyByUuid = new Map();
+        const dataSourcePathByKey = new Map();
         let indexedCount = 0;
         for (const ds of dataSources || []) {
           const dsPath = ds?.item_path || ds?.path || ds?.spaces_data_source?.item_path;
@@ -5306,6 +5307,9 @@ app.get('/api/user-files', async (req, res) => {
           const dsUuid = ds?.uuid || ds?.id;
           if (dsUuid) {
             dataSourceKeyByUuid.set(dsUuid, resolvedKey);
+          }
+          if (dsPath) {
+            dataSourcePathByKey.set(resolvedKey, dsPath);
           }
           const lastJob = ds?.last_datasource_indexing_job;
           const lastTokens = lastJob?.tokens ||
@@ -5374,6 +5378,8 @@ app.get('/api/user-files', async (req, res) => {
 
               for (const [dsUuid, resolvedKey] of dataSourceKeyByUuid.entries()) {
                 indexedFileJobInfo[resolvedKey] = {
+                  dataSourceUuid: dsUuid,
+                  dataSourcePath: dataSourcePathByKey.get(resolvedKey) || null,
                   jobId: latestJobId,
                   tokens: jobTokens,
                   totalTokens: jobTotalTokens,

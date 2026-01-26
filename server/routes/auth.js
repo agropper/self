@@ -631,6 +631,108 @@ export default function setupAuthRoutes(app, passkeyService, cloudant, doClient,
     });
   });
 
+  // Deep link share status for signed-in user
+  app.get('/api/user-deep-links', async (req, res) => {
+    try {
+      const userId = req.session?.userId;
+      if (!userId) {
+        return res.status(401).json({
+          success: false,
+          message: 'User not authenticated',
+          error: 'NOT_AUTHENTICATED'
+        });
+      }
+
+      const userDoc = await cloudant.getDocument('maia_users', userId);
+      if (!userDoc) {
+        return res.status(404).json({
+          success: false,
+          message: 'User not found',
+          error: 'USER_NOT_FOUND'
+        });
+      }
+
+      const shareIds = Array.isArray(userDoc.deepLinkShareIds) ? userDoc.deepLinkShareIds : [];
+      res.json({
+        success: true,
+        count: shareIds.length,
+        shareIds
+      });
+    } catch (error) {
+      console.error('Deep link lookup failed:', error);
+      res.status(500).json({
+        success: false,
+        message: error.message || 'Failed to read deep link status'
+      });
+    }
+  });
+
+  // Dormant account - delete KB, keep agent
+  app.post('/api/account/dormant', async (req, res) => {
+    try {
+      const userId = req.session?.userId;
+      if (!userId) {
+        return res.status(401).json({
+          success: false,
+          message: 'User not authenticated',
+          error: 'NOT_AUTHENTICATED'
+        });
+      }
+
+      const userDoc = await cloudant.getDocument('maia_users', userId);
+      if (!userDoc) {
+        return res.status(404).json({
+          success: false,
+          message: 'User not found',
+          error: 'USER_NOT_FOUND'
+        });
+      }
+
+      let kbDeleted = false;
+      if (userDoc.kbId) {
+        try {
+          await doClient.kb.get(userDoc.kbId);
+          await doClient.kb.delete(userDoc.kbId);
+          kbDeleted = true;
+        } catch (kbError) {
+          if (kbError.statusCode === 404 || kbError.message?.includes('not found')) {
+            kbDeleted = true;
+          } else {
+            throw kbError;
+          }
+        }
+      } else {
+        kbDeleted = true;
+      }
+
+      userDoc.dormantAccount = true;
+      userDoc.dormantAt = new Date().toISOString();
+      userDoc.kbId = null;
+      userDoc.kbIndexedFiles = [];
+      userDoc.kbPendingFiles = undefined;
+      userDoc.kbIndexingNeeded = false;
+      userDoc.kbLastIndexingJobId = null;
+      userDoc.kbLastIndexedAt = null;
+      userDoc.kbLastIndexingTokens = null;
+      userDoc.kbIndexingStartedAt = null;
+      userDoc.updatedAt = new Date().toISOString();
+
+      await cloudant.saveDocument('maia_users', userDoc);
+
+      res.json({
+        success: true,
+        kbDeleted
+      });
+    } catch (error) {
+      console.error('Dormant account error:', error);
+      res.status(500).json({
+        success: false,
+        message: error.message || 'Failed to set account dormant',
+        error: 'DORMANT_FAILED'
+      });
+    }
+  });
+
   // Temporary user start (cookie-backed)
   app.post('/api/temporary/start', async (req, res) => {
     try {

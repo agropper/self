@@ -1184,6 +1184,12 @@ const formatIndexedJobInfo = (bucketKey: string) => {
   if (!info) return '';
 
   const jobParts: string[] = [];
+  if (info.dataSourceUuid) {
+    jobParts.push(`ds uuid: ${info.dataSourceUuid}`);
+  }
+  if (info.dataSourcePath) {
+    jobParts.push(`ds path: ${info.dataSourcePath}`);
+  }
   if (info.tokens !== undefined && info.tokens !== null) {
     jobParts.push(`job tokens: ${formatTokenCount(info.tokens)}`);
   }

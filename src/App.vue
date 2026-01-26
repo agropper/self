@@ -190,6 +190,41 @@
       </q-card>
     </q-dialog>
 
+    <!-- Dormant account choice for standard users -->
+    <q-dialog v-model="showDormantDialog" persistent>
+      <q-card style="min-width: 520px; max-width: 640px">
+        <q-card-section>
+          <div class="text-h6">Sign Out Options</div>
+        </q-card-section>
+        <q-card-section class="text-body2">
+          <p>
+            You have {{ dormantDeepLinkCount }} active deep link{{ dormantDeepLinkCount === 1 ? '' : 's' }}.
+            If you go dormant, those links will stop working until you reactivate your account.
+          </p>
+          <p class="q-mt-md">
+            Choose <strong>KEEP SERVER LIVE</strong> to keep your deep links active.
+            Choose <strong>GO DORMANT</strong> to save a local backup and delete your knowledge base.
+          </p>
+        </q-card-section>
+        <q-card-actions align="right">
+          <q-btn
+            flat
+            label="KEEP SERVER LIVE"
+            color="primary"
+            :disable="dormantLoading"
+            @click="handleLiveSignOut"
+          />
+          <q-btn
+            flat
+            label="GO DORMANT"
+            color="negative"
+            :disable="dormantLoading"
+            @click="handleDormantSignOut"
+          />
+        </q-card-actions>
+      </q-card>
+    </q-dialog>
+
     <!-- Confirm destroy dialog -->
     <q-dialog v-model="showDestroyDialog" persistent>
       <q-card style="min-width: 520px; max-width: 640px">
@@ -238,6 +273,7 @@ import ChatInterface from './components/ChatInterface.vue';
 import DeepLinkAccess from './components/DeepLinkAccess.vue';
 import PrivacyDialog from './components/PrivacyDialog.vue';
 import AdminUsers from './components/AdminUsers.vue';
+import { saveUserSnapshot } from './utils/localDb';
 
 interface User {
   userId: string;
@@ -251,6 +287,18 @@ interface User {
 interface DeepLinkInfo {
   shareId: string | null;
   chatId?: string | null;
+}
+
+interface SignOutSnapshot {
+  currentChat?: {
+    messages: any[];
+    uploadedFiles: any[];
+    inputMessage: string;
+    providerKey: string;
+    providerLabel: string;
+    savedChatId?: string | null;
+    savedChatShareId?: string | null;
+  };
 }
 
 const DEFAULT_TITLE = 'MAIA User App';
@@ -276,6 +324,10 @@ const destroyLoading = ref(false);
 const passkeyPrefillUserId = ref<string | null>(null);
 const passkeyPrefillAction = ref<'signin' | 'register' | null>(null);
 const showPasskeyDialog = ref(false);
+const showDormantDialog = ref(false);
+const dormantDeepLinkCount = ref(0);
+const dormantLoading = ref(false);
+const signOutSnapshot = ref<SignOutSnapshot | null>(null);
 
 const setAuthenticatedUser = (userData: any, deepLink: DeepLinkInfo | null = null) => {
   if (!userData) return;
@@ -380,6 +432,84 @@ const resetAuthState = () => {
   }
 };
 
+const saveLocalSnapshot = async (snapshot?: SignOutSnapshot | null) => {
+  if (!user.value?.userId || user.value.isDeepLink) return;
+  try {
+    const [filesResponse, chatsResponse] = await Promise.all([
+      fetch(`/api/user-files?userId=${encodeURIComponent(user.value.userId)}`, {
+        credentials: 'include'
+      }),
+      fetch(`/api/user-chats?userId=${encodeURIComponent(user.value.userId)}`, {
+        credentials: 'include'
+      })
+    ]);
+
+    const files = filesResponse.ok ? await filesResponse.json() : null;
+    const savedChats = chatsResponse.ok ? await chatsResponse.json() : null;
+
+    await saveUserSnapshot({
+      user: {
+        userId: user.value.userId,
+        displayName: user.value.displayName,
+        isTemporary: user.value.isTemporary,
+        isAdmin: user.value.isAdmin
+      },
+      files,
+      savedChats,
+      currentChat: snapshot?.currentChat || null
+    });
+  } catch (error) {
+    console.warn('Failed to save local snapshot:', error);
+  }
+};
+
+const performSignOut = async () => {
+  const response = await fetch('/api/sign-out', {
+    method: 'POST',
+    credentials: 'include'
+  });
+
+  if (response.ok) {
+    resetAuthState();
+    if (deepLinkShareId.value) {
+      await checkDeepLinkSession(deepLinkShareId.value);
+    }
+  }
+};
+
+const handleDormantSignOut = async () => {
+  if (!user.value?.userId) return;
+  dormantLoading.value = true;
+  try {
+    await saveLocalSnapshot(signOutSnapshot.value);
+    await fetch('/api/account/dormant', {
+      method: 'POST',
+      credentials: 'include'
+    });
+    await performSignOut();
+  } catch (error) {
+    console.error('Dormant sign out error:', error);
+  } finally {
+    dormantLoading.value = false;
+    showDormantDialog.value = false;
+    signOutSnapshot.value = null;
+  }
+};
+
+const handleLiveSignOut = async () => {
+  dormantLoading.value = true;
+  try {
+    await saveLocalSnapshot(signOutSnapshot.value);
+    await performSignOut();
+  } catch (error) {
+    console.error('Sign out error:', error);
+  } finally {
+    dormantLoading.value = false;
+    showDormantDialog.value = false;
+    signOutSnapshot.value = null;
+  }
+};
+
 const checkDeepLinkSession = async (shareId: string) => {
   deepLinkLoading.value = true;
   deepLinkError.value = '';
@@ -412,26 +542,28 @@ const checkDeepLinkSession = async (shareId: string) => {
   }
 };
 
-const handleSignOut = async () => {
+const handleSignOut = async (snapshot?: SignOutSnapshot) => {
+  signOutSnapshot.value = snapshot || null;
   if (user.value?.isTemporary) {
     showTempSignOutDialog.value = true;
     return;
   }
   try {
-    const response = await fetch('/api/sign-out', {
-      method: 'POST',
+    const response = await fetch('/api/user-deep-links', {
       credentials: 'include'
     });
-
-    if (response.ok) {
-      resetAuthState();
-      if (deepLinkShareId.value) {
-        await checkDeepLinkSession(deepLinkShareId.value);
-      }
+    const data = response.ok ? await response.json() : null;
+    const deepLinkCount = data?.count || 0;
+    dormantDeepLinkCount.value = deepLinkCount;
+    if (deepLinkCount > 0) {
+      showDormantDialog.value = true;
+      return;
     }
   } catch (error) {
-    console.error('Sign out error:', error);
+    console.warn('Unable to check deep links for sign-out:', error);
   }
+
+  await handleDormantSignOut();
 };
 
 const startTemporarySession = async () => {
