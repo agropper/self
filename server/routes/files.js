@@ -774,15 +774,33 @@ export default function setupFileRoutes(app, cloudant, doClient) {
       if (isInitialImport) {
         console.log(`[NEW FLOW 2] ✅ Initial import file uploaded successfully: ${fileName} to ${bucketKey}`);
         try {
-          const userDoc = await cloudant.getDocument('maia_users', userId);
-          if (userDoc) {
-            userDoc.initialFile = {
-              fileName: fileName,
-              bucketKey: bucketKey,
-              fileSize: req.file.size,
-              uploadedAt: new Date().toISOString()
-            };
-            await cloudant.saveDocument('maia_users', userDoc);
+          let saved = false;
+          let attempts = 0;
+          while (!saved && attempts < 3) {
+            attempts += 1;
+            const userDoc = await cloudant.getDocument('maia_users', userId);
+            if (userDoc) {
+              userDoc.initialFile = {
+                fileName: fileName,
+                bucketKey: bucketKey,
+                fileSize: req.file.size,
+                uploadedAt: new Date().toISOString()
+              };
+              try {
+                await cloudant.saveDocument('maia_users', userDoc);
+                saved = true;
+              } catch (saveError) {
+                if (saveError?.statusCode === 409 && attempts < 3) {
+                  continue;
+                }
+                throw saveError;
+              }
+            } else {
+              break;
+            }
+          }
+          if (!saved) {
+            console.warn('[NEW FLOW 2] ⚠️ Initial file metadata not saved after retries');
           }
         } catch (updateError) {
           console.warn(`[NEW FLOW 2] ⚠️ Failed to store initial file metadata: ${updateError.message}`);

@@ -1,3 +1,94 @@
+## Review: Temporary User Flow (Get Started → Work → Sign Out)
+
+### Baseline Behavior (Current Requirement)
+
+#### On Sign-Out of a temporary user
+
+- Create a local IndexedDB database for the user (PouchDB snapshot).
+- Console: `[LOCAL] Snapshot saved for <userId>`
+- Destroy the knowledge base (privacy).
+- Terminal: `[LOCAL] KB deleted for <userId>`
+- Delete the user’s Spaces folder (privacy).
+- Terminal: `[LOCAL] Spaces folder deleted for <userId>`
+- Delete user documents in CouchDB (privacy).
+- Terminal: `[LOCAL] CouchDB docs deleted for <userId>`
+- Store the userId in localStorage for discovery on next visit.
+- Console: `[LOCAL] Stored local backup userId: <userId>`
+- Clear the temporary user cookie.
+- Terminal: `[LOCAL] Temporary cookie cleared for <userId>`
+
+#### On Get Started
+
+- Check localStorage for a previous userId.
+- Console: `[LOCAL] Found local backup userId: <userId>`
+- If found, check for an existing agent whose name starts with that userId.
+- Console: `[LOCAL] Agent lookup for <userId>: <found|missing>`
+- If the agent matches:
+  - Do not start the wizard.
+  - Console: `[LOCAL] Wizard suppressed for rehydration`
+  - Rehydrate all files into Spaces by prompting for each file
+    (this becomes a new Saved Files feature).
+    - Console: `[LOCAL] Rehydration started for <count> file(s)`
+  - After rehydration, show the wizard if Stage 4 is incomplete.
+  - Console: `[LOCAL] Rehydration complete; wizard re-evaluated`
+- If localStorage has a userId but the agent is missing:
+  - Show a modal with two options:
+    - **Clear Local Storage**
+    - **Start the Wizard Again** (create a new agent)
+  - Console: `[LOCAL] Missing agent prompt shown for <userId>`
+
+### Cookie behavior (local identity)
+
+- When a new temporary user clicks **Get Started**, the frontend calls `POST /api/temporary/start`.
+- The server sets the `maia_temp_user` cookie (90‑day max age) with the generated `userId`.
+- On subsequent visits, `/api/temporary/start` will reuse that cookie to revive the same temp user if it still exists.
+- On **sign out**, the server clears the temporary cookie (and the deep link cookie if present).
+
+### CouchDB provisioning and app connection
+
+- The droplet runs CouchDB/Cloudant for server persistence.
+- The app connects to CouchDB via the backend (Cloudant client); the browser never talks to CouchDB directly.
+- User state is stored in `maia_users`. Saved chats are stored in `maia_chats`. Sessions are stored in `maia_sessions`.
+- For temporary users, the `maia_users` doc includes `temporaryAccount: true`.
+
+### Spaces usage
+
+- Spaces is the primary storage for uploaded files (Saved Files).
+- The knowledge base is created from Spaces object paths and indexed in DigitalOcean.
+- When a user goes dormant, only the KB is deleted; Spaces objects are not deleted by this flow.
+
+### PouchDB usage (local backup)
+
+- A local DB `maia-user-${userId}` is created in IndexedDB.
+- On **sign out** (live or dormant), the app saves a `user_snapshot` document containing:
+  - user profile
+  - Saved Files metadata
+  - saved chats
+  - current chat draft/state
+- The snapshot also stores the last snapshot user ID in `localStorage` for discovery.
+
+### Cookie after sign out
+
+- `maia_temp_user` is cleared on sign out.
+- If the user returns and clicks **Get Started** again, a *new* temporary account is created.
+
+### What can be destroyed if there are no other users
+
+- **Knowledge Base** (always safe to delete when dormant).
+- **Spaces objects** (optional; only if the user has local backups of all files).
+- **CouchDB container** (optional; only if you intend to rely entirely on local backups and re‑uploads).
+- **Private AI agent** does not need to be deleted (token‑billed).
+
+### Rehydrate after sign out
+
+1) User clicks **Get Started** → new temporary account created.
+2) App detects a local snapshot and prompts to restore.
+3) If restore is accepted:
+   - saved chats are re‑saved to the server
+   - current chat state is restored to the UI
+4) Files must be re‑uploaded from local disk if Spaces was wiped.
+5) KB is re‑indexed on demand when the user requests Private AI features.
+
 ## Goal
 
 Make **dormant accounts the default** by adding a local PouchDB backup for each user.

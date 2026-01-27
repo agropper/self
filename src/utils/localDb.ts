@@ -19,6 +19,16 @@ type SnapshotPayload = {
   files?: any;
   savedChats?: any;
   currentChat?: any;
+  currentMedications?: string | null;
+  initialFile?: {
+    fileName?: string;
+    bucketKey?: string;
+  } | null;
+  fileStatusSummary?: Array<{
+    fileName?: string;
+    bucketKey?: string;
+    chipStatus: 'indexed' | 'pending' | 'not_in_kb';
+  }>;
 };
 
 type SnapshotDoc = SnapshotPayload & {
@@ -63,6 +73,7 @@ export const saveUserSnapshot = async (payload: SnapshotPayload) => {
   await upsertDoc(db, snapshot);
   if (typeof window !== 'undefined' && window.localStorage) {
     window.localStorage.setItem(LAST_SNAPSHOT_KEY, payload.user.userId);
+    console.log(`[LOCAL] Stored local backup userId: ${payload.user.userId}`);
   }
 };
 

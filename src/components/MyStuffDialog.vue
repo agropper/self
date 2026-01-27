@@ -41,12 +41,139 @@
               <q-btn label="Retry" color="primary" @click="loadFiles" class="q-mt-md" />
             </div>
 
+            <div
+              v-else-if="userFiles.length === 0 && props.rehydrationActive && rehydrationQueue.length > 0"
+              class="q-mt-md"
+            >
+              <div
+                class="q-mb-md q-pa-md"
+                style="border: 1px dashed #b0bec5; border-radius: 6px; background: #f7f9fb;"
+              >
+                <div class="text-subtitle2">Restore your files</div>
+                <div class="text-caption text-grey-7 q-mt-xs">
+                  Please upload each file to rebuild your Spaces folder.
+                </div>
+                <div class="q-mt-sm text-body2">
+                  Next file: <strong>{{ rehydrationCurrent ? (rehydrationCurrent.fileName || rehydrationCurrent.bucketKey) : 'All done' }}</strong>
+                  <span v-if="rehydrationStep === 0" class="q-ml-sm text-grey-7">(initial file)</span>
+                </div>
+                <div class="q-mt-md">
+                  <q-btn
+                    color="primary"
+                    label="Upload Next File"
+                    :disable="rehydrationUploading || !rehydrationCurrent"
+                    @click="triggerRehydrationInput"
+                  />
+                  <span class="q-ml-sm text-caption text-grey-7">
+                    {{ rehydrationCompleted.size }} / {{ rehydrationQueue.length }} uploaded
+                  </span>
+                </div>
+                <div v-if="rehydrationDisplayList.length > 0" class="q-mt-sm">
+                  <div
+                    v-for="entry in rehydrationDisplayList"
+                    :key="entry.bucketKey || entry.fileName"
+                    class="row items-center q-mt-xs"
+                  >
+                    <div class="col text-caption text-grey-7">
+                      {{ entry.displayName }}
+                    </div>
+                    <q-chip
+                      v-if="!entry.restored"
+                      color="red-5"
+                      text-color="white"
+                      size="sm"
+                    >
+                      Please re-import this file
+                    </q-chip>
+                    <q-chip
+                      v-else
+                      color="green-5"
+                      text-color="white"
+                      size="sm"
+                    >
+                      Restored
+                    </q-chip>
+                    <span class="q-ml-sm text-caption text-grey-7">
+                      {{ entry.chipStatus || 'unknown' }}
+                    </span>
+                  </div>
+                </div>
+                <input
+                  ref="rehydrationInput"
+                  type="file"
+                  style="display: none;"
+                  @change="handleRehydrationFileSelected"
+                />
+              </div>
+            </div>
+
             <div v-else-if="userFiles.length === 0" class="text-center q-pa-md text-grey">
               <q-icon name="folder_open" size="3em" />
               <div class="q-mt-sm">No files found</div>
             </div>
 
             <div v-else class="q-mt-md">
+              <div
+                v-if="props.rehydrationActive && rehydrationQueue.length > 0"
+                class="q-mb-md q-pa-md"
+                style="border: 1px dashed #b0bec5; border-radius: 6px; background: #f7f9fb;"
+              >
+                <div class="text-subtitle2">Restore your files</div>
+                <div class="text-caption text-grey-7 q-mt-xs">
+                  Please upload each file to rebuild your Spaces folder.
+                </div>
+                <div class="q-mt-sm text-body2">
+                  Next file: <strong>{{ rehydrationCurrent ? (rehydrationCurrent.fileName || rehydrationCurrent.bucketKey) : 'All done' }}</strong>
+                  <span v-if="rehydrationStep === 0" class="q-ml-sm text-grey-7">(initial file)</span>
+                </div>
+                <div class="q-mt-md">
+                  <q-btn
+                    color="primary"
+                    label="Upload Next File"
+                    :disable="rehydrationUploading || !rehydrationCurrent"
+                    @click="triggerRehydrationInput"
+                  />
+                  <span class="q-ml-sm text-caption text-grey-7">
+                    {{ rehydrationCompleted.size }} / {{ rehydrationQueue.length }} uploaded
+                  </span>
+                </div>
+                <div v-if="rehydrationDisplayList.length > 0" class="q-mt-sm">
+                  <div
+                    v-for="entry in rehydrationDisplayList"
+                    :key="entry.bucketKey || entry.fileName"
+                    class="row items-center q-mt-xs"
+                  >
+                    <div class="col text-caption text-grey-7">
+                      {{ entry.displayName }}
+                    </div>
+                    <q-chip
+                      v-if="!entry.restored"
+                      color="red-5"
+                      text-color="white"
+                      size="sm"
+                    >
+                      Please re-import this file
+                    </q-chip>
+                    <q-chip
+                      v-else
+                      color="green-5"
+                      text-color="white"
+                      size="sm"
+                    >
+                      Restored
+                    </q-chip>
+                    <span class="q-ml-sm text-caption text-grey-7">
+                      {{ entry.chipStatus || 'unknown' }}
+                    </span>
+                  </div>
+                </div>
+                <input
+                  ref="rehydrationInput"
+                  type="file"
+                  style="display: none;"
+                  @change="handleRehydrationFileSelected"
+                />
+              </div>
               <q-list>
                 <q-item v-for="file in userFiles" :key="file.bucketKey" class="q-pa-md">
                   <q-item-section avatar>
@@ -1011,6 +1138,8 @@ interface Props {
   initialTab?: string;
   messages?: Message[];
   originalMessages?: Message[]; // Original unfiltered messages for privacy filtering
+  rehydrationFiles?: Array<{ fileName?: string; bucketKey?: string; fileSize?: number; uploadedAt?: string }>;
+  rehydrationActive?: boolean;
 }
 
 const props = withDefaults(defineProps<Props>(), {
@@ -1031,6 +1160,7 @@ const emit = defineEmits<{
   'reference-file-added': [file: { fileName: string; bucketKey: string; fileSize: number; uploadedAt: string; fileType?: string; fileUrl?: string; isReference: boolean }]; // Emit reference file to add to chat
   'current-medications-saved': [data: { value: string; edited: boolean }];
   'patient-summary-saved': [data: { userId: string }];
+  'rehydration-complete': [];
 }>();
 
 // Handle show patient summary from Lists component
@@ -1130,6 +1260,149 @@ const kbDataSourceCount = ref<number | null>(null);
 const kbIndexedDataSourceCount = ref<number | null>(null);
 const indexedFileTokens = ref<Record<string, number | string>>({});
 const indexedFileJobInfo = ref<Record<string, any>>({});
+
+// Rehydration flow (temporary account restore)
+const rehydrationQueue = ref<Array<{ fileName?: string; bucketKey?: string; fileSize?: number; uploadedAt?: string; chipStatus?: string; kbName?: string | null; isInitial?: boolean }>>([]);
+const rehydrationCompleted = ref<Set<string>>(new Set());
+const rehydrationUploading = ref(false);
+const rehydrationInput = ref<HTMLInputElement | null>(null);
+const rehydrationStep = ref(0);
+
+const normalizeRehydrationName = (entry: { fileName?: string; bucketKey?: string }) => {
+  if (entry.fileName) return entry.fileName;
+  const key = entry.bucketKey || '';
+  return key.split('/').pop() || key;
+};
+
+const rehydrationRemaining = computed(() =>
+  rehydrationQueue.value.filter(entry => !rehydrationCompleted.value.has(normalizeRehydrationName(entry)))
+);
+
+const rehydrationDisplayList = computed(() => rehydrationQueue.value.map(entry => {
+  const name = normalizeRehydrationName(entry);
+  return {
+    ...entry,
+    displayName: entry.fileName || entry.bucketKey || 'Unknown file',
+    restored: rehydrationCompleted.value.has(name)
+  };
+}));
+
+const rehydrationCurrent = computed(() => rehydrationRemaining.value[0] || null);
+
+watch(
+  () => props.rehydrationFiles,
+  (files) => {
+    if (Array.isArray(files) && files.length > 0) {
+      rehydrationQueue.value = files;
+      rehydrationCompleted.value = new Set();
+      rehydrationStep.value = 0;
+      console.log('[LOCAL] Saved Files rehydration queue:');
+      rehydrationQueue.value.forEach((entry) => {
+        const label = entry.fileName || entry.bucketKey || 'unknown';
+        const chip = entry.chipStatus || 'unknown';
+        console.log(`[LOCAL]  • ${label} (${chip})`);
+      });
+    } else {
+      rehydrationQueue.value = [];
+      rehydrationCompleted.value = new Set();
+      rehydrationStep.value = 0;
+    }
+  },
+  { immediate: true }
+);
+
+const triggerRehydrationInput = () => {
+  rehydrationInput.value?.click();
+};
+
+const handleRehydrationFileSelected = async (event: Event) => {
+  const target = event.target as HTMLInputElement;
+  const file = target.files?.[0];
+  target.value = '';
+  if (!file || !props.userId) return;
+
+  const currentEntry = rehydrationCurrent.value || null;
+  const expected = currentEntry ? normalizeRehydrationName(currentEntry) : null;
+  if (!expected) return;
+
+  if (file.name !== expected) {
+    if ($q && typeof $q.notify === 'function') {
+      $q.notify({
+        type: 'negative',
+        message: `Please select the file named "${expected}".`,
+        timeout: 4000
+      });
+    }
+    return;
+  }
+
+  rehydrationUploading.value = true;
+  console.log(`[LOCAL] Rehydration upload started: ${file.name}`);
+  try {
+    const formData = new FormData();
+    formData.append('file', file);
+    const response = await fetch('/api/files/upload', {
+      method: 'POST',
+      credentials: 'include',
+      body: formData
+    });
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({}));
+      throw new Error(errorData.error || 'Failed to upload file');
+    }
+    const uploadResult = await response.json();
+    if (uploadResult?.fileInfo) {
+      try {
+        const chipStatus = currentEntry?.chipStatus || 'not_in_kb';
+        const kbName = currentEntry?.kbName || null;
+        const knowledgeBases = chipStatus === 'not_in_kb' || !kbName ? [] : [kbName];
+        await fetch('/api/user-file-metadata', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json'
+          },
+          credentials: 'include',
+          body: JSON.stringify({
+            userId: props.userId,
+            fileMetadata: {
+              fileName: uploadResult.fileInfo.fileName,
+              bucketKey: uploadResult.fileInfo.bucketKey,
+              bucketPath: uploadResult.fileInfo.userFolder,
+              fileSize: uploadResult.fileInfo.size,
+              fileType: uploadResult.fileInfo.mimeType,
+              uploadedAt: uploadResult.fileInfo.uploadedAt,
+              knowledgeBases
+            },
+            updateInitialFile: !!currentEntry?.isInitial
+          })
+        });
+        console.log(`[LOCAL] Rehydration metadata saved: ${uploadResult.fileInfo.fileName} (${chipStatus})`);
+      } catch (metadataError) {
+        console.warn('Rehydration metadata update failed:', metadataError);
+      }
+    }
+    rehydrationCompleted.value.add(expected);
+    rehydrationStep.value += 1;
+    await loadFiles();
+    console.log(`[LOCAL] Rehydration upload completed: ${file.name}`);
+  } catch (error) {
+    console.error('Rehydration upload failed:', error);
+    if ($q && typeof $q.notify === 'function') {
+      $q.notify({
+        type: 'negative',
+        message: error instanceof Error ? error.message : 'Failed to upload file',
+        timeout: 4000
+      });
+    }
+  } finally {
+    rehydrationUploading.value = false;
+  }
+
+  if (rehydrationRemaining.value.length === 0) {
+    console.log('[LOCAL] Rehydration complete; wizard re-evaluated');
+    emit('rehydration-complete');
+  }
+};
 
 const hasCheckboxChanges = computed(() => {
   if (originalFiles.value.length !== userFiles.value.length) return true;

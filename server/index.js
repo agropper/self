@@ -4620,59 +4620,82 @@ app.post('/api/user-file-metadata', async (req, res) => {
       });
     }
 
-    // Get the user document
-    const userDoc = await cloudant.getDocument('maia_users', userId);
-    
-    if (!userDoc) {
-      return res.status(404).json({ 
-        success: false, 
-        message: 'User not found',
-        error: 'USER_NOT_FOUND'
+    let saved = false;
+    let attempts = 0;
+    let userDoc = null;
+    while (!saved && attempts < 3) {
+      attempts += 1;
+      userDoc = await cloudant.getDocument('maia_users', userId);
+      
+      if (!userDoc) {
+        return res.status(404).json({ 
+          success: false, 
+          message: 'User not found',
+          error: 'USER_NOT_FOUND'
+        });
+      }
+
+      // Initialize files array if it doesn't exist
+      if (!userDoc.files) {
+        userDoc.files = [];
+      }
+
+      // Check if file already exists (by bucketKey)
+      const existingFileIndex = userDoc.files.findIndex(f => f.bucketKey === fileMetadata.bucketKey);
+      
+      if (existingFileIndex >= 0) {
+        // Update existing file metadata
+        userDoc.files[existingFileIndex] = {
+          ...userDoc.files[existingFileIndex],
+          ...fileMetadata,
+          knowledgeBases: Array.isArray(fileMetadata.knowledgeBases)
+            ? fileMetadata.knowledgeBases
+            : userDoc.files[existingFileIndex].knowledgeBases || [],
+          updatedAt: new Date().toISOString()
+        };
+      } else {
+        // Add new file metadata with initialized knowledgeBases array
+        userDoc.files.push({
+          ...fileMetadata,
+          knowledgeBases: Array.isArray(fileMetadata.knowledgeBases) ? fileMetadata.knowledgeBases : [],
+          addedAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString()
+        });
+      }
+
+      // Update initialFile if requested (for Lists source file replacement)
+      if (updateInitialFile) {
+        userDoc.initialFile = {
+          fileName: fileMetadata.fileName,
+          bucketKey: fileMetadata.bucketKey,
+          fileSize: fileMetadata.fileSize || 0,
+          uploadedAt: new Date().toISOString()
+        };
+      }
+
+      // Set workflowStage to files_stored if files exist
+      if (userDoc.files.length > 0) {
+        userDoc.workflowStage = 'files_stored';
+      }
+
+      try {
+        await cloudant.saveDocument('maia_users', userDoc);
+        saved = true;
+      } catch (saveError) {
+        if (saveError?.statusCode === 409 && attempts < 3) {
+          continue;
+        }
+        throw saveError;
+      }
+    }
+
+    if (!saved) {
+      return res.status(500).json({
+        success: false,
+        message: 'Failed to update file metadata after retries',
+        error: 'UPDATE_FAILED'
       });
     }
-
-    // Initialize files array if it doesn't exist
-    if (!userDoc.files) {
-      userDoc.files = [];
-    }
-
-    // Check if file already exists (by bucketKey)
-    const existingFileIndex = userDoc.files.findIndex(f => f.bucketKey === fileMetadata.bucketKey);
-    
-    if (existingFileIndex >= 0) {
-      // Update existing file metadata
-      userDoc.files[existingFileIndex] = {
-        ...userDoc.files[existingFileIndex],
-        ...fileMetadata,
-        updatedAt: new Date().toISOString()
-      };
-    } else {
-      // Add new file metadata with initialized knowledgeBases array
-      userDoc.files.push({
-        ...fileMetadata,
-        knowledgeBases: [],
-        addedAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString()
-      });
-    }
-
-    // Update initialFile if requested (for Lists source file replacement)
-    if (updateInitialFile) {
-      userDoc.initialFile = {
-        fileName: fileMetadata.fileName,
-        bucketKey: fileMetadata.bucketKey,
-        fileSize: fileMetadata.fileSize || 0,
-        uploadedAt: new Date().toISOString()
-      };
-    }
-
-    // Set workflowStage to files_stored if files exist
-    if (userDoc.files.length > 0) {
-      userDoc.workflowStage = 'files_stored';
-    }
-
-    // Save the updated user document
-    await cloudant.saveDocument('maia_users', userDoc);
     
     console.log(`✅ Updated file metadata for user ${userId}: ${fileMetadata.fileName}`);
     
@@ -5327,11 +5350,6 @@ app.get('/api/user-files', async (req, res) => {
         indexedFileTokens = tokensByKey;
         kbDataSourceCount = Array.isArray(dataSources) ? dataSources.length : null;
         kbIndexedDataSourceCount = indexedCount;
-        console.log('[KB Update] Per-file token counts', {
-          count: Object.keys(tokensByKey).length,
-          sample: Object.entries(tokensByKey).slice(0, 3)
-        });
-
         try {
           const kbDetails = await doClient.kb.get(userDoc.kbId);
           kbTotalTokens = kbDetails?.total_tokens || kbDetails?.token_count || kbDetails?.tokens || null;
@@ -8596,7 +8614,8 @@ app.post('/api/admin/users/:userId/recover', async (req, res) => {
   }
 });
 
-async function deleteUserAndResources(userId) {
+async function deleteUserAndResources(userId, options = {}) {
+  const { deleteAgent = true } = options;
   console.log(`[DESTROY] Starting deletion for ${userId}`);
   // Get user document first to collect information
   let userDoc;
@@ -8700,32 +8719,37 @@ async function deleteUserAndResources(userId) {
     deletionDetails.errors.push(`Failed to delete Knowledge Base: ${error.message}`);
   }
 
-  // 3. Delete Agent
-  try {
-    console.log(`[DESTROY] Deleting agent for ${userId}`);
-    const agentId = userDoc.assignedAgentId;
-    if (agentId) {
-      // Check if agent exists before trying to delete
-      try {
-        await doClient.agent.get(agentId);
-        await doClient.agent.delete(agentId);
-        deletionDetails.agentDeleted = true;
-        console.log(`[DESTROY] Agent deleted for ${userId} (${agentId})`);
-      } catch (error) {
-        if (error.statusCode === 404 || error.message?.includes('not found')) {
-          deletionDetails.agentDeleted = true; // Already deleted, consider it success
-          console.log(`[DESTROY] Agent not found for ${userId} (${agentId})`);
-        } else {
-          throw error;
+  // 3. Delete Agent (optional)
+  if (deleteAgent) {
+    try {
+      console.log(`[DESTROY] Deleting agent for ${userId}`);
+      const agentId = userDoc.assignedAgentId;
+      if (agentId) {
+        // Check if agent exists before trying to delete
+        try {
+          await doClient.agent.get(agentId);
+          await doClient.agent.delete(agentId);
+          deletionDetails.agentDeleted = true;
+          console.log(`[DESTROY] Agent deleted for ${userId} (${agentId})`);
+        } catch (error) {
+          if (error.statusCode === 404 || error.message?.includes('not found')) {
+            deletionDetails.agentDeleted = true; // Already deleted, consider it success
+            console.log(`[DESTROY] Agent not found for ${userId} (${agentId})`);
+          } else {
+            throw error;
+          }
         }
+      } else {
+        deletionDetails.agentDeleted = true; // No agent to delete
+        console.log(`[DESTROY] No agentId stored for ${userId}`);
       }
-    } else {
-      deletionDetails.agentDeleted = true; // No agent to delete
-      console.log(`[DESTROY] No agentId stored for ${userId}`);
+    } catch (error) {
+      console.error(`[DESTROY] Agent deletion failed for ${userId}:`, error.message);
+      deletionDetails.errors.push(`Failed to delete Agent: ${error.message}`);
     }
-  } catch (error) {
-    console.error(`[DESTROY] Agent deletion failed for ${userId}:`, error.message);
-    deletionDetails.errors.push(`Failed to delete Agent: ${error.message}`);
+  } else {
+    deletionDetails.agentDeleted = false;
+    console.log(`[LOCAL] Skipping agent deletion for ${userId}`);
   }
 
   // 4. Delete user sessions from maia_sessions
@@ -8890,12 +8914,21 @@ app.post('/api/temporary/delete', async (req, res) => {
       return res.status(403).json({ success: false, error: 'Temporary account required' });
     }
 
-    console.log(`[DESTROY] Requested by ${sessionUserId}`);
-    const deletionDetails = await deleteUserAndResources(sessionUserId);
+    console.log(`[LOCAL] Temporary sign-out requested by ${sessionUserId}`);
+    const deletionDetails = await deleteUserAndResources(sessionUserId, { deleteAgent: false });
 
     req.session.destroy(() => {
       res.clearCookie('maia_temp_user');
-      console.log(`[DESTROY] Session cleared for ${sessionUserId}`);
+      console.log(`[LOCAL] Temporary cookie cleared for ${sessionUserId}`);
+      if (deletionDetails.kbDeleted) {
+        console.log(`[LOCAL] KB deleted for ${sessionUserId}`);
+      }
+      if (deletionDetails.spacesDeleted) {
+        console.log(`[LOCAL] Spaces folder deleted for ${sessionUserId}`);
+      }
+      if (deletionDetails.userDocDeleted || deletionDetails.chatsDeleted || deletionDetails.sessionsDeleted) {
+        console.log(`[LOCAL] CouchDB docs deleted for ${sessionUserId}`);
+      }
       res.json({
         success: true,
         message: 'Temporary account deleted',

@@ -5,6 +5,7 @@
 import { readFileSync } from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { findUserAgent } from '../utils/agent-helper.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -19,6 +20,30 @@ function getClientInfo(req) {
 function buildAgentName(userId) {
   const timestamp = new Date().toISOString().replace(/[-:]/g, '').split('.')[0];
   return `${userId}-agent-${timestamp}`;
+}
+
+async function saveUserDocWithRetry(cloudant, userId, mutateDoc, maxAttempts = 3) {
+  let attempt = 0;
+  while (attempt < maxAttempts) {
+    attempt += 1;
+    const freshDoc = await cloudant.getDocument('maia_users', userId);
+    if (!freshDoc) {
+      const notFound = new Error('User not found');
+      notFound.statusCode = 404;
+      throw notFound;
+    }
+    mutateDoc(freshDoc);
+    try {
+      await cloudant.saveDocument('maia_users', freshDoc);
+      return freshDoc;
+    } catch (error) {
+      if (error?.statusCode === 409 && attempt < maxAttempts) {
+        continue;
+      }
+      throw error;
+    }
+  }
+  return null;
 }
 
 function isValidUUID(value) {
@@ -631,6 +656,40 @@ export default function setupAuthRoutes(app, passkeyService, cloudant, doClient,
     });
   });
 
+  // Check if an agent exists for a previous temporary userId
+  app.get('/api/agent-exists', async (req, res) => {
+    try {
+      const userId = req.query?.userId;
+      if (!userId || typeof userId !== 'string') {
+        return res.status(400).json({
+          success: false,
+          error: 'User ID is required'
+        });
+      }
+
+      const agent = await findUserAgent(doClient, userId);
+      const exists = !!agent;
+      if (exists) {
+        console.log(`[LOCAL] Agent lookup for ${userId}: found ${agent.name || agent.id || agent.uuid}`);
+      } else {
+        console.log(`[LOCAL] Agent lookup for ${userId}: missing`);
+      }
+
+      res.json({
+        success: true,
+        exists,
+        agentName: agent?.name || null,
+        agentId: agent?.uuid || agent?.id || null
+      });
+    } catch (error) {
+      console.error('Agent lookup failed:', error);
+      res.status(500).json({
+        success: false,
+        error: error.message || 'Failed to lookup agent'
+      });
+    }
+  });
+
   // Deep link share status for signed-in user
   app.get('/api/user-deep-links', async (req, res) => {
     try {
@@ -848,6 +907,71 @@ export default function setupAuthRoutes(app, passkeyService, cloudant, doClient,
     }
   });
 
+  // Temporary user restore (reuse previous userId if agent exists)
+  app.post('/api/temporary/restore', async (req, res) => {
+    try {
+      const restoreUserId = req.body?.userId;
+      if (!restoreUserId || typeof restoreUserId !== 'string') {
+        return res.status(400).json({ success: false, error: 'User ID required' });
+      }
+
+      const agent = await findUserAgent(doClient, restoreUserId);
+      if (!agent) {
+        return res.status(404).json({ success: false, error: 'Agent not found' });
+      }
+
+      let userDoc = null;
+      try {
+        userDoc = await cloudant.getDocument('maia_users', restoreUserId);
+      } catch (error) {
+        userDoc = null;
+      }
+
+      if (!userDoc) {
+        userDoc = {
+          _id: restoreUserId,
+          userId: restoreUserId,
+          displayName: restoreUserId,
+          email: null,
+          domain: passkeyService.rpID,
+          type: 'user',
+          workflowStage: 'active',
+          temporaryAccount: true,
+          assignedAgentId: agent.uuid || agent.id || null,
+          assignedAgentName: agent.name || null,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString()
+        };
+        await cloudant.saveDocument('maia_users', userDoc);
+      }
+
+      req.session.userId = userDoc.userId;
+      req.session.username = userDoc.userId;
+      req.session.displayName = userDoc.displayName || userDoc.userId;
+      req.session.isTemporary = true;
+      req.session.authenticatedAt = new Date().toISOString();
+      req.session.expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
+      res.cookie(TEMP_USER_COOKIE, userDoc.userId, {
+        maxAge: TEMP_USER_COOKIE_MAX_AGE,
+        httpOnly: true,
+        sameSite: 'lax'
+      });
+
+      console.log(`[LOCAL] Temporary user restored for ${userDoc.userId}`);
+      res.json({
+        authenticated: true,
+        user: {
+          userId: userDoc.userId,
+          displayName: userDoc.displayName || userDoc.userId,
+          isTemporary: true
+        }
+      });
+    } catch (error) {
+      console.error('Temporary restore error:', error);
+      res.status(500).json({ success: false, error: error.message || 'Failed to restore temp user' });
+    }
+  });
+
   // Current user
   app.get('/api/current-user', (req, res) => {
     if (!req.session || !req.session.userId) {
@@ -964,18 +1088,20 @@ export default function setupAuthRoutes(app, passkeyService, cloudant, doClient,
       }
 
       if (endpoint && userDoc.agentEndpoint !== endpoint) {
-        userDoc.agentEndpoint = endpoint;
-        userDoc.agentSetupInProgress = false;
-        userDoc.workflowStage = 'agent_deployed';
-        userDoc.updatedAt = new Date().toISOString();
-        await cloudant.saveDocument('maia_users', userDoc);
+        await saveUserDocWithRetry(cloudant, userId, (doc) => {
+          doc.agentEndpoint = endpoint;
+          doc.agentSetupInProgress = false;
+          doc.workflowStage = 'agent_deployed';
+          doc.updatedAt = new Date().toISOString();
+        });
       } else if (!endpoint && userDoc.agentSetupInProgress !== true) {
-        userDoc.agentSetupInProgress = true;
-        if (userDoc.workflowStage !== 'agent_named') {
-          userDoc.workflowStage = 'agent_named';
-        }
-        userDoc.updatedAt = new Date().toISOString();
-        await cloudant.saveDocument('maia_users', userDoc);
+        await saveUserDocWithRetry(cloudant, userId, (doc) => {
+          doc.agentSetupInProgress = true;
+          if (doc.workflowStage !== 'agent_named') {
+            doc.workflowStage = 'agent_named';
+          }
+          doc.updatedAt = new Date().toISOString();
+        });
       }
 
       return res.json({

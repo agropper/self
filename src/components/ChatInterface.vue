@@ -453,6 +453,8 @@
       :initial-tab="myStuffInitialTab"
       :messages="messages"
       :original-messages="trulyOriginalMessages.length > 0 ? trulyOriginalMessages : originalMessages"
+      :rehydration-files="props.rehydrationFiles || []"
+      :rehydration-active="props.rehydrationActive"
       @chat-selected="handleChatSelected"
       @indexing-started="handleIndexingStarted"
       @indexing-status-update="handleIndexingStatusUpdate"
@@ -463,6 +465,7 @@
       @reference-file-added="handleReferenceFileAdded"
       @current-medications-saved="handleCurrentMedicationsSaved"
       @patient-summary-saved="handlePatientSummarySaved"
+      @rehydration-complete="handleRehydrationComplete"
       v-if="canAccessMyStuff"
     />
 
@@ -613,6 +616,9 @@ interface Props {
     savedChatId?: string | null;
     savedChatShareId?: string | null;
   } | null;
+  rehydrationFiles?: any[] | null;
+  rehydrationActive?: boolean;
+  suppressWizard?: boolean;
 }
 
 interface SignOutSnapshot {
@@ -632,6 +638,7 @@ const props = defineProps<Props>();
 const emit = defineEmits<{
   'sign-out': [SignOutSnapshot];
   'restore-applied': [];
+  'rehydration-complete': [];
   'update:deepLinkInfo': [DeepLinkInfo | null];
 }>();
 
@@ -771,6 +778,54 @@ watch(
     }
   }
 );
+
+watch(
+  () => props.rehydrationActive,
+  (active) => {
+    if (active && canAccessMyStuff.value) {
+      myStuffInitialTab.value = 'files';
+      showMyStuffDialog.value = true;
+    }
+  },
+  { immediate: true }
+);
+
+watch(
+  () => (Array.isArray(props.rehydrationFiles) ? props.rehydrationFiles.length : 0),
+  (count) => {
+    if (count > 0 && canAccessMyStuff.value) {
+      myStuffInitialTab.value = 'files';
+      showMyStuffDialog.value = true;
+    }
+  },
+  { immediate: true }
+);
+
+watch(
+  () => props.suppressWizard,
+  async (suppressed, wasSuppressed) => {
+    if (suppressed) {
+      showAgentSetupDialog.value = false;
+      return;
+    }
+    if (wasSuppressed && !suppressed) {
+      wizardDismissed.value = false;
+      await refreshWizardState();
+      if (!shouldHideSetupWizard.value && !showAgentSetupDialog.value && !wizardDismissed.value) {
+        showAgentSetupDialog.value = true;
+      }
+    }
+  },
+  { immediate: true }
+);
+
+const handleRehydrationComplete = async () => {
+  emit('rehydration-complete');
+  await refreshWizardState();
+  if (!shouldHideSetupWizard.value && !showAgentSetupDialog.value && !wizardDismissed.value) {
+    showAgentSetupDialog.value = true;
+  }
+};
 
 type UploadedFilePayload = {
   id: string;
@@ -1411,6 +1466,9 @@ const refreshWizardState = async () => {
       wizardHasFilesInKB.value = !!statusResult?.hasFilesInKB;
       wizardCurrentMedications.value = !!statusResult?.currentMedications;
       wizardStage2Complete.value = wizardCurrentMedications.value;
+      if (statusResult?.hasAgent) {
+        wizardStage1Complete.value = true;
+      }
     }
 
     if (filesResponse.ok) {
@@ -1448,6 +1506,11 @@ const refreshWizardState = async () => {
         persistWizardCompletion();
       }
 
+      if (wizardHasFilesInKB.value) {
+        wizardStage3Complete.value = true;
+        persistWizardCompletion();
+      }
+
       if (!wizardHasFilesInKB.value) {
         wizardStage3Complete.value = false;
         persistWizardCompletion();
@@ -1457,7 +1520,7 @@ const refreshWizardState = async () => {
   }
 };
 
-const shouldHideSetupWizard = computed(() => wizardPatientSummary.value || !!props.user?.isAdmin);
+const shouldHideSetupWizard = computed(() => wizardPatientSummary.value || !!props.user?.isAdmin || !!props.suppressWizard);
 
 const savePatientSummary = async (summary: string) => {
   if (!props.user?.userId || !summary) return;
@@ -3560,6 +3623,7 @@ const handleIndexingFinished = (_data: { jobId: string; phase: string; error?: s
   indexingStatus.value = null;
   // Update status tip to show normal status
   updateContextualTip();
+  refreshWizardState();
 };
 
 const handleFilesArchived = (archivedBucketKeys: string[]) => {

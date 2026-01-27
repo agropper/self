@@ -130,8 +130,12 @@
             :is-deep-link-user="isDeepLinkUser"
             :deep-link-info="deepLinkInfo"
             :restore-chat-state="restoredChatState"
+            :rehydration-files="rehydrationFiles"
+            :rehydration-active="rehydrationActive"
+            :suppress-wizard="suppressWizard"
             @sign-out="handleSignOut"
             @restore-applied="restoredChatState = null"
+            @rehydration-complete="handleRehydrationComplete"
             @update:deep-link-info="handleDeepLinkInfoUpdate"
           />
         </div>
@@ -261,22 +265,54 @@
       </q-card>
     </q-dialog>
 
+    <!-- Missing agent dialog -->
+    <q-dialog v-model="showMissingAgentDialog" persistent>
+      <q-card style="min-width: 520px; max-width: 640px">
+        <q-card-section>
+          <div class="text-h6">Local Backup Found</div>
+        </q-card-section>
+        <q-card-section class="text-body2">
+          <p>
+            We found a local backup for <strong>{{ missingAgentUserId }}</strong>, but no matching agent is available.
+          </p>
+          <p class="q-mt-md">
+            Choose what to do with the local backup.
+          </p>
+        </q-card-section>
+        <q-card-actions align="right">
+          <q-btn
+            flat
+            label="CLEAR LOCAL STORAGE"
+            color="primary"
+            @click="handleClearLocalBackup"
+          />
+          <q-btn
+            flat
+            label="START THE WIZARD AGAIN"
+            color="negative"
+            @click="handleStartWizardAgain"
+          />
+        </q-card-actions>
+      </q-card>
+    </q-dialog>
+
     <!-- Confirm destroy dialog -->
     <q-dialog v-model="showDestroyDialog" persistent>
       <q-card style="min-width: 520px; max-width: 640px">
         <q-card-section>
-          <div class="text-h6">Destroy Temporary Account</div>
+          <div class="text-h6">Temporary Account Removed</div>
         </q-card-section>
         <q-card-section class="text-body2">
-          <p>Type <strong>{{ user?.userId }}</strong> to confirm deletion.</p>
-          <q-input v-model="destroyConfirm" outlined dense />
+          <p>
+            Your private information has been preserved on your computer and deleted from the cloud host.
+            If you return to MAIA at a later time (from the same computer and web browser) you will be offered an opportunity
+            to restore your MAIA to its previous state. We do this for privacy and to reduce cloud hosting costs.
+          </p>
         </q-card-section>
         <q-card-actions align="right">
-          <q-btn flat label="CANCEL" color="primary" @click="showDestroyDialog = false" />
           <q-btn
-            label="DESTROY"
+            label="OK"
             color="negative"
-            :disable="destroyConfirm !== user?.userId"
             :loading="destroyLoading"
             @click="destroyTemporaryAccount"
           />
@@ -369,6 +405,12 @@ const showRestoreDialog = ref(false);
 const restoreLoading = ref(false);
 const restoreSnapshot = ref<any | null>(null);
 const restoredChatState = ref<any | null>(null);
+const rehydrationFiles = ref<any[]>([]);
+const rehydrationActive = ref(false);
+const suppressWizard = ref(false);
+const showMissingAgentDialog = ref(false);
+const missingAgentUserId = ref<string | null>(null);
+const pendingLocalUserId = ref<string | null>(null);
 
 const $q = useQuasar();
 
@@ -478,17 +520,50 @@ const resetAuthState = () => {
 const saveLocalSnapshot = async (snapshot?: SignOutSnapshot | null) => {
   if (!user.value?.userId || user.value.isDeepLink) return;
   try {
-    const [filesResponse, chatsResponse] = await Promise.all([
+    const [filesResponse, chatsResponse, statusResponse] = await Promise.all([
       fetch(`/api/user-files?userId=${encodeURIComponent(user.value.userId)}`, {
         credentials: 'include'
       }),
       fetch(`/api/user-chats?userId=${encodeURIComponent(user.value.userId)}`, {
+        credentials: 'include'
+      }),
+      fetch(`/api/user-status?userId=${encodeURIComponent(user.value.userId)}`, {
         credentials: 'include'
       })
     ]);
 
     const files = filesResponse.ok ? await filesResponse.json() : null;
     const savedChats = chatsResponse.ok ? await chatsResponse.json() : null;
+    const status = statusResponse.ok ? await statusResponse.json() : null;
+    const filesList = Array.isArray(files?.files) ? files.files : [];
+    const indexedSet = new Set(Array.isArray(files?.indexedFiles) ? files.indexedFiles : []);
+    const kbName = files?.kbName || null;
+    const fileStatusSummary = filesList.map((file: any) => {
+      const bucketKey = file.bucketKey || '';
+      const inKnowledgeBase = kbName && Array.isArray(file.knowledgeBases)
+        ? file.knowledgeBases.includes(kbName)
+        : false;
+      let chipStatus: 'indexed' | 'pending' | 'not_in_kb' = 'not_in_kb';
+      if (inKnowledgeBase && indexedSet.has(bucketKey)) {
+        chipStatus = 'indexed';
+      } else if (inKnowledgeBase && !indexedSet.has(bucketKey)) {
+        chipStatus = 'pending';
+      }
+      return {
+        fileName: file.fileName,
+        bucketKey,
+        chipStatus
+      };
+    });
+
+    if (fileStatusSummary.length > 0) {
+      console.log(`[LOCAL] Saved Files snapshot for ${user.value.userId}:`);
+      fileStatusSummary.forEach(entry => {
+        console.log(`[LOCAL]  • ${entry.fileName || entry.bucketKey} (${entry.chipStatus})`);
+      });
+    } else {
+      console.log(`[LOCAL] Saved Files snapshot for ${user.value.userId}: none`);
+    }
 
     await saveUserSnapshot({
       user: {
@@ -499,7 +574,10 @@ const saveLocalSnapshot = async (snapshot?: SignOutSnapshot | null) => {
       },
       files,
       savedChats,
-      currentChat: snapshot?.currentChat || null
+      currentChat: snapshot?.currentChat || null,
+      currentMedications: status?.currentMedications || null,
+      initialFile: status?.initialFile || null,
+      fileStatusSummary
     });
   } catch (error) {
     console.warn('Failed to save local snapshot:', error);
@@ -553,6 +631,35 @@ const handleLiveSignOut = async () => {
   }
 };
 
+const clearWizardPendingKey = (userId?: string | null) => {
+  const key = userId ? `wizardKbPendingFileName-${userId}` : 'wizardKbPendingFileName';
+  try {
+    localStorage.removeItem(key);
+  } catch (error) {
+    // ignore
+  }
+};
+
+const handleClearLocalBackup = () => {
+  if (pendingLocalUserId.value) {
+    console.log(`[LOCAL] Clearing local backup for ${pendingLocalUserId.value}`);
+  }
+  clearLastSnapshotUserId();
+  pendingLocalUserId.value = null;
+  showMissingAgentDialog.value = false;
+  startTemporarySession();
+};
+
+const handleStartWizardAgain = () => {
+  if (pendingLocalUserId.value) {
+    console.log(`[LOCAL] Starting wizard again for ${pendingLocalUserId.value}`);
+  }
+  clearLastSnapshotUserId();
+  pendingLocalUserId.value = null;
+  showMissingAgentDialog.value = false;
+  startTemporarySession();
+};
+
 const restoreSavedChats = async (snapshot: any) => {
   const savedChats = snapshot?.savedChats?.chats;
   if (!Array.isArray(savedChats) || savedChats.length === 0) return;
@@ -577,12 +684,120 @@ const restoreSavedChats = async (snapshot: any) => {
   }
 };
 
+const createTemporarySession = async () => {
+  const response = await fetch('/api/temporary/start', {
+    method: 'POST',
+    credentials: 'include'
+  });
+  const data = await response.json();
+  if (!response.ok) {
+    throw new Error(data.error || 'Unable to create temporary account');
+  }
+  if (data.requiresPasskey && data.user) {
+    tempStartError.value = `A passkey already exists for ${data.user.userId}. Please use Passkey instead.`;
+    passkeyPrefillUserId.value = data.user.userId;
+    passkeyPrefillAction.value = 'signin';
+    showAuth.value = true;
+    return null;
+  }
+  if (!data.authenticated || !data.user) {
+    throw new Error(data.error || 'Unable to create temporary account');
+  }
+  setAuthenticatedUser(data.user, null);
+  return data.user;
+};
+
 const handleRestoreSnapshot = async () => {
   if (!restoreSnapshot.value || !user.value?.userId) return;
   restoreLoading.value = true;
   try {
+    const snapshot = restoreSnapshot.value;
+    const snapshotFiles = Array.isArray(snapshot?.files?.files) ? snapshot.files.files : [];
+    const statusSummary = Array.isArray(snapshot?.fileStatusSummary) ? snapshot.fileStatusSummary : [];
+    const snapshotKbName = snapshot?.files?.kbName || null;
+    const initialFromSnapshot = snapshot?.initialFile || null;
+    if (statusSummary.length > 0) {
+      rehydrationFiles.value = statusSummary.map((entry: any) => ({
+        bucketKey: entry.bucketKey,
+        fileName: entry.fileName,
+        chipStatus: entry.chipStatus,
+        kbName: snapshotKbName
+      }));
+    } else if (snapshotFiles.length === 0 && Array.isArray(snapshot?.files?.indexedFiles)) {
+      rehydrationFiles.value = snapshot.files.indexedFiles.map((bucketKey: string) => ({
+        bucketKey,
+        fileName: bucketKey.split('/').pop(),
+        chipStatus: 'indexed',
+        kbName: snapshotKbName
+      }));
+    } else {
+      rehydrationFiles.value = snapshotFiles.map((entry: any) => ({
+        bucketKey: entry.bucketKey,
+        fileName: entry.fileName,
+        chipStatus: 'not_in_kb',
+        kbName: snapshotKbName
+      }));
+    }
+    if (initialFromSnapshot && (initialFromSnapshot.bucketKey || initialFromSnapshot.fileName)) {
+      const existing = rehydrationFiles.value.find(item =>
+        (initialFromSnapshot.bucketKey && item.bucketKey === initialFromSnapshot.bucketKey) ||
+        (initialFromSnapshot.fileName && item.fileName === initialFromSnapshot.fileName)
+      );
+      if (!existing) {
+        rehydrationFiles.value.unshift({
+          bucketKey: initialFromSnapshot.bucketKey,
+          fileName: initialFromSnapshot.fileName,
+          chipStatus: 'not_in_kb',
+          kbName: snapshotKbName,
+          isInitial: true
+        });
+      } else {
+        existing.isInitial = true;
+        rehydrationFiles.value = [
+          existing,
+          ...rehydrationFiles.value.filter(item => item !== existing)
+        ];
+      }
+    }
+    rehydrationActive.value = rehydrationFiles.value.length > 0;
+    suppressWizard.value = rehydrationActive.value;
+    if (rehydrationActive.value) {
+      console.log(`[LOCAL] Rehydration started for ${rehydrationFiles.value.length} file(s)`);
+      console.log('[LOCAL] Wizard suppressed for rehydration');
+      console.log(`[LOCAL] Restore queue for ${user.value.userId}:`);
+      rehydrationFiles.value.forEach((entry: any) => {
+        const label = entry.fileName || entry.bucketKey || 'unknown';
+        const chip = entry.chipStatus || 'unknown';
+        console.log(`[LOCAL]  • ${label} (${chip})`);
+      });
+      if ($q && typeof $q.notify === 'function') {
+        $q.notify({
+          type: 'info',
+          message: 'Restore in progress: re-upload your files in Saved Files.',
+          timeout: 5000
+        });
+      }
+    }
     restoredChatState.value = restoreSnapshot.value.currentChat || null;
     await restoreSavedChats(restoreSnapshot.value);
+    if (restoreSnapshot.value.currentMedications) {
+      try {
+        await fetch('/api/user-current-medications', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json'
+          },
+          credentials: 'include',
+          body: JSON.stringify({
+            userId: user.value.userId,
+            currentMedications: restoreSnapshot.value.currentMedications
+          })
+        });
+        console.log('[LOCAL] Current Medications restored');
+      } catch (medsError) {
+        console.warn('Failed to restore current medications:', medsError);
+      }
+    }
     clearLastSnapshotUserId();
     if ($q && typeof $q.notify === 'function') {
       $q.notify({
@@ -609,6 +824,13 @@ const handleRestoreSnapshot = async () => {
 const handleSkipRestore = () => {
   showRestoreDialog.value = false;
   restoreSnapshot.value = null;
+  suppressWizard.value = false;
+};
+
+const handleRehydrationComplete = () => {
+  console.log('[LOCAL] Rehydration complete; wizard re-evaluated');
+  rehydrationActive.value = false;
+  suppressWizard.value = false;
 };
 
 const checkDeepLinkSession = async (shareId: string) => {
@@ -671,36 +893,55 @@ const startTemporarySession = async () => {
   tempStartLoading.value = true;
   tempStartError.value = '';
   try {
-    const response = await fetch('/api/temporary/start', {
-      method: 'POST',
-      credentials: 'include'
-    });
-    const data = await response.json();
-    if (!response.ok) {
-      throw new Error(data.error || 'Unable to create temporary account');
+    const lastSnapshotUserId = getLastSnapshotUserId();
+    if (lastSnapshotUserId) {
+      console.log(`[LOCAL] Found local backup userId: ${lastSnapshotUserId}`);
+      const agentResponse = await fetch(`/api/agent-exists?userId=${encodeURIComponent(lastSnapshotUserId)}`);
+      const agentData = agentResponse.ok ? await agentResponse.json() : null;
+      if (agentData && agentData.exists) {
+        console.log(`[LOCAL] Agent lookup for ${lastSnapshotUserId}: found`);
+        const restoreResponse = await fetch('/api/temporary/restore', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json'
+          },
+          credentials: 'include',
+          body: JSON.stringify({ userId: lastSnapshotUserId })
+        });
+        const restoreData = await restoreResponse.json();
+        if (restoreResponse.ok && restoreData.authenticated && restoreData.user) {
+          setAuthenticatedUser(restoreData.user, null);
+        } else {
+          throw new Error(restoreData.error || 'Unable to restore temporary account');
+        }
+      } else if (agentResponse.ok) {
+        console.log(`[LOCAL] Agent lookup for ${lastSnapshotUserId}: missing`);
+        pendingLocalUserId.value = lastSnapshotUserId;
+        missingAgentUserId.value = lastSnapshotUserId;
+        showMissingAgentDialog.value = true;
+        console.log(`[LOCAL] Missing agent prompt shown for ${lastSnapshotUserId}`);
+        tempStartLoading.value = false;
+        return;
+      }
+    } else {
+      const newUser = await createTemporarySession();
+      if (!newUser) return;
     }
-    if (data.requiresPasskey && data.user) {
-      tempStartError.value = `A passkey already exists for ${data.user.userId}. Please use Passkey instead.`;
-      passkeyPrefillUserId.value = data.user.userId;
-      passkeyPrefillAction.value = 'signin';
-      showAuth.value = true;
-      return;
-    }
-    if (!data.authenticated || !data.user) {
-      throw new Error(data.error || 'Unable to create temporary account');
-    }
-    setAuthenticatedUser(data.user, null);
-    try {
-      const lastSnapshotUserId = getLastSnapshotUserId();
-      if (lastSnapshotUserId && lastSnapshotUserId !== data.user.userId) {
+
+    const effectiveUserId = user.value?.userId;
+    if (lastSnapshotUserId && lastSnapshotUserId === effectiveUserId) {
+      try {
         const snapshot = await getUserSnapshot(lastSnapshotUserId);
         if (snapshot) {
           restoreSnapshot.value = snapshot;
           showRestoreDialog.value = true;
+          suppressWizard.value = true;
+          clearWizardPendingKey(lastSnapshotUserId);
+          clearWizardPendingKey(effectiveUserId);
         }
+      } catch (restoreError) {
+        console.warn('Unable to read local backup:', restoreError);
       }
-    } catch (restoreError) {
-      console.warn('Unable to read local backup:', restoreError);
     }
   } catch (error) {
     tempStartError.value = error instanceof Error ? error.message : 'Unable to create temporary account';
@@ -711,7 +952,7 @@ const startTemporarySession = async () => {
 
 const openDestroyDialog = () => {
   showTempSignOutDialog.value = false;
-  destroyConfirm.value = '';
+  destroyConfirm.value = user.value?.userId || '';
   showDestroyDialog.value = true;
 };
 
@@ -742,6 +983,8 @@ const destroyTemporaryAccount = async () => {
   }
   destroyLoading.value = true;
   try {
+    console.log(`[LOCAL] Snapshot saved for ${user.value.userId}`);
+    await saveLocalSnapshot(signOutSnapshot.value);
     const response = await fetch('/api/temporary/delete', {
       method: 'POST',
       headers: {
