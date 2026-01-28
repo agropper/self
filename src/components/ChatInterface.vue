@@ -287,14 +287,12 @@
     </q-card>
 
     <q-dialog v-model="showAgentSetupDialog" persistent>
-      <q-card style="min-width: 520px; max-width: 640px">
+      <q-card style="min-width: 760px; max-width: 980px; width: 80vw">
         <q-card-section>
           <div class="text-h6">Private AI Setup Wizard</div>
         </q-card-section>
         <q-card-section class="q-pt-none">
-          <p class="text-body2" v-if="wizardTopMessage">
-            {{ wizardTopMessage }}
-          </p>
+          <div class="text-body2 wizard-intro" v-html="wizardIntroHtml" />
           <div v-if="agentSetupPollingActive || agentSetupTimedOut" class="q-mt-sm">
             <p class="text-caption text-grey-7" v-if="agentSetupElapsed">
               Elapsed: {{ Math.floor(agentSetupElapsed / 60) }}m {{ agentSetupElapsed % 60 }}s
@@ -317,86 +315,97 @@
           </div>
 
           <div class="q-mt-md">
-            <div class="row items-center q-py-xs">
-              <q-checkbox :model-value="wizardStage1Complete" disable />
-              <div class="q-ml-sm">1 - Creating your Private AI agent</div>
-              <div class="col" />
+            <div class="wizard-stage-row">
+              <div class="wizard-stage-col1">
+                <q-checkbox :model-value="wizardStage1Complete" disable />
+              </div>
+              <div class="wizard-stage-text">
+                <div class="wizard-stage-label">1 - Creating your Private AI agent</div>
+                <div class="text-caption text-grey-7 wizard-status-line">
+                  {{ wizardStage1StatusLine }}
+                </div>
+              </div>
+              <div class="wizard-stage-actions"></div>
             </div>
-            <div class="row items-center q-py-xs">
-              <q-checkbox :model-value="wizardStage2Complete || wizardHasAppleHealthFile" disable />
-              <div class="q-ml-sm">2 - Add your Apple Health "Export PDF" file</div>
-              <div class="col" />
-              <q-btn
-                unelevated
-                dense
-                size="sm"
-                :color="step2Active ? 'primary' : 'grey-4'"
-                label="OK"
-                :disable="!step2Enabled || !stage1Complete || wizardStage2Complete"
-                @click="handleStage2Ok"
-              />
-              <q-btn
-                unelevated
-                dense
-                size="sm"
-                :color="step2Active ? 'primary' : 'grey-4'"
-                label="Not yet"
-                class="q-ml-sm"
-                :disable="!step2Enabled || !stage1Complete || wizardStage2Complete"
-                @click="dismissWizard"
-              />
+            <div class="wizard-stage-row">
+              <div class="wizard-stage-col1">
+                <q-checkbox :model-value="wizardStage2Complete || wizardHasAppleHealthFile" disable />
+              </div>
+              <div class="wizard-stage-text">
+                <div class="wizard-stage-label">2 - Add your Apple Health "Export PDF" file</div>
+                <div class="text-caption text-grey-7 wizard-status-line">
+                  {{ wizardStage2StatusLine }}
+                </div>
+              </div>
+              <div class="wizard-stage-actions">
+                <q-btn
+                  unelevated
+                  dense
+                  size="sm"
+                  :color="step2Active ? 'primary' : 'grey-4'"
+                  :label="stage2ActionLabel"
+                  :disable="!step2Enabled || !stage1Complete || wizardStage2Complete"
+                  @click="handleStage2Action"
+                />
+              </div>
             </div>
-            <div class="row items-center q-py-xs" :class="{ 'text-grey-6': !step3OkEnabled }">
-              <q-checkbox :model-value="wizardStage3Complete" disable />
-              <div class="q-ml-sm">3 - Add any health records you want included</div>
-              <div class="col" />
-              <q-btn
-                unelevated
-                dense
-                size="sm"
-                :color="step3OkActive ? 'primary' : 'grey-4'"
-                label="OK"
-                :disable="!step3OkEnabled || !stage1Complete"
-                @click="() => { wizardUploadIntent = 'other'; triggerWizardFileInput(); }"
-              />
-              <q-btn
-                unelevated
-                dense
-                size="sm"
-                :color="step3NotYetActive ? 'primary' : 'grey-4'"
-                label="Not yet"
-                class="q-ml-sm"
-                :disable="!step3NotYetEnabled || !stage1Complete"
-                @click="() => { wizardStage3Complete = true; persistWizardCompletion(); dismissWizard(); }"
-              />
+            <div class="wizard-stage-row" :class="{ 'text-grey-6': !step3OkEnabled }">
+              <div class="wizard-stage-col1">
+                <q-checkbox :model-value="wizardStage3Complete" disable />
+              </div>
+              <div class="wizard-stage-text">
+                <div class="wizard-stage-label">3 - Add any health records you want included</div>
+                <div v-if="wizardStage3Files.length > 0" class="text-caption text-grey-7 wizard-status-line">
+                  <div v-for="file in wizardStage3Files" :key="file" class="wizard-status-file">
+                    {{ file }}
+                  </div>
+                </div>
+                <div class="text-caption text-grey-7 wizard-status-line">
+                  {{ wizardStage3StatusLine }}
+                </div>
+              </div>
+              <div class="wizard-stage-actions">
+                <q-btn
+                  unelevated
+                  dense
+                  size="sm"
+                  :color="step3OkActive ? 'primary' : 'grey-4'"
+                  :label="stage3ActionLabel"
+                  :disable="!step3OkEnabled || !stage1Complete"
+                  @click="handleStage3Action"
+                />
+              </div>
             </div>
-            <div class="row items-center q-py-xs" :class="{ 'text-grey-6': !wizardHasFilesInKB }">
-              <q-checkbox :model-value="wizardPatientSummary" disable />
-              <div class="q-ml-sm">4 - Review and verify your Patient Summary</div>
-              <div class="col" />
-              <q-btn
-                unelevated
-                dense
-                size="sm"
-                :color="step4Active ? 'primary' : 'grey-4'"
-                label="OK"
-                :disable="!step4Enabled || !stage1Complete"
-                @click="() => { myStuffInitialTab = 'summary'; showMyStuffDialog = true; }"
-              />
-              <q-btn
-                unelevated
-                dense
-                size="sm"
-                :color="step4Active ? 'primary' : 'grey-4'"
-                label="Not yet"
-                class="q-ml-sm"
-                :disable="!step4Enabled || !stage1Complete"
-                @click="dismissWizard"
-              />
+            <div class="wizard-stage-row" :class="{ 'text-grey-6': !wizardHasFilesInKB }">
+              <div class="wizard-stage-col1">
+                <q-checkbox :model-value="wizardPatientSummary" disable />
+              </div>
+              <div class="wizard-stage-text">
+                <div class="wizard-stage-label">4 - Review and verify your Patient Summary</div>
+              </div>
+              <div class="wizard-stage-actions">
+                <q-btn
+                  unelevated
+                  dense
+                  size="sm"
+                  :color="step4Active ? 'primary' : 'grey-4'"
+                  label="VERIFY SUMMARY"
+                  :disable="!step4Enabled || !stage1Complete"
+                  @click="openMyStuffTab('summary')"
+                />
+              </div>
             </div>
           </div>
 
         </q-card-section>
+        <q-card-actions align="right">
+          <q-btn
+            flat
+            label="NOT YET"
+            color="grey-7"
+            @click="dismissWizard"
+          />
+        </q-card-actions>
       </q-card>
     </q-dialog>
 
@@ -468,6 +477,7 @@
       @reference-file-added="handleReferenceFileAdded"
       @current-medications-saved="handleCurrentMedicationsSaved"
       @patient-summary-saved="handlePatientSummarySaved"
+      @patient-summary-verified="handlePatientSummaryVerified"
       @rehydration-complete="handleRehydrationComplete"
       v-if="canAccessMyStuff"
     />
@@ -689,34 +699,63 @@ const wizardAgentReady = ref(false);
 const wizardStage1Complete = ref(false);
 const wizardUploadIntent = ref<'apple' | 'other' | null>(null);
 const wizardMessages = ref<Record<number, string>>({});
+const wizardIntroMessage = ref('');
 const wizardDismissed = ref(false);
 const step2Enabled = computed(() => true);
 const step3OkEnabled = computed(() => true);
-const step3NotYetEnabled = computed(() => true);
 const step4Enabled = computed(() => wizardHasFilesInKB.value);
 const stage1Complete = computed(() => wizardStage1Complete.value);
 const step2Active = computed(() => step2Enabled.value && stage1Complete.value && !wizardStage2Complete.value);
 const step3OkActive = computed(() => step3OkEnabled.value && stage1Complete.value);
-const step3NotYetActive = computed(() => step3NotYetEnabled.value && stage1Complete.value);
 const step4Active = computed(() => step4Enabled.value && stage1Complete.value);
 const showPrivateUnavailableDialog = ref(false);
 const wizardStage2Complete = ref(false);
 const wizardStage3Complete = ref(false);
 const wizardStage2Pending = ref(false);
 const wizardUserStorageKey = computed(() => props.user?.userId ? `wizard-completion-${props.user.userId}` : null);
-
-const wizardActiveStage = computed(() => {
-  if (!wizardStage1Complete.value) return 1;
-  if (!wizardStage2Complete.value) return 2;
-  if (!wizardStage3Complete.value) return 3;
-  if (!wizardPatientSummary.value) return 4;
-  return 4;
+const wizardRestoreActive = computed(() => !!props.rehydrationActive && (Array.isArray(props.rehydrationFiles) ? props.rehydrationFiles.length > 0 : false));
+const stage2ActionLabel = computed(() => wizardRestoreActive.value ? 'RESTORE FILES' : 'ADD FILE');
+const stage3ActionLabel = computed(() => wizardRestoreActive.value ? 'RESTORE FILES' : 'ADD FILES');
+const wizardIntroMessageFallback = 'The Wizard steps through the essentials to set up your MAIA.\n\nStep 1 is automatic but takes about three minutes.\n\nStep 2 uses an Apple Health export file to create a Current Medications list and an index to help navigate your helth records. Skip Step 2 if you don\'t have this file.\n\nStep 3 adds other health records files and then indexes them into a private knowledge base accessible only via your private AI agent. Indexing can take up to 60 minutes.\n\nIn Step 4, the Private AI uses your records to create a Patient Summary. Once you correct and verify the summary the Wizard is done.';
+const wizardIntroHtml = computed(() => {
+  const raw = (wizardIntroMessage.value || wizardIntroMessageFallback).trim();
+  if (!raw) return '';
+  const paragraphs = raw.split(/\n\s*\n/).map(text => text.trim()).filter(Boolean);
+  return paragraphs.map(text => `<p class="q-ma-none q-mb-sm">${text}</p>`).join('');
+});
+const wizardStage1StatusLine = computed(() => {
+  if (wizardStage1Complete.value) return 'Ready to chat';
+  if (agentSetupElapsed.value) {
+    return `Pending ${Math.floor(agentSetupElapsed.value / 60)}m ${agentSetupElapsed.value % 60}s`;
+  }
+  return 'Pending <elapsed time>';
+});
+const wizardStage2FileName = ref<string | null>(null);
+const wizardStage3Files = ref<string[]>([]);
+const wizardStage2StatusLine = computed(() => {
+  const name = wizardStage2FileName.value || '<filename>';
+  if (wizardStage2Complete.value) {
+    return `${name} and Current Medications verified`;
+  }
+  if (wizardCurrentMedications.value) {
+    return `${name} and Current Medications verified`;
+  }
+  if (wizardStage2Pending.value || wizardHasAppleHealthFile.value) {
+    return `${name} and Current Medications skipped`;
+  }
+  return `${name} and Current Medications verified or Skipped`;
+});
+const wizardStage3StatusLine = computed(() => {
+  if (indexingStatus.value?.phase === 'indexing') {
+    return `Indexing • ${indexingStatus.value.filesIndexed || 0} files • ${indexingStatus.value.tokens || '0'} tokens`;
+  }
+  if (indexingStatus.value?.phase === 'complete') {
+    return `Complete • ${indexingStatus.value.filesIndexed || 0} files • ${indexingStatus.value.tokens || '0'} tokens`;
+  }
+  return 'Indexing or Complete <elapsed time>, # files, # bytes, # tokens';
 });
 
-const wizardTopMessage = computed(() => {
-  const stage = wizardActiveStage.value;
-  return wizardMessages.value[stage] || '';
-});
+
 
 const persistWizardCompletion = () => {
   if (!wizardUserStorageKey.value) return;
@@ -785,7 +824,7 @@ watch(
 watch(
   () => props.rehydrationActive,
   (active) => {
-    if (active && canAccessMyStuff.value) {
+    if (active && canAccessMyStuff.value && !showAgentSetupDialog.value) {
       myStuffInitialTab.value = 'files';
       showMyStuffDialog.value = true;
     }
@@ -796,7 +835,7 @@ watch(
 watch(
   () => (Array.isArray(props.rehydrationFiles) ? props.rehydrationFiles.length : 0),
   (count) => {
-    if (count > 0 && canAccessMyStuff.value) {
+    if (count > 0 && canAccessMyStuff.value && !showAgentSetupDialog.value) {
       myStuffInitialTab.value = 'files';
       showMyStuffDialog.value = true;
     }
@@ -824,7 +863,21 @@ watch(
 
 const handleRehydrationComplete = async (payload: { hasInitialFile: boolean }) => {
   emit('rehydration-complete', payload);
-  if (payload?.hasInitialFile) {
+  let shouldAutoProcess = !!payload?.hasInitialFile;
+  if (!shouldAutoProcess && props.user?.userId) {
+    try {
+      const statusResponse = await fetch(`/api/user-status?userId=${encodeURIComponent(props.user.userId)}`, {
+        credentials: 'include'
+      });
+      if (statusResponse.ok) {
+        const statusResult = await statusResponse.json();
+        shouldAutoProcess = !!statusResult?.initialFile;
+      }
+    } catch (error) {
+      // ignore status fetch errors
+    }
+  }
+  if (shouldAutoProcess) {
     try {
       sessionStorage.setItem('autoProcessInitialFile', 'true');
       sessionStorage.setItem('wizardMyListsAuto', 'true');
@@ -1489,8 +1542,9 @@ const refreshWizardState = async () => {
     if (statusResponse.ok) {
       const statusResult = await statusResponse.json();
       wizardHasFilesInKB.value = !!statusResult?.hasFilesInKB;
-      wizardCurrentMedications.value = !!statusResult?.currentMedications;
-      wizardStage2Complete.value = wizardCurrentMedications.value;
+      const hasMeds = !!statusResult?.currentMedications;
+      wizardCurrentMedications.value = hasMeds || wizardCurrentMedications.value;
+      wizardStage2Complete.value = hasMeds || wizardStage2Complete.value;
       if (statusResult?.hasAgent) {
         wizardStage1Complete.value = true;
       }
@@ -1503,7 +1557,12 @@ const refreshWizardState = async () => {
         isAppleHealthExport(getFileNameFromEntry(file))
       );
       wizardHasAppleHealthFile.value = appleHealthFiles.length > 0;
+      wizardStage2FileName.value = appleHealthFiles[0] ? getFileNameFromEntry(appleHealthFiles[0]) : null;
       wizardOtherFilesCount.value = files.length - appleHealthFiles.length;
+      wizardStage3Files.value = files
+        .filter((file: any) => file?.inKnowledgeBase || file?.pendingKbAdd)
+        .map((file: any) => getFileNameFromEntry(file))
+        .filter((name: string) => !!name);
     }
 
     if (summaryResponse.ok) {
@@ -1515,6 +1574,9 @@ const refreshWizardState = async () => {
       const messagesResult = await messagesResponse.json();
       if (messagesResult?.messages && typeof messagesResult.messages === 'object') {
         wizardMessages.value = messagesResult.messages;
+      }
+      if (messagesResult?.intro) {
+        wizardIntroMessage.value = messagesResult.intro;
       }
     }
 
@@ -1630,6 +1692,23 @@ const dismissWizard = () => {
   wizardDismissed.value = true;
   showAgentSetupDialog.value = false;
   stopAgentSetupTimer();
+};
+
+const handleStage2Action = () => {
+  if (wizardRestoreActive.value) {
+    openMyStuffTab('files');
+    return;
+  }
+  handleStage2Ok();
+};
+
+const handleStage3Action = () => {
+  if (wizardRestoreActive.value) {
+    openMyStuffTab('files');
+    return;
+  }
+  wizardUploadIntent.value = 'other';
+  triggerWizardFileInput();
 };
 
 const handleFileSelect = async (event: Event) => {
@@ -3783,6 +3862,10 @@ const handleCurrentMedicationsSaved = async () => {
 };
 
 const handlePatientSummarySaved = async () => {
+  await refreshWizardState();
+};
+
+const handlePatientSummaryVerified = async () => {
   wizardPatientSummary.value = true;
   showAgentSetupDialog.value = false;
   wizardDismissed.value = true;
@@ -3825,6 +3908,7 @@ const parsedContextualTip = computed(() => {
   
   return parts;
 });
+
 
 // Open My Stuff dialog with a specific tab
 const openMyStuffTab = (tab: string) => {
@@ -4131,6 +4215,50 @@ onUnmounted(() => {
   font-family: monospace;
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+.wizard-status-line {
+  margin-top: 0;
+  line-height: 1.1;
+  padding-left: 4px;
+}
+
+.wizard-status-file {
+  margin-top: 0;
+}
+
+.wizard-status-file + .wizard-status-file {
+  margin-top: 2px;
+}
+
+.wizard-stage-row {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  column-gap: 8px;
+  align-items: center;
+}
+
+.wizard-stage-col1 {
+  width: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.wizard-stage-text {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+
+.wizard-stage-label {
+  padding-left: 4px;
+  line-height: 1.2;
+}
+
+.wizard-stage-actions {
+  display: flex;
+  justify-content: flex-end;
 }
 
 .page-link {
