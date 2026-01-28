@@ -224,7 +224,9 @@ function formatDate(dateString: string | null): string {
 async function loadUsers() {
   loading.value = true;
   try {
-    const response = await fetch('/api/admin/users');
+    const response = await fetch('/api/admin/users', {
+      credentials: 'include'
+    });
     const data = await response.json();
     
     if (data.success) {
