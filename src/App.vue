@@ -54,7 +54,7 @@
                     size="lg"
                     class="full-width q-mb-lg"
                     :loading="tempStartLoading"
-                    @click="startTemporarySession"
+                    @click="handleGetStarted"
                   />
                   <div v-if="tempStartError" class="text-negative text-center q-mb-md">
                     {{ tempStartError }}
@@ -142,6 +142,51 @@
     
     <!-- Privacy Dialog -->
     <PrivacyDialog v-model="showPrivacyDialog" />
+
+    <!-- Device privacy choice -->
+    <q-dialog v-model="showDevicePrivacyDialog" persistent>
+      <q-card style="min-width: 420px; max-width: 520px">
+        <q-card-section>
+          <div class="text-h6">Is this computer private to you?</div>
+        </q-card-section>
+        <q-card-actions align="right">
+          <q-btn
+            flat
+            label="SHARED"
+            color="negative"
+            @click="handleSharedDevice"
+          />
+          <q-btn
+            flat
+            label="PRIVATE"
+            color="primary"
+            @click="handlePrivateDevice"
+          />
+        </q-card-actions>
+      </q-card>
+    </q-dialog>
+
+    <!-- Shared device warning -->
+    <q-dialog v-model="showSharedDeviceWarning" persistent>
+      <q-card style="min-width: 460px; max-width: 640px">
+        <q-card-section>
+          <div class="text-h6">Shared Computer Notice</div>
+        </q-card-section>
+        <q-card-section class="text-body2">
+          MAIA normally keeps a backup of your private information on the local computer and browser.
+          If you are using a shared computer you must set a Passkey to protect your information and
+          MAIA will not keep a local backup.
+        </q-card-section>
+        <q-card-actions align="right">
+          <q-btn
+            flat
+            label="OK"
+            color="primary"
+            @click="handleSharedWarningOk"
+          />
+        </q-card-actions>
+      </q-card>
+    </q-dialog>
 
     <!-- Passkey dialog for authenticated users -->
     <q-dialog v-model="showPasskeyDialog" persistent>
@@ -410,6 +455,10 @@ const suppressWizard = ref(false);
 const showMissingAgentDialog = ref(false);
 const missingAgentUserId = ref<string | null>(null);
 const pendingLocalUserId = ref<string | null>(null);
+const showDevicePrivacyDialog = ref(false);
+const showSharedDeviceWarning = ref(false);
+const deviceChoiceResolved = ref(false);
+const sharedComputerMode = ref(false);
 
 const $q = useQuasar();
 
@@ -527,7 +576,7 @@ const resetAuthState = () => {
 };
 
 const saveLocalSnapshot = async (snapshot?: SignOutSnapshot | null) => {
-  if (!user.value?.userId || user.value.isDeepLink) return;
+  if (!user.value?.userId || user.value.isDeepLink || sharedComputerMode.value) return;
   try {
     const [filesResponse, chatsResponse, statusResponse, summaryResponse] = await Promise.all([
       fetch(`/api/user-files?userId=${encodeURIComponent(user.value.userId)}`, {
@@ -596,6 +645,34 @@ const saveLocalSnapshot = async (snapshot?: SignOutSnapshot | null) => {
   } catch (error) {
     console.warn('Failed to save local snapshot:', error);
   }
+};
+
+const handlePrivateDevice = () => {
+  sharedComputerMode.value = false;
+  deviceChoiceResolved.value = true;
+  showDevicePrivacyDialog.value = false;
+  startTemporarySession();
+};
+
+const handleSharedDevice = () => {
+  sharedComputerMode.value = true;
+  deviceChoiceResolved.value = true;
+  showDevicePrivacyDialog.value = false;
+  showSharedDeviceWarning.value = true;
+};
+
+const handleSharedWarningOk = () => {
+  showSharedDeviceWarning.value = false;
+  startTemporarySession();
+};
+
+const handleGetStarted = () => {
+  const lastSnapshotUserId = getLastSnapshotUserId();
+  if (!lastSnapshotUserId && !deviceChoiceResolved.value) {
+    showDevicePrivacyDialog.value = true;
+    return;
+  }
+  startTemporarySession();
 };
 
 const performSignOut = async () => {
@@ -974,6 +1051,10 @@ const startTemporarySession = async () => {
       } catch (restoreError) {
         console.warn('Unable to read local backup:', restoreError);
       }
+    }
+
+    if (sharedComputerMode.value && user.value?.userId) {
+      await startPasskeyRegistration();
     }
   } catch (error) {
     tempStartError.value = error instanceof Error ? error.message : 'Unable to create temporary account';
