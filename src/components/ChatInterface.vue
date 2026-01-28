@@ -289,10 +289,10 @@
     <q-dialog v-model="showAgentSetupDialog" persistent>
       <q-card style="min-width: 760px; max-width: 980px; width: 80vw">
         <q-card-section>
-          <div class="text-h6">Private AI Setup Wizard</div>
+          <div class="text-h6 wizard-heading">Private AI Setup Wizard</div>
         </q-card-section>
         <q-card-section class="q-pt-none">
-          <div class="text-body2 wizard-intro" v-html="wizardIntroHtml" />
+          <div class="text-body2 wizard-intro wizard-heading" v-html="wizardIntroHtml" />
           <div v-if="agentSetupPollingActive || agentSetupTimedOut" class="q-mt-sm">
             <p class="text-caption text-grey-7" v-if="agentSetupElapsed">
               Elapsed: {{ Math.floor(agentSetupElapsed / 60) }}m {{ agentSetupElapsed % 60 }}s
@@ -329,7 +329,7 @@
             </div>
             <div class="wizard-stage-row">
               <div class="wizard-stage-col1">
-                <q-checkbox :model-value="wizardStage2Complete || wizardHasAppleHealthFile" disable />
+                <q-checkbox :model-value="stage2Checked" disable />
               </div>
               <div class="wizard-stage-text">
                 <div class="wizard-stage-label">2 - Add your Apple Health "Export PDF" file</div>
@@ -344,28 +344,39 @@
                   size="sm"
                   :color="step2Active ? 'primary' : 'grey-4'"
                   :label="stage2ActionLabel"
-                  :disable="!step2Enabled || !stage1Complete || wizardStage2Complete"
+                  :disable="!step2Enabled || !stage1Complete || wizardStage2Complete || wizardCurrentMedications"
                   @click="handleStage2Action"
                 />
               </div>
             </div>
             <div class="wizard-stage-row" :class="{ 'text-grey-6': !step3OkEnabled }">
               <div class="wizard-stage-col1">
-                <q-checkbox :model-value="wizardStage3Complete" disable />
+                <q-checkbox :model-value="stage3Checked" disable />
               </div>
               <div class="wizard-stage-text">
                 <div class="wizard-stage-label">3 - Add any health records you want included</div>
-                <div v-if="wizardStage3Files.length > 0" class="text-caption text-grey-7 wizard-status-line">
-                  <div v-for="file in wizardStage3Files" :key="file" class="wizard-status-file">
-                    {{ file }}
+                <div v-if="stage3HasFiles" class="text-caption text-grey-7 wizard-status-line">
+                  <div v-for="file in stage3DisplayFiles" :key="file.name" class="wizard-status-file">
+                    <q-btn
+                      v-if="file.needsRestore"
+                      dense
+                      flat
+                      size="sm"
+                      color="primary"
+                      label="RESTORE"
+                      class="wizard-restore-btn"
+                      @click="handleStage3Restore(file.name)"
+                    />
+                    <span>{{ file.name }}</span>
                   </div>
                 </div>
-                <div class="text-caption text-grey-7 wizard-status-line">
+                <div v-if="stage3ShowStatusLine" class="text-caption text-grey-7 wizard-status-line">
                   {{ wizardStage3StatusLine }}
                 </div>
               </div>
               <div class="wizard-stage-actions">
                 <q-btn
+                  v-if="!wizardRestoreActive && !stage3HasFiles"
                   unelevated
                   dense
                   size="sm"
@@ -374,9 +385,29 @@
                   :disable="!step3OkEnabled || !stage1Complete"
                   @click="handleStage3Action"
                 />
+                <div v-else-if="!wizardRestoreActive && stage3HasFiles" class="wizard-stage-actions-group">
+                  <q-btn
+                    unelevated
+                    dense
+                    size="sm"
+                    color="primary"
+                    label="ADD ANOTHER FILE"
+                    :disable="!step3OkEnabled || !stage1Complete"
+                    @click="handleStage3Action"
+                  />
+                  <q-btn
+                    unelevated
+                    dense
+                    size="sm"
+                    color="primary"
+                    label="INDEX"
+                    :disable="!step3OkEnabled || !stage1Complete"
+                    @click="handleStage3Index"
+                  />
+                </div>
               </div>
             </div>
-            <div class="wizard-stage-row" :class="{ 'text-grey-6': !wizardHasFilesInKB }">
+            <div class="wizard-stage-row">
               <div class="wizard-stage-col1">
                 <q-checkbox :model-value="wizardPatientSummary" disable />
               </div>
@@ -697,7 +728,7 @@ const wizardCurrentMedications = ref(false);
 const wizardPatientSummary = ref(false);
 const wizardAgentReady = ref(false);
 const wizardStage1Complete = ref(false);
-const wizardUploadIntent = ref<'apple' | 'other' | null>(null);
+const wizardUploadIntent = ref<'apple' | 'other' | 'restore' | null>(null);
 const wizardMessages = ref<Record<number, string>>({});
 const wizardIntroMessage = ref('');
 const wizardDismissed = ref(false);
@@ -706,7 +737,11 @@ const step3OkEnabled = computed(() => true);
 const step4Enabled = computed(() => wizardHasFilesInKB.value);
 const stage1Complete = computed(() => wizardStage1Complete.value);
 const step2Active = computed(() => step2Enabled.value && stage1Complete.value && !wizardStage2Complete.value);
+const stage2Checked = computed(() =>
+  !wizardRestoreActive.value && (wizardStage2Complete.value || wizardHasAppleHealthFile.value || wizardCurrentMedications.value)
+);
 const step3OkActive = computed(() => step3OkEnabled.value && stage1Complete.value);
+const stage3Checked = computed(() => !wizardRestoreActive.value && wizardStage3Complete.value);
 const step4Active = computed(() => step4Enabled.value && stage1Complete.value);
 const showPrivateUnavailableDialog = ref(false);
 const wizardStage2Complete = ref(false);
@@ -714,7 +749,21 @@ const wizardStage3Complete = ref(false);
 const wizardStage2Pending = ref(false);
 const wizardUserStorageKey = computed(() => props.user?.userId ? `wizard-completion-${props.user.userId}` : null);
 const wizardRestoreActive = computed(() => !!props.rehydrationActive && (Array.isArray(props.rehydrationFiles) ? props.rehydrationFiles.length > 0 : false));
-const stage2ActionLabel = computed(() => wizardRestoreActive.value ? 'RESTORE FILES' : 'ADD FILE');
+const stage2RestoreFileName = computed(() => {
+  if (!wizardRestoreActive.value) return null;
+  const files = Array.isArray(props.rehydrationFiles) ? props.rehydrationFiles : [];
+  const initial = files.find((file: { isInitial?: boolean }) => file?.isInitial);
+  const apple = files.find((file: { fileName?: string; bucketKey?: string }) =>
+    isAppleHealthExport(getFileNameFromEntry(file))
+  );
+  const entry = initial || apple || files[0];
+  return entry ? getFileNameFromEntry(entry) : null;
+});
+const stage2ActionLabel = computed(() => {
+  if (wizardRestoreActive.value) return 'RESTORE';
+  if (wizardStage2FileName.value) return 'VERIFY';
+  return 'ADD FILE';
+});
 const stage3ActionLabel = computed(() => wizardRestoreActive.value ? 'RESTORE FILES' : 'ADD FILES');
 const wizardIntroMessageFallback = 'The Wizard steps through the essentials to set up your MAIA.\n\nStep 1 is automatic but takes about three minutes.\n\nStep 2 uses an Apple Health export file to create a Current Medications list and an index to help navigate your helth records. Skip Step 2 if you don\'t have this file.\n\nStep 3 adds other health records files and then indexes them into a private knowledge base accessible only via your private AI agent. Indexing can take up to 60 minutes.\n\nIn Step 4, the Private AI uses your records to create a Patient Summary. Once you correct and verify the summary the Wizard is done.';
 const wizardIntroHtml = computed(() => {
@@ -732,12 +781,13 @@ const wizardStage1StatusLine = computed(() => {
 });
 const wizardStage2FileName = ref<string | null>(null);
 const wizardStage3Files = ref<string[]>([]);
+const stage2DisplayFileName = computed(() => {
+  return wizardStage2FileName.value || stage2RestoreFileName.value || '';
+});
 const wizardStage2StatusLine = computed(() => {
-  const name = wizardStage2FileName.value || '<filename>';
-  if (wizardStage2Complete.value) {
-    return `${name} and Current Medications verified`;
-  }
-  if (wizardCurrentMedications.value) {
+  const name = stage2DisplayFileName.value;
+  if (!name) return '';
+  if (wizardStage2Complete.value || wizardCurrentMedications.value) {
     return `${name} and Current Medications verified`;
   }
   if (wizardStage2Pending.value || wizardHasAppleHealthFile.value) {
@@ -745,14 +795,34 @@ const wizardStage2StatusLine = computed(() => {
   }
   return `${name} and Current Medications verified or Skipped`;
 });
+const stage3DisplayFiles = computed(() => {
+  if (wizardRestoreActive.value) {
+    const files = Array.isArray(props.rehydrationFiles) ? props.rehydrationFiles : [];
+    return files
+      .filter((file: { isInitial?: boolean }) => !file?.isInitial)
+      .map((file: { fileName?: string; bucketKey?: string }) => ({
+        name: getFileNameFromEntry(file),
+        needsRestore: true
+      }))
+      .filter((entry: { name: string }) => !!entry.name);
+  }
+  return wizardStage3Files.value.map(name => ({ name, needsRestore: false }));
+});
+const stage3HasFiles = computed(() => stage3DisplayFiles.value.length > 0);
+const stage3ShowStatusLine = computed(() =>
+  stage3HasFiles.value || indexingStatus.value?.phase === 'indexing' || indexingStatus.value?.phase === 'complete'
+);
 const wizardStage3StatusLine = computed(() => {
+  if (!stage3ShowStatusLine.value) return '';
   if (indexingStatus.value?.phase === 'indexing') {
-    return `Indexing • ${indexingStatus.value.filesIndexed || 0} files • ${indexingStatus.value.tokens || '0'} tokens`;
+    const elapsed = formatElapsed(stage3IndexingStartedAt.value);
+    return `Indexing... ${elapsed || '<elapsed time>'}`;
   }
   if (indexingStatus.value?.phase === 'complete') {
-    return `Complete • ${indexingStatus.value.filesIndexed || 0} files • ${indexingStatus.value.tokens || '0'} tokens`;
+    const elapsed = formatElapsed(stage3IndexingStartedAt.value, stage3IndexingCompletedAt.value || Date.now());
+    return `Indexing complete ${elapsed || '<elapsed time>'}`;
   }
-  return 'Indexing or Complete <elapsed time>, # files, # bytes, # tokens';
+  return `Ready to index ${stage3DisplayFiles.value.length} files`;
 });
 
 
@@ -1545,6 +1615,9 @@ const refreshWizardState = async () => {
       const hasMeds = !!statusResult?.currentMedications;
       wizardCurrentMedications.value = hasMeds || wizardCurrentMedications.value;
       wizardStage2Complete.value = hasMeds || wizardStage2Complete.value;
+      if (statusResult?.initialFile && !wizardStage2FileName.value) {
+        wizardStage2FileName.value = getFileNameFromEntry(statusResult.initialFile);
+      }
       if (statusResult?.hasAgent) {
         wizardStage1Complete.value = true;
       }
@@ -1557,12 +1630,17 @@ const refreshWizardState = async () => {
         isAppleHealthExport(getFileNameFromEntry(file))
       );
       wizardHasAppleHealthFile.value = appleHealthFiles.length > 0;
-      wizardStage2FileName.value = appleHealthFiles[0] ? getFileNameFromEntry(appleHealthFiles[0]) : null;
+      const appleFileName = appleHealthFiles[0] ? getFileNameFromEntry(appleHealthFiles[0]) : null;
+      if (appleFileName) {
+        wizardStage2FileName.value = appleFileName;
+      }
       wizardOtherFilesCount.value = files.length - appleHealthFiles.length;
-      wizardStage3Files.value = files
-        .filter((file: any) => file?.inKnowledgeBase || file?.pendingKbAdd)
+      const allFileNames = files
         .map((file: any) => getFileNameFromEntry(file))
         .filter((name: string) => !!name);
+      if (allFileNames.length > 0) {
+        wizardStage3Files.value = Array.from(new Set(allFileNames));
+      }
     }
 
     if (summaryResponse.ok) {
@@ -1679,11 +1757,10 @@ const handleWizardFileSelect = () => {
     sessionStorage.setItem('autoProcessInitialFile', 'true');
     sessionStorage.setItem('wizardMyListsAuto', 'true');
     logWizardEvent('stage2_file_selected', { tab: 'lists' });
+    showMyStuffDialog.value = true;
   } else {
-    myStuffInitialTab.value = 'files';
-    logWizardEvent('stage3_file_selected', { tab: 'files' });
+    logWizardEvent('stage3_file_selected', { tab: 'wizard' });
   }
-  showMyStuffDialog.value = true;
   wizardUploadIntent.value = null;
   refreshWizardState();
 };
@@ -1692,6 +1769,92 @@ const dismissWizard = () => {
   wizardDismissed.value = true;
   showAgentSetupDialog.value = false;
   stopAgentSetupTimer();
+};
+
+const stage3IndexingPoll = ref<ReturnType<typeof setInterval> | null>(null);
+const stage3IndexingStartedAt = ref<number | null>(null);
+const stage3IndexingCompletedAt = ref<number | null>(null);
+const formatElapsed = (start: number | null, end?: number | null) => {
+  if (!start) return '';
+  const elapsedMs = (end || Date.now()) - start;
+  const totalSeconds = Math.max(0, Math.floor(elapsedMs / 1000));
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `${minutes}m ${seconds}s`;
+};
+const handleStage3Index = async () => {
+  if (!props.user?.userId) return;
+  try {
+    const response = await fetch('/api/update-knowledge-base', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      credentials: 'include',
+      body: JSON.stringify({
+        userId: props.user.userId
+      })
+    });
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({}));
+      throw new Error(errorData.message || `Failed to update knowledge base: ${response.status}`);
+    }
+    const result = await response.json();
+    stage3IndexingStartedAt.value = Date.now();
+    stage3IndexingCompletedAt.value = null;
+    indexingStatus.value = {
+      active: true,
+      phase: 'indexing',
+      tokens: '0',
+      filesIndexed: 0,
+      progress: 0
+    };
+    if (stage3IndexingPoll.value) {
+      clearInterval(stage3IndexingPoll.value);
+    }
+    if (result?.jobId) {
+      const jobId = result.jobId;
+      stage3IndexingPoll.value = setInterval(async () => {
+        try {
+          const statusResponse = await fetch(`/api/kb-indexing-status/${jobId}?userId=${encodeURIComponent(props.user?.userId || '')}`, {
+            credentials: 'include'
+          });
+          if (!statusResponse.ok) {
+            throw new Error(`Indexing status error: ${statusResponse.status}`);
+          }
+          const statusResult = await statusResponse.json();
+          if (indexingStatus.value) {
+            indexingStatus.value.phase = statusResult.phase || indexingStatus.value.phase;
+            indexingStatus.value.tokens = statusResult.tokens || indexingStatus.value.tokens;
+            indexingStatus.value.filesIndexed = statusResult.filesIndexed || 0;
+            indexingStatus.value.progress = statusResult.progress || 0;
+          }
+          const isCompleted = statusResult.backendCompleted || statusResult.completed || statusResult.phase === 'complete' || statusResult.status === 'INDEX_JOB_STATUS_COMPLETED';
+          if (isCompleted) {
+            if (stage3IndexingPoll.value) {
+              clearInterval(stage3IndexingPoll.value);
+              stage3IndexingPoll.value = null;
+            }
+            if (indexingStatus.value) {
+              indexingStatus.value.active = false;
+              indexingStatus.value.phase = 'complete';
+            }
+            stage3IndexingCompletedAt.value = Date.now();
+            refreshWizardState();
+          }
+        } catch (error) {
+          // ignore polling errors
+        }
+      }, 10000);
+    }
+  } catch (error) {
+    console.warn('Failed to start indexing from wizard:', error);
+  }
+};
+
+const handleStage3Restore = (_fileName: string) => {
+  wizardUploadIntent.value = 'restore';
+  triggerWizardFileInput();
 };
 
 const handleStage2Action = () => {
@@ -1704,7 +1867,8 @@ const handleStage2Action = () => {
 
 const handleStage3Action = () => {
   if (wizardRestoreActive.value) {
-    openMyStuffTab('files');
+    wizardUploadIntent.value = 'restore';
+    triggerWizardFileInput();
     return;
   }
   wizardUploadIntent.value = 'other';
@@ -1859,6 +2023,12 @@ const uploadPDFFile = async (file: File) => {
       });
     } catch (error) {
       console.warn('Failed to save file metadata to user document:', error);
+    }
+  }
+
+  if (wizardUploadIntent.value === 'other' || wizardUploadIntent.value === 'restore') {
+    if (!wizardStage3Files.value.includes(file.name)) {
+      wizardStage3Files.value = [...wizardStage3Files.value, file.name];
     }
   }
 
@@ -3703,6 +3873,8 @@ const indexingStatus = ref<{
 } | null>(null);
 
 const handleIndexingStarted = (data: { jobId: string; phase: string }) => {
+  stage3IndexingStartedAt.value = Date.now();
+  stage3IndexingCompletedAt.value = null;
   indexingStatus.value = {
     active: true,
     phase: data.phase,
@@ -3724,6 +3896,7 @@ const handleIndexingStatusUpdate = (data: { jobId: string; phase: string; tokens
 };
 
 const handleIndexingFinished = (_data: { jobId: string; phase: string; error?: string }) => {
+  stage3IndexingCompletedAt.value = Date.now();
   indexingStatus.value = null;
   // Update status tip to show normal status
   updateContextualTip();
@@ -4179,6 +4352,10 @@ onUnmounted(() => {
     clearInterval(statusPollInterval.value);
     statusPollInterval.value = null;
   }
+  if (stage3IndexingPoll.value) {
+    clearInterval(stage3IndexingPoll.value);
+    stage3IndexingPoll.value = null;
+  }
 });
 </script>
 
@@ -4227,6 +4404,10 @@ onUnmounted(() => {
   margin-top: 0;
 }
 
+.wizard-restore-btn {
+  margin-right: 6px;
+}
+
 .wizard-status-file + .wizard-status-file {
   margin-top: 2px;
 }
@@ -4235,14 +4416,34 @@ onUnmounted(() => {
   display: grid;
   grid-template-columns: auto 1fr auto;
   column-gap: 8px;
-  align-items: center;
+  align-items: flex-start;
+}
+
+.wizard-stage-row + .wizard-stage-row {
+  margin-top: 6px;
 }
 
 .wizard-stage-col1 {
   width: 32px;
   display: flex;
-  align-items: center;
-  justify-content: center;
+  align-items: flex-start;
+  justify-content: flex-start;
+  padding-top: 0;
+  position: relative;
+}
+
+.wizard-stage-col1 :deep(.q-checkbox) {
+  margin-top: -7px;
+  align-self: flex-start;
+  line-height: 1;
+}
+
+.wizard-stage-col1 :deep(.q-checkbox__inner) {
+  margin-top: 0;
+}
+
+.wizard-stage-col1 :deep(.q-checkbox__label) {
+  margin-top: 0;
 }
 
 .wizard-stage-text {
@@ -4259,6 +4460,15 @@ onUnmounted(() => {
 .wizard-stage-actions {
   display: flex;
   justify-content: flex-end;
+}
+
+.wizard-stage-actions-group {
+  display: flex;
+  gap: 8px;
+}
+
+.wizard-heading {
+  padding-left: 44px;
 }
 
 .page-link {
