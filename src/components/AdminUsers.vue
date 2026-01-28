@@ -1,7 +1,18 @@
 <template>
   <q-page class="q-pa-md">
     <div class="q-mb-lg">
-      <div class="text-h4 q-mb-sm">User Administration</div>
+      <div class="row items-center justify-between q-mb-sm">
+        <div class="text-h4">User Administration</div>
+        <q-btn
+          flat
+          dense
+          color="negative"
+          label="Sign Out"
+          icon="logout"
+          :loading="signingOut"
+          @click="signOutAdmin"
+        />
+      </div>
       <div class="text-body2 text-grey-7 q-mb-xs">
         Total Users: {{ totalUsers }} | Deep Link Users: {{ totalDeepLinkUsers }}
       </div>
@@ -122,6 +133,7 @@ const totalDeepLinkUsers = ref(0);
 const passkeyConfig = ref<PasskeyConfig | null>(null);
 const deletingUsers = ref(new Set<string>());
 const recoveringUsers = ref(new Set<string>());
+const signingOut = ref(false);
 
 const columns = [
   {
@@ -388,6 +400,33 @@ async function recoverUser(userId: string) {
     recoveringUsers.value.delete(userId);
   }
 }
+
+const signOutAdmin = async () => {
+  signingOut.value = true;
+  try {
+    const response = await fetch('/api/sign-out', {
+      method: 'POST',
+      credentials: 'include'
+    });
+    if (!response.ok) {
+      const data = await response.json().catch(() => ({}));
+      throw new Error(data.error || 'Failed to sign out');
+    }
+    window.location.href = '/';
+  } catch (error) {
+    console.error('Error signing out:', error);
+    if ($q && typeof $q.notify === 'function') {
+      $q.notify({
+        type: 'negative',
+        message: error instanceof Error ? error.message : 'Failed to sign out'
+      });
+    } else {
+      alert('Failed to sign out');
+    }
+  } finally {
+    signingOut.value = false;
+  }
+};
 
 onMounted(() => {
   loadUsers();
