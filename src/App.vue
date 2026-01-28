@@ -443,7 +443,12 @@ const setAuthenticatedUser = (userData: any, deepLink: DeepLinkInfo | null = nul
     // In production (non-localhost), redirect away from /admin after authentication
     // This prevents new users from seeing the admin page after registration
     // The backend will enforce admin access if they try to access admin routes
-    if (isAdminPage && !isLocalhost && !normalizedUser.isAdmin) {
+    if (normalizedUser.isAdmin) {
+      showAdminPage.value = true;
+      if (!isAdminPage) {
+        window.history.replaceState({}, '', '/admin');
+      }
+    } else if (isAdminPage && !isLocalhost && !normalizedUser.isAdmin) {
       // Redirect to root - backend will enforce admin access if needed
       window.history.replaceState({}, '', '/');
       showAdminPage.value = false;
@@ -480,7 +485,12 @@ const handleAuthenticated = (userData: any) => {
     const isAdminPage = window.location.pathname === '/admin';
     const isLocalhost = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
     
-    if (isAdminPage && !isLocalhost && !userData?.isAdmin) {
+    if (userData?.isAdmin) {
+      showAdminPage.value = true;
+      if (!isAdminPage) {
+        window.history.replaceState({}, '', '/admin');
+      }
+    } else if (isAdminPage && !isLocalhost && !userData?.isAdmin) {
       // Redirect to root after a brief delay to ensure state is updated
       setTimeout(() => {
         window.location.href = '/';
@@ -1188,7 +1198,12 @@ onMounted(async () => {
         showAdminPage.value = false;
       }
     } else {
-      showAdminPage.value = false;
+      if (authenticated.value && user.value?.isAdmin) {
+        showAdminPage.value = true;
+        window.history.replaceState({}, '', '/admin');
+      } else {
+        showAdminPage.value = false;
+      }
     }
   };
   
