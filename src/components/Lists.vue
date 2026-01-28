@@ -867,12 +867,19 @@ const processInitialFile = async () => {
   markdownContent.value = '';
 
   try {
+    const payload: { bucketKey?: string; fileName?: string } = {};
+    if (initialFileInfo.value?.bucketKey) {
+      payload.bucketKey = initialFileInfo.value.bucketKey;
+      payload.fileName = initialFileInfo.value.fileName || 'Initial File';
+    }
+
     const response = await fetch('/api/files/lists/process-initial-file', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json'
       },
-      credentials: 'include'
+      credentials: 'include',
+      body: JSON.stringify(payload)
     });
 
     if (!response.ok) {

@@ -23,6 +23,39 @@ Always start your response with the patient's name, age and sex. Do not show you
 
 ---
 
+## Private AI Setup Wizard
+
+The Wizard steps through the essentials to set up your MAIA.
+
+Step 1 is automatic but takes about three minutes. 
+
+Step 2 uses an Apple Health export file to create a Current Medications list and an index to help navigate your helth records. Skip Step 2 if you don't have this file. 
+
+Step 3 adds other health records files and then indexes them into a private knowledge base accessible only via your private AI agent. Indexing can take up to 60 minutes. 
+
+In Step 4, the Private AI uses your records to create a Patient Summary. Once you correct and verify the summary the Wizard is done.
+
+
+
+[ ] 1 - Creating your Private AI agent
+        Pending <elapsed time> or Ready to chat
+
+[ ] 2 - Add your Apple Health "Export PDF" file           [ADD FILE] or [VERIFY] or [RESTORE]
+        <filename> and Current Medications verified or Skipped
+
+[ ] 3 - Add any health records you want included          [ADD FILE] or [INDEX]
+        <filename> and [RESTORE]
+        <filename> and [RESTORE]
+        ...
+        Indexing or Complete <elapsed time>, # files, # bytes, # tokens
+
+[ ] 4 - Review and verify your Patient Summary            [VERIFY]
+
+
+                                                          [NOT YET]
+
+---
+
 ## Workflow Stages and tips
 
 The following workflow stages are used to track user progress through the provisioning and setup process:
@@ -66,9 +99,9 @@ Tips for each stage can be added below:
     - Not yet dismisses the wizard until the next page reload.
   - Stage 2 is checked off when the My Lists modal is closed or there's a Current Medications list.
 
-3. Add any health records you want included. If you click Not yet, you can manage and index health record files anytime using the Saved Files tab.
-   - OK displays the file chooser, saves the file as imported, and then launches the Saved Files tab
-   - Not yet checks if there are files indexed into the knowledge base and, if so, checks off Stage 3 
+3. Add any health records you want included. You can add files now or later from the My Stuff Files tab.
+   - Add Files opens the file chooser and then the Files tab.
+   - Restore Files opens the Files tab for rehydration when applicable.
 
 4. Review and verify your Patient Summary. Use the Patient Summary tab any time to update or edit it.
    - If Stage 5 is complete, then there is a Patient Summary and the SETUP WIZARD is not displayed.
@@ -170,7 +203,7 @@ Your Private AI agent is ready to receive your health records and answer questio
 
 ## Welcome Page Video Caption
 
-**Privacy Note:** This demo will not share your health records or chats with anyone unless you choose to share a chat with a public AI like ChatGPT or via a deep link. The domo host (agropper.xyz, me) could access your records and chats but you will be registered under a pseudonym and I have no reason to fish through anybody's records without a written request. For privacy from me as open source code and cloud hosting administrator, you should get your own Digital Ocean Priavate AI account.
+**Privacy Note:** This demo will not share your health records or chats with anyone unless you choose to share a chat with a public AI like ChatGPT or via a deep link. The demo host (agropper.xyz, me) could access your records and chats but you will be registered under a pseudonym and I have no reason to fish through anybody's records without a written request. For privacy from me as open source code and cloud hosting administrator, you should get your own Digital Ocean Priavate AI account.
 
 You can also download your records using Apple Health in minutes using the "Export PDF" button. However, the Apple Health export will not have the full text notes you get via a pateint portal download. You will then import your records for indexing into a private knowledge base that your private AI agent can access. The other, public AIs like ChatGPT, will not have access to your records except as part of a chat that you see and control. Doctors and other users you invite by sharing a deep link will have access to your records by asking your Private AI questions in the chat. You can disable this option in your My Agent settings.
 

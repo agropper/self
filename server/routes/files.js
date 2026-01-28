@@ -573,7 +573,6 @@ function getClinicalNotesClient() {
       password: process.env.OPENSEARCH_PASSWORD,
       databaseId: process.env.DO_DATABASE_ID
     });
-    console.log('✅ Clinical Notes OpenSearch client initialized');
     return clinicalNotesClient;
   } catch (error) {
     console.warn('⚠️  Failed to initialize Clinical Notes client:', error.message);
@@ -1793,7 +1792,59 @@ export default function setupFileRoutes(app, cloudant, doClient) {
       try {
         response = await s3Client.send(getCommand);
       } catch (err) {
-        return res.status(404).json({ error: `Initial file not found: ${err.message}` });
+        if (providedBucketKey) {
+          return res.status(404).json({ error: `Initial file not found: ${err.message}` });
+        }
+
+        const cleanName = (initialFileName || 'Initial File').replace(/[^a-zA-Z0-9.-]/g, '_');
+        const kbName = userDoc.kbName || (Array.isArray(userDoc.connectedKBs) ? userDoc.connectedKBs[0] : null) || userDoc.connectedKB;
+        const fallbackKeys = new Set();
+
+        if (kbName) {
+          fallbackKeys.add(`${userId}/${kbName}/${cleanName}`);
+        }
+        fallbackKeys.add(`${userId}/${cleanName}`);
+        fallbackKeys.add(`${userId}/archived/${cleanName}`);
+
+        if (Array.isArray(userDoc.files)) {
+          userDoc.files.forEach((file) => {
+            if (!file?.bucketKey || !file?.fileName) return;
+            const normalized = String(file.fileName).replace(/[^a-zA-Z0-9.-]/g, '_');
+            if (normalized === cleanName || file.fileName === initialFileName) {
+              fallbackKeys.add(file.bucketKey);
+            }
+          });
+        }
+
+        let foundKey = null;
+        for (const candidateKey of Array.from(fallbackKeys)) {
+          try {
+            response = await s3Client.send(new GetObjectCommand({
+              Bucket: bucketName,
+              Key: candidateKey
+            }));
+            foundKey = candidateKey;
+            break;
+          } catch (fallbackErr) {
+            // keep trying
+          }
+        }
+
+        if (!response || !foundKey) {
+          return res.status(404).json({ error: `Initial file not found: ${err.message}` });
+        }
+
+        try {
+          userDoc.initialFile = {
+            ...userDoc.initialFile,
+            bucketKey: foundKey,
+            fileName: initialFileName || userDoc.initialFile?.fileName || cleanName
+          };
+          userDoc.updatedAt = new Date().toISOString();
+          await cloudant.saveDocument('maia_users', userDoc);
+        } catch (updateErr) {
+          // ignore initialFile update errors
+        }
       }
 
       // Read PDF buffer

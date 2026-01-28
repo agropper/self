@@ -1181,6 +1181,7 @@ const emit = defineEmits<{
   'reference-file-added': [file: { fileName: string; bucketKey: string; fileSize: number; uploadedAt: string; fileType?: string; fileUrl?: string; isReference: boolean }]; // Emit reference file to add to chat
   'current-medications-saved': [data: { value: string; edited: boolean }];
   'patient-summary-saved': [data: { userId: string }];
+  'patient-summary-verified': [data: { userId: string }];
   'rehydration-complete': [payload: { hasInitialFile: boolean }];
 }>();
 
@@ -1318,12 +1319,6 @@ watch(
       rehydrationQueue.value = files;
       rehydrationCompleted.value = new Set();
       rehydrationStep.value = 0;
-      console.log('[LOCAL] Saved Files rehydration queue:');
-      rehydrationQueue.value.forEach((entry) => {
-        const label = entry.fileName || entry.bucketKey || 'unknown';
-        const chip = entry.chipStatus || 'unknown';
-        console.log(`[LOCAL]  • ${label} (${chip})`);
-      });
     } else {
       rehydrationQueue.value = [];
       rehydrationCompleted.value = new Set();
@@ -1359,7 +1354,6 @@ const handleRehydrationFileSelected = async (event: Event) => {
   }
 
   rehydrationUploading.value = true;
-  console.log(`[LOCAL] Rehydration upload started: ${file.name}`);
   try {
     const formData = new FormData();
     formData.append('file', file);
@@ -1398,7 +1392,6 @@ const handleRehydrationFileSelected = async (event: Event) => {
             updateInitialFile: !!currentEntry?.isInitial
           })
         });
-        console.log(`[LOCAL] Rehydration metadata saved: ${uploadResult.fileInfo.fileName} (${chipStatus})`);
       } catch (metadataError) {
         console.warn('Rehydration metadata update failed:', metadataError);
       }
@@ -1406,7 +1399,6 @@ const handleRehydrationFileSelected = async (event: Event) => {
     rehydrationCompleted.value.add(expected);
     rehydrationStep.value += 1;
     await loadFiles();
-    console.log(`[LOCAL] Rehydration upload completed: ${file.name}`);
   } catch (error) {
     console.error('Rehydration upload failed:', error);
     if ($q && typeof $q.notify === 'function') {
@@ -1421,7 +1413,6 @@ const handleRehydrationFileSelected = async (event: Event) => {
   }
 
   if (rehydrationRemaining.value.length === 0) {
-    console.log('[LOCAL] Rehydration complete; wizard re-evaluated');
     const hasInitialFile = rehydrationQueue.value.some(entry => !!entry.isInitial);
     emit('rehydration-complete', { hasInitialFile });
   }
@@ -1679,10 +1670,6 @@ const loadFiles = async () => {
 
     if (result.indexedFileTokens && typeof result.indexedFileTokens === 'object') {
       indexedFileTokens.value = result.indexedFileTokens;
-      console.log('[KB] indexedFileTokens received', {
-        count: Object.keys(indexedFileTokens.value || {}).length,
-        sample: Object.entries(indexedFileTokens.value || {}).slice(0, 3)
-      });
     } else {
       indexedFileTokens.value = {};
     }
@@ -1785,7 +1772,6 @@ const loadDeepLinkPrivateAISetting = async () => {
       const result = await response.json();
 
       if (result.followupJobId && result.followupJobId !== currentIndexingJobId.value) {
-        console.log(`[KB] Switching to follow-up indexing job ${result.followupJobId}`);
         currentIndexingJobId.value = result.followupJobId;
         if (pollingInterval.value) {
           clearInterval(pollingInterval.value);
@@ -2273,7 +2259,6 @@ const deleteFile = async (file: UserFile) => {
 };
 
 const updateAndIndexKB = async () => {
-  console.log('[KB] Update and Index KB button clicked');
   clearWizardPendingKbSelection();
   indexingKB.value = true;
   indexingStatus.value = {
@@ -2287,15 +2272,10 @@ const updateAndIndexKB = async () => {
   };
 
   try {
-    console.log('[KB] kbIndexingOutOfSync:', kbIndexingOutOfSync.value);
-    console.log('[KB] hasCheckboxChanges:', hasCheckboxChanges.value);
-    
     // Files are already moved by checkboxes - no need to send changes array
     // Phase 1: KB Setup (no longer moving files)
     indexingStatus.value.phase = 'kb_setup';
     indexingStatus.value.message = 'Setting up knowledge base...';
-
-    console.log('[KB] Calling /api/update-knowledge-base with userId:', props.userId);
 
     const response = await fetch('/api/update-knowledge-base', {
       method: 'POST',
@@ -2308,8 +2288,6 @@ const updateAndIndexKB = async () => {
       })
     });
 
-    console.log('[KB] Response status:', response.status, response.statusText);
-
     if (!response.ok) {
       let errorData;
       try {
@@ -2317,12 +2295,10 @@ const updateAndIndexKB = async () => {
       } catch (e) {
         errorData = { message: `HTTP ${response.status}: ${response.statusText}` };
       }
-      console.error('[KB] Error response:', errorData);
       throw new Error(errorData.message || `Failed to update knowledge base: ${response.status}`);
     }
 
     const result = await response.json();
-    console.log('[KB] Response result:', result);
     
     // Update original files
     originalFiles.value = JSON.parse(JSON.stringify(userFiles.value));
@@ -2340,13 +2316,10 @@ const updateAndIndexKB = async () => {
         : 'Setting up knowledge base...';
       indexingStatus.value.kb = result.kbId || result.kb || '';
       
-      console.log('[KB] Starting to poll for job:', result.jobId);
-      
       // Start polling for status
       pollIndexingProgress(result.jobId);
     } else if (result.error === 'INDEXING_ALREADY_RUNNING') {
       // KB already has an indexing job running - check if we can get the job ID
-      console.log('[KB] Indexing already running:', result.message);
       if (result.kbId) {
         // Try to get the existing job ID from user document
         // For now, show a message and suggest waiting
@@ -2368,7 +2341,6 @@ const updateAndIndexKB = async () => {
     } else if (result.kbId && result.success) {
       // KB was created but jobId is null - indexing should start automatically
       // Poll for the job ID to appear
-      console.log('[KB] KB created but no jobId yet. Polling for indexing job to appear...');
       indexingKB.value = true;
       indexingStatus.value.phase = 'indexing_started';
       indexingStatus.value.message = 'Knowledge base created. Waiting for indexing to start...';
@@ -2392,23 +2364,18 @@ const updateAndIndexKB = async () => {
             const statusData = await statusResponse.json();
             if (statusData.kbLastIndexingJobId) {
               foundJobId = statusData.kbLastIndexingJobId;
-              console.log(`[KB] Found job ID after polling: ${foundJobId} (attempt ${attempt + 1})`);
               break;
             }
           }
-        } catch (pollError) {
-          console.log(`[KB] Polling attempt ${attempt + 1} failed:`, pollError);
-        }
+        } catch (pollError) {}
       }
       
       if (foundJobId) {
         // Found job ID - start polling for progress
         currentIndexingJobId.value = foundJobId;
-        console.log('[KB] Starting to poll for job:', foundJobId);
         pollIndexingProgress(foundJobId);
       } else {
         // Still no job ID after polling - show message but don't error
-        console.log('[KB] Could not find job ID after polling. Indexing should start automatically.');
         indexingKB.value = false;
         indexingStatus.value.phase = 'complete';
         indexingStatus.value.message = 'Knowledge base created. Indexing will start automatically - please check back in a moment.';
@@ -2425,12 +2392,10 @@ const updateAndIndexKB = async () => {
       }
     } else {
       // No job ID and no KB ID - something went wrong
-      console.error('[KB] No jobId or kbId in response:', result);
       indexingKB.value = false;
       throw new Error('No indexing job ID returned from server');
     }
   } catch (err) {
-    console.error('[KB] Error in updateAndIndexKB:', err);
     indexingKB.value = false;
     indexingStatus.value.phase = 'error';
     indexingStatus.value.error = err instanceof Error ? err.message : 'Failed to update knowledge base';
@@ -2450,12 +2415,10 @@ const updateAndIndexKB = async () => {
 
 const cancelIndexingAndRestore = async () => {
   if (!currentIndexingJobId.value) {
-    console.warn('[KB Cancel] No active indexing job to cancel');
     return;
   }
 
   const jobId = currentIndexingJobId.value;
-  console.log(`[KB Cancel] Cancelling indexing job ${jobId} and restoring files...`);
 
   try {
     // Stop polling
@@ -2478,12 +2441,10 @@ const cancelIndexingAndRestore = async () => {
     });
 
     const result = await response.json();
-    console.log('[KB Cancel] Cancel result:', result);
 
     // Check if indexing already completed
     if (result.alreadyCompleted || result.error === 'ALREADY_COMPLETED') {
       // Indexing already completed - just clear frontend state
-      console.log('[KB Cancel] Indexing already completed - clearing frontend state');
       
       // Reset indexing state
       indexingKB.value = false;
@@ -2558,7 +2519,6 @@ const cancelIndexingAndRestore = async () => {
       });
     }
   } catch (err) {
-    console.error('[KB Cancel] ❌ Error cancelling indexing:', err);
     if ($q && typeof $q.notify === 'function') {
       $q.notify({
         type: 'negative',
@@ -2664,14 +2624,6 @@ const pollIndexingProgress = async (jobId: string) => {
       const isCompleted = result.backendCompleted || result.completed || result.phase === 'complete' || result.status === 'INDEX_JOB_STATUS_COMPLETED';
       
       if (isCompleted) {
-        console.log('[KB] ✅ Detected indexing completion:', {
-          backendCompleted: result.backendCompleted,
-          completed: result.completed,
-          phase: result.phase,
-          status: result.status,
-          filesIndexed: result.filesIndexed,
-          tokens: result.tokens
-        });
         if (pollingInterval.value !== null) {
           clearInterval(pollingInterval.value);
         }
@@ -2907,14 +2859,11 @@ const attachKBToAgentOnly = async () => {
   }
 
   const attachResult = await attachResponse.json();
-  console.log('[KB] KB attached to agent:', attachResult);
 };
 
 // Attach KB to agent (patient summary generation is disabled)
 const attachKBToAgentOnlyDuringIndexing = async () => {
   try {
-    console.log('[KB] Attaching KB to agent (patient summary generation disabled)...');
-    
     // Keep indexing status visible and update message
     indexingStatus.value.message = 'Attaching knowledge base to agent...';
     emit('indexing-status-update', {
@@ -2927,7 +2876,6 @@ const attachKBToAgentOnlyDuringIndexing = async () => {
     
     await attachKBToAgentOnly();
   } catch (error) {
-    console.error('[KB] Error attaching KB after indexing:', error);
     indexingStatus.value.message = `Error: ${error instanceof Error ? error.message : 'Failed to attach KB'}`;
     if ($q && typeof $q.notify === 'function') {
       $q.notify({
@@ -2946,7 +2894,6 @@ const handleConfirmReplaceSummary = async () => {
     try {
       await pendingSummaryGeneration.value();
     } catch (error) {
-      console.error('[KB] Error generating summary after confirmation:', error);
       if ($q && typeof $q.notify === 'function') {
         $q.notify({
           type: 'negative',
@@ -2987,6 +2934,7 @@ const handleReplaceSummaryByIndex = async (indexToReplace: number) => {
     // Reload summaries to get updated list
     await loadPatientSummary();
     emit('patient-summary-saved', { userId: props.userId });
+    emit('patient-summary-verified', { userId: props.userId });
     
     if ($q && typeof $q.notify === 'function') {
       $q.notify({
@@ -3039,6 +2987,7 @@ const handleReplaceSummary = async (replaceStrategy: 'keep' | 'oldest' | 'newest
     // Reload summaries to get updated list
     await loadPatientSummary();
     emit('patient-summary-saved', { userId: props.userId });
+    emit('patient-summary-verified', { userId: props.userId });
     
     if ($q && typeof $q.notify === 'function') {
       $q.notify({
@@ -5195,7 +5144,7 @@ const saveSummaryFromTab = async () => {
 
 const handleVerifySummaryTab = () => {
   if (!props.userId || !patientSummary.value) return;
-  emit('patient-summary-saved', { userId: props.userId });
+  emit('patient-summary-verified', { userId: props.userId });
   if ($q && typeof $q.notify === 'function') {
     $q.notify({
       type: 'positive',
@@ -5313,7 +5262,6 @@ watch(() => props.modelValue, async (newValue) => {
               const jobStatusData = await jobStatusResponse.json();
               // Only restore if job is still in progress (not completed or failed)
               if (jobStatusData.phase && jobStatusData.phase !== 'complete' && jobStatusData.phase !== 'error') {
-                console.log('[KB] Restoring indexing state for job:', statusData.kbLastIndexingJobId);
                 currentIndexingJobId.value = statusData.kbLastIndexingJobId;
                 indexingKB.value = true;
                 indexingStatus.value = {

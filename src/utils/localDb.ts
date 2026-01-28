@@ -74,7 +74,6 @@ export const saveUserSnapshot = async (payload: SnapshotPayload) => {
   await upsertDoc(db, snapshot);
   if (typeof window !== 'undefined' && window.localStorage) {
     window.localStorage.setItem(LAST_SNAPSHOT_KEY, payload.user.userId);
-    console.log(`[LOCAL] Stored local backup userId: ${payload.user.userId}`);
   }
 };
 

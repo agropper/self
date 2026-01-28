@@ -618,15 +618,6 @@ const saveLocalSnapshot = async (snapshot?: SignOutSnapshot | null) => {
       };
     });
 
-    if (fileStatusSummary.length > 0) {
-      console.log(`[LOCAL] Saved Files snapshot for ${user.value.userId}:`);
-      fileStatusSummary.forEach((entry: { fileName?: string; bucketKey?: string; chipStatus: string }) => {
-        console.log(`[LOCAL]  • ${entry.fileName || entry.bucketKey} (${entry.chipStatus})`);
-      });
-    } else {
-      console.log(`[LOCAL] Saved Files snapshot for ${user.value.userId}: none`);
-    }
-
     await saveUserSnapshot({
       user: {
         userId: user.value.userId,
@@ -732,9 +723,6 @@ const clearWizardPendingKey = (userId?: string | null) => {
 };
 
 const handleClearLocalBackup = () => {
-  if (pendingLocalUserId.value) {
-    console.log(`[LOCAL] Clearing local backup for ${pendingLocalUserId.value}`);
-  }
   clearLastSnapshotUserId();
   pendingLocalUserId.value = null;
   showMissingAgentDialog.value = false;
@@ -742,9 +730,6 @@ const handleClearLocalBackup = () => {
 };
 
 const handleStartWizardAgain = () => {
-  if (pendingLocalUserId.value) {
-    console.log(`[LOCAL] Starting wizard again for ${pendingLocalUserId.value}`);
-  }
   clearLastSnapshotUserId();
   pendingLocalUserId.value = null;
   showMissingAgentDialog.value = false;
@@ -851,16 +836,8 @@ const handleRestoreSnapshot = async () => {
       }
     }
     rehydrationActive.value = rehydrationFiles.value.length > 0;
-    suppressWizard.value = rehydrationActive.value;
+    suppressWizard.value = false;
     if (rehydrationActive.value) {
-      console.log(`[LOCAL] Rehydration started for ${rehydrationFiles.value.length} file(s)`);
-      console.log('[LOCAL] Wizard suppressed for rehydration');
-      console.log(`[LOCAL] Restore queue for ${user.value.userId}:`);
-      rehydrationFiles.value.forEach((entry: any) => {
-        const label = entry.fileName || entry.bucketKey || 'unknown';
-        const chip = entry.chipStatus || 'unknown';
-        console.log(`[LOCAL]  • ${label} (${chip})`);
-      });
       if ($q && typeof $q.notify === 'function') {
         $q.notify({
           type: 'info',
@@ -884,7 +861,6 @@ const handleRestoreSnapshot = async () => {
             currentMedications: restoreSnapshot.value.currentMedications
           })
         });
-        console.log('[LOCAL] Current Medications restored');
       } catch (medsError) {
         console.warn('Failed to restore current medications:', medsError);
       }
@@ -902,7 +878,6 @@ const handleRestoreSnapshot = async () => {
             summary: restoreSnapshot.value.patientSummary
           })
         });
-        console.log('[LOCAL] Patient Summary restored');
       } catch (summaryError) {
         console.warn('Failed to restore patient summary:', summaryError);
       }
@@ -937,7 +912,6 @@ const handleSkipRestore = () => {
 };
 
 const handleRehydrationComplete = (_payload: { hasInitialFile: boolean }) => {
-  console.log('[LOCAL] Rehydration complete; wizard re-evaluated');
   rehydrationActive.value = false;
   suppressWizard.value = false;
 };
@@ -1004,11 +978,9 @@ const startTemporarySession = async () => {
   try {
     const lastSnapshotUserId = getLastSnapshotUserId();
     if (lastSnapshotUserId) {
-      console.log(`[LOCAL] Found local backup userId: ${lastSnapshotUserId}`);
       const agentResponse = await fetch(`/api/agent-exists?userId=${encodeURIComponent(lastSnapshotUserId)}`);
       const agentData = agentResponse.ok ? await agentResponse.json() : null;
       if (agentData && agentData.exists) {
-        console.log(`[LOCAL] Agent lookup for ${lastSnapshotUserId}: found`);
         const restoreResponse = await fetch('/api/temporary/restore', {
           method: 'POST',
           headers: {
@@ -1024,11 +996,9 @@ const startTemporarySession = async () => {
           throw new Error(restoreData.error || 'Unable to restore temporary account');
         }
       } else if (agentResponse.ok) {
-        console.log(`[LOCAL] Agent lookup for ${lastSnapshotUserId}: missing`);
         pendingLocalUserId.value = lastSnapshotUserId;
         missingAgentUserId.value = lastSnapshotUserId;
         showMissingAgentDialog.value = true;
-        console.log(`[LOCAL] Missing agent prompt shown for ${lastSnapshotUserId}`);
         tempStartLoading.value = false;
         return;
       }
@@ -1096,7 +1066,6 @@ const destroyTemporaryAccount = async () => {
   }
   destroyLoading.value = true;
   try {
-    console.log(`[LOCAL] Snapshot saved for ${user.value.userId}`);
     await saveLocalSnapshot(signOutSnapshot.value);
     const response = await fetch('/api/temporary/delete', {
       method: 'POST',

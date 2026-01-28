@@ -160,18 +160,47 @@ function getSetupWizardMessages() {
   try {
     const newAgentFilePath = path.join(__dirname, '../../NEW-AGENT.txt');
     const fileContent = readFileSync(newAgentFilePath, 'utf-8');
-    const marker = '## PRIVATE AI SETUP WIZARD MESSAGES';
-    const startIndex = fileContent.indexOf(marker);
+    const primaryMarker = '## Private AI Setup Wizard';
+    const legacyMarker = '## PRIVATE AI SETUP WIZARD MESSAGES';
+    let startIndex = fileContent.indexOf(primaryMarker);
+    let mode = 'spec';
+    if (startIndex === -1) {
+      startIndex = fileContent.indexOf(legacyMarker);
+      mode = 'legacy';
+    }
     if (startIndex === -1) {
       return {};
     }
-    const lines = fileContent.slice(startIndex + marker.length).split('\n');
+    const sliceStart = startIndex + (mode === 'spec' ? primaryMarker.length : legacyMarker.length);
+    const lines = fileContent.slice(sliceStart).split('\n');
     const messages = {};
+    let introLines = [];
+    let seenChecklist = false;
     for (const line of lines) {
       const trimmed = line.trim();
-      if (!trimmed) continue;
+      if (!trimmed) {
+        if (mode === 'spec' && !seenChecklist) {
+          introLines.push('');
+        }
+        continue;
+      }
       if (trimmed.startsWith('## ')) break;
-      const match = trimmed.match(/^(\d+)[).:\-]\s*(.+)$/);
+      if (mode === 'spec') {
+        if (!seenChecklist) {
+          if (trimmed.startsWith('[ ]')) {
+            seenChecklist = true;
+          } else {
+            introLines.push(line);
+            continue;
+          }
+        }
+      }
+      let match = null;
+      if (mode === 'spec') {
+        match = trimmed.match(/^\[\s*\]\s*(\d+)\s*-\s*(.+)$/);
+      } else {
+        match = trimmed.match(/^(\d+)[).:\-]\s*(.+)$/);
+      }
       if (match) {
         const stage = Number(match[1]);
         if (stage >= 1 && stage <= 4) {
@@ -179,10 +208,11 @@ function getSetupWizardMessages() {
         }
       }
     }
-    return messages;
+    const intro = introLines.length > 0 ? introLines.join('\n') : null;
+    return { messages, intro };
   } catch (error) {
     console.warn('Unable to read setup wizard messages:', error.message);
-    return {};
+    return { messages: {}, intro: null };
   }
 }
 

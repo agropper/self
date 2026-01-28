@@ -37,20 +37,29 @@ import {
 dotenv.config();
 const storageConfig = normalizeStorageEnv();
 
+const SUPPRESSED_LOG_PATTERN = /\[(NEW FLOW 2|STARTUP|STORAGE|WELCOME|DESTROY|AGENT|WIZARD|LOCAL|KB UPDATE|KB AUTO|KB)\]/i;
+const shouldSuppressLog = (args) =>
+  Array.isArray(args) && args.some(arg => typeof arg === 'string' && SUPPRESSED_LOG_PATTERN.test(arg));
+const originalConsoleLog = console.log.bind(console);
+const originalConsoleWarn = console.warn.bind(console);
+const originalConsoleError = console.error.bind(console);
+console.log = (...args) => {
+  if (shouldSuppressLog(args)) return;
+  originalConsoleLog(...args);
+};
+console.warn = (...args) => {
+  if (shouldSuppressLog(args)) return;
+  originalConsoleWarn(...args);
+};
+console.error = (...args) => {
+  if (shouldSuppressLog(args)) return;
+  originalConsoleError(...args);
+};
+
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-function logStorageConfig(config) {
-  const backend = config?.backend || 'spaces';
-  const endpoint = process.env.DIGITALOCEAN_ENDPOINT_URL || 'https://tor1.digitaloceanspaces.com';
-  const bucket = process.env.DIGITALOCEAN_BUCKET || 'maia';
-  const forcePathStyle = process.env.S3_FORCE_PATH_STYLE === 'true';
-
-  console.log(`🪣 [STORAGE] Backend: ${backend}`);
-  console.log(`🪣 [STORAGE] Endpoint: ${endpoint}`);
-  console.log(`🪣 [STORAGE] Bucket: ${bucket}`);
-  console.log(`🪣 [STORAGE] Path style: ${forcePathStyle}`);
-}
+function logStorageConfig(_config) {}
 
 function getBucketName(bucketUrl) {
   if (!bucketUrl) return 'maia';
@@ -62,7 +71,6 @@ function getBucketName(bucketUrl) {
 async function ensureBucketExists() {
   const bucketUrl = process.env.DIGITALOCEAN_BUCKET;
   if (!bucketUrl) {
-    console.warn('⚠️ [STORAGE] DIGITALOCEAN_BUCKET not set; skipping bucket check.');
     return;
   }
 
@@ -73,11 +81,8 @@ async function ensureBucketExists() {
   const forcePathStyle = process.env.S3_FORCE_PATH_STYLE === 'true';
 
   if (!accessKeyId || !secretAccessKey) {
-    console.warn('⚠️ [STORAGE] Missing S3 credentials; skipping bucket check.');
     return;
   }
-
-  console.log(`🪣 [STORAGE] Checking bucket access: ${bucketName} (${endpoint})`);
 
   const s3Client = new S3Client({
     endpoint,
@@ -91,22 +96,14 @@ async function ensureBucketExists() {
 
   try {
     await s3Client.send(new HeadBucketCommand({ Bucket: bucketName }));
-    console.log(`✅ [STORAGE] Bucket accessible: ${bucketName}`);
   } catch (error) {
     const statusCode = error?.$metadata?.httpStatusCode;
     if (statusCode === 404 || error?.name === 'NotFound') {
-      console.warn(`⚠️ [STORAGE] Bucket missing; creating: ${bucketName}`);
       try {
         await s3Client.send(new CreateBucketCommand({ Bucket: bucketName }));
-        console.log(`✅ [STORAGE] Bucket created: ${bucketName}`);
       } catch (createError) {
-        console.error(`❌ [STORAGE] Failed to create bucket ${bucketName}: ${createError.message}`);
       }
       return;
-    }
-    console.error(`❌ [STORAGE] Bucket check failed: ${error.message}`);
-    if (statusCode) {
-      console.error(`❌ [STORAGE] Bucket check status: ${statusCode}`);
     }
   }
 }
@@ -411,8 +408,6 @@ function generateKBName(userId) {
  * This is called during registration to enable file uploads before admin approval
  */
 async function createUserBucketFolders(userId, kbName) {
-  console.log(`[NEW FLOW 2] Creating bucket folders for user: ${userId}, KB: ${kbName}`);
-  
   const bucketUrl = process.env.DIGITALOCEAN_BUCKET;
   if (!bucketUrl) {
     throw new Error('DigitalOcean bucket not configured');
@@ -450,8 +445,6 @@ async function createUserBucketFolders(userId, kbName) {
         createdAt: new Date().toISOString()
       }
     }));
-    console.log(`[NEW FLOW 2] Created root folder: ${userId}/`);
-    
     // Create archived folder placeholder (for files moved from root)
     await s3Client.send(new PutObjectCommand({
       Bucket: bucketName,
@@ -464,8 +457,6 @@ async function createUserBucketFolders(userId, kbName) {
         createdAt: new Date().toISOString()
       }
     }));
-    console.log(`[NEW FLOW 2] Created archived folder: ${userId}/archived/`);
-    
     // Create KB folder placeholder
     await s3Client.send(new PutObjectCommand({
       Bucket: bucketName,
@@ -478,12 +469,8 @@ async function createUserBucketFolders(userId, kbName) {
         createdAt: new Date().toISOString()
       }
     }));
-    console.log(`[NEW FLOW 2] Created KB folder: ${userId}/${kbName}/`);
-    
-    console.log(`[NEW FLOW 2] ✅ All bucket folders created successfully for ${userId}`);
     return { root: `${userId}/`, archived: `${userId}/archived/`, kb: `${userId}/${kbName}/` };
   } catch (err) {
-    console.error(`[NEW FLOW 2] ❌ Failed to create bucket folders: ${err.message}`);
     throw new Error(`Failed to create bucket folders: ${err.message}`);
   }
 }
@@ -638,15 +625,12 @@ ensureBucketExists();
     return;
   }
 
-  console.log('✅ Cloudant connection successful');
   const databases = ['maia_sessions', 'maia_users', 'maia_audit_log', 'maia_chats'];
 
   for (const dbName of databases) {
     try {
       await cloudant.createDatabase(dbName);
-      console.log(`✅ Ensured ${dbName} database`);
     } catch (error) {
-      console.error(`❌ Failed to ensure ${dbName} database: ${error.message}`);
     }
   }
 
@@ -677,8 +661,7 @@ const logProvisioning = (userId, message, level = 'info') => {
   if (logs.length > 500) {
     logs.shift();
   }
-  // Also log to console
-  console.log(message);
+  // Do not log provisioning messages to console
 };
 
 async function runStartupUserValidation() {
@@ -687,11 +670,8 @@ async function runStartupUserValidation() {
     const users = userDocs.filter(doc => doc && (doc.type === 'user' || doc.userId));
 
     if (users.length === 0) {
-      console.log('ℹ️ [STARTUP] No user documents found for validation.');
       return;
     }
-
-    console.log(`🔍 [STARTUP] Validating ${users.length} user document(s)...`);
     for (const userDoc of users) {
       const userId = userDoc.userId || userDoc._id;
       if (!userId) {
@@ -702,18 +682,12 @@ async function runStartupUserValidation() {
         const kbName = getKBNameFromUserDoc(userDoc, userId);
         if (kbName) {
           await createUserBucketFolders(userId, kbName);
-        } else {
-          console.warn(`⚠️ [STARTUP] No kbName for user ${userId}; skipping bucket folder creation.`);
         }
 
         await validateUserResources(userId);
-      } catch (error) {
-        console.error(`❌ [STARTUP] Validation failed for user ${userId}: ${error.message}`);
-      }
+      } catch (error) {}
     }
-  } catch (error) {
-    console.error(`❌ [STARTUP] Failed to load users for validation: ${error.message}`);
-  }
+  } catch (error) {}
 }
 
 const doClient = new DigitalOceanClient(process.env.DIGITALOCEAN_TOKEN, {
@@ -10348,10 +10322,8 @@ app.listen(PORT, () => {
   console.log(`User app server running on port ${PORT}`);
   console.log(`Passkey rpID: ${passkeyService.rpID}`);
   console.log(`Passkey origin: ${passkeyService.origin}`);
-  console.log(`\n📊 Available Chat Providers:`);
-  chatClient.getAvailableProviders().forEach(provider => {
-    console.log(`   ✅ ${provider}`);
-  });
+  const providers = chatClient.getAvailableProviders();
+  console.log(`📊 Available Chat Providers: ${providers.join(', ')}`);
 });
 
 export default app;
