@@ -520,7 +520,7 @@ const resetAuthState = () => {
 const saveLocalSnapshot = async (snapshot?: SignOutSnapshot | null) => {
   if (!user.value?.userId || user.value.isDeepLink) return;
   try {
-    const [filesResponse, chatsResponse, statusResponse] = await Promise.all([
+    const [filesResponse, chatsResponse, statusResponse, summaryResponse] = await Promise.all([
       fetch(`/api/user-files?userId=${encodeURIComponent(user.value.userId)}`, {
         credentials: 'include'
       }),
@@ -529,12 +529,16 @@ const saveLocalSnapshot = async (snapshot?: SignOutSnapshot | null) => {
       }),
       fetch(`/api/user-status?userId=${encodeURIComponent(user.value.userId)}`, {
         credentials: 'include'
+      }),
+      fetch(`/api/patient-summary?userId=${encodeURIComponent(user.value.userId)}`, {
+        credentials: 'include'
       })
     ]);
 
     const files = filesResponse.ok ? await filesResponse.json() : null;
     const savedChats = chatsResponse.ok ? await chatsResponse.json() : null;
     const status = statusResponse.ok ? await statusResponse.json() : null;
+    const summary = summaryResponse.ok ? await summaryResponse.json() : null;
     const filesList = Array.isArray(files?.files) ? files.files : [];
     const indexedSet = new Set(Array.isArray(files?.indexedFiles) ? files.indexedFiles : []);
     const kbName = files?.kbName || null;
@@ -577,7 +581,8 @@ const saveLocalSnapshot = async (snapshot?: SignOutSnapshot | null) => {
       currentChat: snapshot?.currentChat || null,
       currentMedications: status?.currentMedications || null,
       initialFile: status?.initialFile || null,
-      fileStatusSummary
+      fileStatusSummary,
+      patientSummary: summary?.summary || null
     });
   } catch (error) {
     console.warn('Failed to save local snapshot:', error);
@@ -796,6 +801,24 @@ const handleRestoreSnapshot = async () => {
         console.log('[LOCAL] Current Medications restored');
       } catch (medsError) {
         console.warn('Failed to restore current medications:', medsError);
+      }
+    }
+    if (restoreSnapshot.value.patientSummary) {
+      try {
+        await fetch('/api/patient-summary', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json'
+          },
+          credentials: 'include',
+          body: JSON.stringify({
+            userId: user.value.userId,
+            summary: restoreSnapshot.value.patientSummary
+          })
+        });
+        console.log('[LOCAL] Patient Summary restored');
+      } catch (summaryError) {
+        console.warn('Failed to restore patient summary:', summaryError);
       }
     }
     clearLastSnapshotUserId();

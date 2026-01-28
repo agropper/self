@@ -871,11 +871,21 @@
               </div>
                 <div class="row q-gutter-sm">
                   <q-btn
+                    v-if="showWizardSummaryActions && !isEditingSummaryTab"
+                    outline
+                    label="Verify"
+                    color="primary"
+                    icon="verified"
+                    class="verify-highlight"
+                    @click="handleVerifySummaryTab"
+                  />
+                  <q-btn
                     v-if="!isEditingSummaryTab"
                     outline
                     label="Edit"
                     color="primary"
                     icon="edit"
+                    :class="{ 'verify-highlight': showWizardSummaryActions }"
                     @click="startSummaryEdit"
                   />
                   <q-btn
@@ -1140,6 +1150,7 @@ interface Props {
   originalMessages?: Message[]; // Original unfiltered messages for privacy filtering
   rehydrationFiles?: Array<{ fileName?: string; bucketKey?: string; fileSize?: number; uploadedAt?: string }>;
   rehydrationActive?: boolean;
+  wizardActive?: boolean;
 }
 
 const props = withDefaults(defineProps<Props>(), {
@@ -1256,6 +1267,7 @@ const indexedFiles = ref<string[]>([]); // Track which files are actually indexe
 const kbNeedsUpdate = ref(false); // Track if KB needs to be updated (files moved)
 const kbSummaryTokens = ref<string | number | null>(null);
 const kbSummaryFiles = ref<number | null>(null);
+const showWizardSummaryActions = computed(() => !!props.wizardActive && currentTab.value === 'summary');
 const kbDataSourceCount = ref<number | null>(null);
 const kbIndexedDataSourceCount = ref<number | null>(null);
 const indexedFileTokens = ref<Record<string, number | string>>({});
@@ -5148,6 +5160,7 @@ const saveSummaryFromTab = async () => {
     summaryViewText.value = summaryToSave;
     summaryEditText.value = summaryToSave;
     isEditingSummaryTab.value = false;
+    emit('patient-summary-saved', { userId: props.userId });
 
     if ($q && typeof $q.notify === 'function') {
       $q.notify({
@@ -5166,6 +5179,17 @@ const saveSummaryFromTab = async () => {
     }
   } finally {
     isSavingSummary.value = false;
+  }
+};
+
+const handleVerifySummaryTab = () => {
+  if (!props.userId || !patientSummary.value) return;
+  emit('patient-summary-saved', { userId: props.userId });
+  if ($q && typeof $q.notify === 'function') {
+    $q.notify({
+      type: 'positive',
+      message: 'Patient summary verified.'
+    });
   }
 };
 
@@ -5397,5 +5421,10 @@ onUnmounted(() => {
 <style scoped lang="scss">
 .q-item {
   cursor: default;
+}
+
+.verify-highlight {
+  box-shadow: 0 0 0 2px #e53935;
+  border-radius: 6px;
 }
 </style>

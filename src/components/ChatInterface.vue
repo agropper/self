@@ -193,6 +193,8 @@
               <q-select
                 v-model="selectedProvider"
                 :options="providerOptions"
+                emit-value
+                map-options
                 dense
                 outlined
                 style="min-width: 150px"
@@ -453,6 +455,7 @@
       :initial-tab="myStuffInitialTab"
       :messages="messages"
       :original-messages="trulyOriginalMessages.length > 0 ? trulyOriginalMessages : originalMessages"
+      :wizard-active="showAgentSetupDialog"
       :rehydration-files="props.rehydrationFiles || []"
       :rehydration-active="props.rehydrationActive"
       @chat-selected="handleChatSelected"
@@ -955,9 +958,20 @@ const providerOptions = computed(() => {
 });
 
 // Helper to get provider key from label
-const getProviderKey = (label: string) => {
-  const entry = Object.entries(providerLabels).find(([_, l]) => l === label);
-  return entry ? entry[0] : label.toLowerCase();
+const normalizeProviderLabel = (value: unknown) => {
+  if (typeof value === 'string') return value;
+  if (value && typeof value === 'object') {
+    const candidate = (value as { label?: unknown; value?: unknown }).label
+      ?? (value as { value?: unknown }).value;
+    if (typeof candidate === 'string') return candidate;
+  }
+  return '';
+};
+
+const getProviderKey = (label: unknown) => {
+  const normalized = normalizeProviderLabel(label);
+  const entry = Object.entries(providerLabels).find(([_, l]) => l === normalized);
+  return entry ? entry[0] : normalized.toLowerCase();
 };
 
 const isPrivateAISelected = computed(() => getProviderKey(selectedProvider.value) === 'digitalocean');
@@ -1007,7 +1021,8 @@ const getProviderLabelFromKey = (providerKey: string | undefined) => {
 };
 
 const getProviderLabel = () => {
-  return providerLabels[selectedProvider.value] || selectedProvider.value;
+  const normalized = normalizeProviderLabel(selectedProvider.value);
+  return providerLabels[normalized] || normalized;
 };
 
 const getMessageLabel = (msg: Message) => {
@@ -3752,10 +3767,15 @@ const handleReferenceFileAdded = async (file: { fileName: string; bucketKey: str
 };
 
 const handleCurrentMedicationsSaved = async () => {
+  wizardCurrentMedications.value = true;
+  wizardStage2Complete.value = true;
   await refreshWizardState();
 };
 
 const handlePatientSummarySaved = async () => {
+  wizardPatientSummary.value = true;
+  showAgentSetupDialog.value = false;
+  wizardDismissed.value = true;
   await refreshWizardState();
 };
 

@@ -20,6 +20,7 @@ type SnapshotPayload = {
   savedChats?: any;
   currentChat?: any;
   currentMedications?: string | null;
+  patientSummary?: string | null;
   initialFile?: {
     fileName?: string;
     bucketKey?: string;
