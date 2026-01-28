@@ -562,7 +562,7 @@ const saveLocalSnapshot = async (snapshot?: SignOutSnapshot | null) => {
 
     if (fileStatusSummary.length > 0) {
       console.log(`[LOCAL] Saved Files snapshot for ${user.value.userId}:`);
-      fileStatusSummary.forEach(entry => {
+      fileStatusSummary.forEach((entry: { fileName?: string; bucketKey?: string; chipStatus: string }) => {
         console.log(`[LOCAL]  • ${entry.fileName || entry.bucketKey} (${entry.chipStatus})`);
       });
     } else {

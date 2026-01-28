@@ -49,6 +49,9 @@
   "devDependencies": {
     "@quasar/vite-plugin": "^1.8.0",
     "@types/markdown-it": "^14.1.2",
+    "@types/pouchdb-adapter-idb": "^6.1.7",
+    "@types/pouchdb-core": "^7.0.15",
+    "@types/pouchdb-find": "^7.3.3",
     "@vitejs/plugin-vue": "^5.2.1",
     "nodemon": "^3.1.9",
     "sass": "^1.83.0",
