@@ -10168,13 +10168,14 @@ if (isProduction) {
       // Extract caption text (until next section or end of file)
       const captionLines = [];
       for (let i = captionStartIndex; i < lines.length; i++) {
-        const line = lines[i].trim();
+        const rawLine = lines[i];
+        const trimmed = rawLine.trim();
         // Stop at next section header or empty line followed by section
-        if (line.startsWith('##') && line !== '## Welcome Page Video Caption') {
+        if (trimmed.startsWith('##') && trimmed !== '## Welcome Page Video Caption') {
           break;
         }
-        if (line) {
-          captionLines.push(line);
+        if (trimmed) {
+          captionLines.push(rawLine);
         } else if (captionLines.length > 0) {
           // Allow one empty line, but stop at multiple empty lines
           const nextNonEmpty = lines.slice(i + 1).find(l => l.trim());
@@ -10185,7 +10186,7 @@ if (isProduction) {
         }
       }
 
-      const caption = captionLines.join(' ').trim();
+      const caption = captionLines.join('\n').trim();
       
       if (!caption) {
         console.log(`⚠️ [WELCOME] Welcome caption is empty`);
@@ -10306,13 +10307,14 @@ if (isProduction) {
       // Extract caption text (until next section or end of file)
       const captionLines = [];
       for (let i = captionStartIndex; i < lines.length; i++) {
-        const line = lines[i].trim();
+        const rawLine = lines[i];
+        const trimmed = rawLine.trim();
         // Stop at next section header or empty line followed by section
-        if (line.startsWith('##') && line !== '## Welcome Page Video Caption') {
+        if (trimmed.startsWith('##') && trimmed !== '## Welcome Page Video Caption') {
           break;
         }
-        if (line) {
-          captionLines.push(line);
+        if (trimmed) {
+          captionLines.push(rawLine);
         } else if (captionLines.length > 0) {
           // Allow one empty line, but stop at multiple empty lines
           const nextNonEmpty = lines.slice(i + 1).find(l => l.trim());
@@ -10323,7 +10325,7 @@ if (isProduction) {
         }
       }
 
-      const caption = captionLines.join(' ').trim();
+      const caption = captionLines.join('\n').trim();
       
       if (!caption) {
         console.log(`⚠️ [WELCOME] Welcome caption is empty`);

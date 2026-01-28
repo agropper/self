@@ -641,7 +641,7 @@ const props = defineProps<Props>();
 const emit = defineEmits<{
   'sign-out': [SignOutSnapshot];
   'restore-applied': [];
-  'rehydration-complete': [];
+  'rehydration-complete': [payload: { hasInitialFile: boolean }];
   'update:deepLinkInfo': [DeepLinkInfo | null];
 }>();
 
@@ -822,8 +822,18 @@ watch(
   { immediate: true }
 );
 
-const handleRehydrationComplete = async () => {
-  emit('rehydration-complete');
+const handleRehydrationComplete = async (payload: { hasInitialFile: boolean }) => {
+  emit('rehydration-complete', payload);
+  if (payload?.hasInitialFile) {
+    try {
+      sessionStorage.setItem('autoProcessInitialFile', 'true');
+      sessionStorage.setItem('wizardMyListsAuto', 'true');
+    } catch (error) {
+      // ignore storage errors
+    }
+    myStuffInitialTab.value = 'lists';
+    showMyStuffDialog.value = true;
+  }
   await refreshWizardState();
   if (!shouldHideSetupWizard.value && !showAgentSetupDialog.value && !wizardDismissed.value) {
     showAgentSetupDialog.value = true;

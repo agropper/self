@@ -89,9 +89,7 @@
                     <!-- Caption to the right of video -->
                     <div class="col-12 col-md-7">
                       <div class="text-body2 text-grey-7 q-pa-md" style="background-color: #f5f5f5; border-radius: 4px; height: 100%; display: flex; align-items: center;">
-                        <p class="q-ma-none">
-                          {{ welcomeCaption || 'Loading...' }}
-                        </p>
+                        <vue-markdown :source="welcomeCaption || 'Loading...'" />
                       </div>
                     </div>
                   </div>
@@ -324,6 +322,7 @@
 
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted } from 'vue';
+import VueMarkdown from 'vue-markdown-render';
 
 // Store route check interval and event listener for cleanup (must be at top level)
 const routeCheckInterval = ref<ReturnType<typeof setInterval> | null>(null);
@@ -860,7 +859,7 @@ const handleSkipRestore = () => {
   suppressWizard.value = false;
 };
 
-const handleRehydrationComplete = () => {
+const handleRehydrationComplete = (_payload: { hasInitialFile: boolean }) => {
   console.log('[LOCAL] Rehydration complete; wizard re-evaluated');
   rehydrationActive.value = false;
   suppressWizard.value = false;

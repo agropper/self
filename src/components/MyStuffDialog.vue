@@ -1039,6 +1039,15 @@
         </q-card-section>
 
         <q-card-actions align="right" class="q-pa-md">
+          <q-btn
+            v-if="showWizardSummaryActions && !editingSummary"
+            outline
+            label="VERIFY"
+            color="primary"
+            icon="verified"
+            class="verify-highlight"
+            @click="handleVerifySummaryTab"
+          />
           <q-btn 
             flat 
             label="CLOSE WITHOUT SAVING" 
@@ -1056,6 +1065,7 @@
             label="EDIT" 
             color="primary" 
             @click="handleEditSummary"
+            :class="{ 'verify-highlight': showWizardSummaryActions }"
           />
         </q-card-actions>
       </q-card>
@@ -1171,7 +1181,7 @@ const emit = defineEmits<{
   'reference-file-added': [file: { fileName: string; bucketKey: string; fileSize: number; uploadedAt: string; fileType?: string; fileUrl?: string; isReference: boolean }]; // Emit reference file to add to chat
   'current-medications-saved': [data: { value: string; edited: boolean }];
   'patient-summary-saved': [data: { userId: string }];
-  'rehydration-complete': [];
+  'rehydration-complete': [payload: { hasInitialFile: boolean }];
 }>();
 
 // Handle show patient summary from Lists component
@@ -1412,7 +1422,8 @@ const handleRehydrationFileSelected = async (event: Event) => {
 
   if (rehydrationRemaining.value.length === 0) {
     console.log('[LOCAL] Rehydration complete; wizard re-evaluated');
-    emit('rehydration-complete');
+    const hasInitialFile = rehydrationQueue.value.some(entry => !!entry.isInitial);
+    emit('rehydration-complete', { hasInitialFile });
   }
 };
 
