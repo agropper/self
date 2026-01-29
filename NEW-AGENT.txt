@@ -177,25 +177,6 @@ All status tip messages displayed in the application (numbered 1-17, correspondi
 
 ---
 
-## Provisioning Email
-
-Subject: "Private MAIA provisioned for <userId>"
-
-Body (HTML and Text versions):
-Hi <userId>,
-
-Your Private MAIA has been provisioned and is ready to use!
-
-**IMPORTANT**: Please review and edit your Current Medications list. This helps ensure your Patient Summary is accurate.
-
-[Edit Current Medications] (deep link button/link)
-
-After you save your medications, your Patient Summary will be automatically generated.
-
-Your Private AI agent is ready to receive your health records and answer questions.
-
--Adrian
-
 **Deep Link Format**: `{frontendUrl}/?editMedications={token}&userId={userId}`
 **Token Expiration**: 7 days from generation
 

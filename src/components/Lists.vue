@@ -32,6 +32,9 @@
             <div v-else-if="currentMedicationsStatus === 'consulting'">
               Consulting Private AI to identify current medications...
             </div>
+            <div v-else-if="currentMedicationsStatus === 'waiting'">
+              Waiting for Private AI agent to finish setup...
+            </div>
             <div v-else>
               Processing your medications...
             </div>
@@ -570,7 +573,7 @@ const editingCurrentMedications = ref('');
 const editingOriginalCurrentMedications = ref('');
 const isSavingCurrentMedications = ref(false);
 const isCurrentMedicationsEdited = ref(false);
-const currentMedicationsStatus = ref<'reviewing' | 'consulting' | ''>('');
+const currentMedicationsStatus = ref<'reviewing' | 'consulting' | 'waiting' | ''>('');
 const wizardAutoFlow = ref(false);
 const wizardAutoFlowStorageKey = 'wizardMyListsAuto';
 const wizardAutoStartPending = ref(false);
@@ -591,6 +594,27 @@ const wizardCompletionKey = computed(() => props.userId ? `wizard-completion-${p
 const stage3Complete = computed(() => {
   if (!wizardCompletionKey.value) return false;
   try {
+    const waitForAgentReady = async () => {
+      for (let attempt = 0; attempt < 6; attempt += 1) {
+        try {
+          const statusResponse = await fetch(`/api/user-status?userId=${encodeURIComponent(props.userId)}`, {
+            credentials: 'include'
+          });
+          if (statusResponse.ok) {
+            const statusResult = await statusResponse.json();
+            if (statusResult?.hasAgent) {
+              return true;
+            }
+          }
+        } catch (statusErr) {
+          // ignore status errors during wait
+        }
+        currentMedicationsStatus.value = 'waiting';
+        await new Promise(resolve => setTimeout(resolve, 5000));
+      }
+      return false;
+    };
+
     const stored = sessionStorage.getItem(wizardCompletionKey.value);
     if (!stored) return false;
     const parsed = JSON.parse(stored);
@@ -2356,6 +2380,12 @@ const loadCurrentMedications = async (forceRefresh = false) => {
   await new Promise(resolve => setTimeout(resolve, 1000));
   
   try {
+    const agentReady = await waitForAgentReady();
+    if (!agentReady) {
+      currentMedications.value = null;
+      logWizardEvent('current_meds_agent_not_ready');
+      return;
+    }
     currentMedicationsStatus.value = 'consulting';
     
     const response = await fetch('/api/files/lists/current-medications', {

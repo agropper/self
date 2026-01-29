@@ -2194,7 +2194,75 @@ export default function setupFileRoutes(app, cloudant, doClient) {
           Key: categoryBucketKey
         }));
       } catch (headErr) {
-        return res.status(404).json({ error: `Category file not found: ${categoryBucketKey}` });
+        console.log('[SAVE-RESTORE] Category file missing, attempting rebuild', {
+          userId,
+          categoryBucketKey
+        });
+        try {
+          const userDoc = await cloudant.getDocument('maia_users', userId);
+          const cleanFileName = userDoc?.initialFile?.fileName
+            ? userDoc.initialFile.fileName.replace(/[^a-zA-Z0-9.-]/g, '_')
+            : null;
+          const markdownFileName = cleanFileName ? cleanFileName.replace(/\.pdf$/i, '.md') : null;
+          const markdownBucketKey = markdownFileName ? `${listsFolder}${markdownFileName}` : null;
+          let markdownKeyToUse = null;
+
+          if (markdownBucketKey) {
+            try {
+              await s3Client.send(new HeadObjectCommand({
+                Bucket: bucketName,
+                Key: markdownBucketKey
+              }));
+              markdownKeyToUse = markdownBucketKey;
+            } catch (mdHeadErr) {
+              markdownKeyToUse = null;
+            }
+          }
+
+          if (!markdownKeyToUse) {
+            const { ListObjectsV2Command } = await import('@aws-sdk/client-s3');
+            const listCommand = new ListObjectsV2Command({
+              Bucket: bucketName,
+              Prefix: listsFolder
+            });
+            const listResponse = await s3Client.send(listCommand);
+            const mdCandidate = (listResponse.Contents || [])
+              .map(obj => obj.Key)
+              .find(key => key && key.endsWith('.md'));
+            markdownKeyToUse = mdCandidate || null;
+          }
+
+          if (markdownKeyToUse) {
+            const mdResponse = await s3Client.send(new GetObjectCommand({
+              Bucket: bucketName,
+              Key: markdownKeyToUse
+            }));
+            const mdChunks = [];
+            for await (const chunk of mdResponse.Body) {
+              mdChunks.push(chunk);
+            }
+            const fullMarkdown = Buffer.concat(mdChunks).toString('utf-8');
+            await extractAndSaveCategoryFiles(fullMarkdown, userId, listsFolder, s3Client, bucketName);
+            console.log('[SAVE-RESTORE] Category files rebuilt', {
+              userId,
+              source: markdownKeyToUse
+            });
+          }
+        } catch (rebuildErr) {
+          console.warn('[SAVE-RESTORE] Category rebuild failed', {
+            userId,
+            error: rebuildErr?.message || String(rebuildErr)
+          });
+        }
+
+        try {
+          await s3Client.send(new HeadObjectCommand({
+            Bucket: bucketName,
+            Key: categoryBucketKey
+          }));
+        } catch (verifyErr) {
+          return res.status(404).json({ error: `Category file not found: ${categoryBucketKey}` });
+        }
       }
 
       // Get file content
