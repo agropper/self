@@ -1710,21 +1710,37 @@ const loadFiles = async () => {
       indexedFileJobInfo.value = {};
     }
 
-    if (result.kbTotalTokens !== undefined && result.kbTotalTokens !== null) {
-      kbSummaryTokens.value = result.kbTotalTokens;
-    } else if (kbSummaryFiles.value && kbSummaryFiles.value > 0 &&
-      result.kbLastIndexingTokens !== undefined &&
-      result.kbLastIndexingTokens !== null) {
-      kbSummaryTokens.value = result.kbLastIndexingTokens;
+    const currentKeys = new Set(userFiles.value.map(file => file.bucketKey));
+    const indexedKeys = indexedFiles.value.filter(key => currentKeys.has(key));
+    kbSummaryFiles.value = indexedKeys.length;
+
+    const jobInfoValues = Object.values(indexedFileJobInfo.value || {});
+    const hasNoChangeJob = jobInfoValues.some((info: any) => info?.status === 'INDEX_JOB_STATUS_NO_CHANGES');
+    const tokenValues = indexedKeys
+      .map(key => indexedFileTokens.value[key])
+      .filter(value => value !== undefined && value !== null)
+      .map(value => Number(value))
+      .filter(value => Number.isFinite(value));
+    const summedTokens = tokenValues.length > 0
+      ? tokenValues.reduce((total, value) => total + value, 0)
+      : null;
+    const fallbackTotalTokens = result.kbTotalTokens !== undefined && result.kbTotalTokens !== null
+      ? result.kbTotalTokens
+      : (result.kbLastIndexingTokens !== undefined && result.kbLastIndexingTokens !== null
+        ? result.kbLastIndexingTokens
+        : null);
+    if (hasNoChangeJob && (!summedTokens || summedTokens === 0)) {
+      kbSummaryTokens.value = null;
+    } else if (summedTokens !== null) {
+      kbSummaryTokens.value = summedTokens;
+    } else if (fallbackTotalTokens !== null && fallbackTotalTokens !== 0 && fallbackTotalTokens !== '0') {
+      kbSummaryTokens.value = fallbackTotalTokens;
     } else {
       kbSummaryTokens.value = null;
     }
 
     kbDataSourceCount.value = typeof result.kbDataSourceCount === 'number' ? result.kbDataSourceCount : null;
     kbIndexedDataSourceCount.value = typeof result.kbIndexedDataSourceCount === 'number' ? result.kbIndexedDataSourceCount : null;
-    if (kbIndexedDataSourceCount.value !== null) {
-      kbSummaryFiles.value = kbIndexedDataSourceCount.value;
-    }
     
     // Sync dirty flag with server's KB indexing state
     kbNeedsUpdate.value = !!result.kbIndexingNeeded;
