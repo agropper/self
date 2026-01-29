@@ -591,30 +591,29 @@ const needsVerifyAction = ref(false);
 const verifyPromptPending = ref(false);
 const verifyStorageKey = computed(() => props.userId ? `verify-meds-${props.userId}` : null);
 const wizardCompletionKey = computed(() => props.userId ? `wizard-completion-${props.userId}` : null);
+const waitForAgentReady = async () => {
+  for (let attempt = 0; attempt < 6; attempt += 1) {
+    try {
+      const statusResponse = await fetch(`/api/user-status?userId=${encodeURIComponent(props.userId)}`, {
+        credentials: 'include'
+      });
+      if (statusResponse.ok) {
+        const statusResult = await statusResponse.json();
+        if (statusResult?.hasAgent) {
+          return true;
+        }
+      }
+    } catch (statusErr) {
+      // ignore status errors during wait
+    }
+    currentMedicationsStatus.value = 'waiting';
+    await new Promise(resolve => setTimeout(resolve, 5000));
+  }
+  return false;
+};
 const stage3Complete = computed(() => {
   if (!wizardCompletionKey.value) return false;
   try {
-    const waitForAgentReady = async () => {
-      for (let attempt = 0; attempt < 6; attempt += 1) {
-        try {
-          const statusResponse = await fetch(`/api/user-status?userId=${encodeURIComponent(props.userId)}`, {
-            credentials: 'include'
-          });
-          if (statusResponse.ok) {
-            const statusResult = await statusResponse.json();
-            if (statusResult?.hasAgent) {
-              return true;
-            }
-          }
-        } catch (statusErr) {
-          // ignore status errors during wait
-        }
-        currentMedicationsStatus.value = 'waiting';
-        await new Promise(resolve => setTimeout(resolve, 5000));
-      }
-      return false;
-    };
-
     const stored = sessionStorage.getItem(wizardCompletionKey.value);
     if (!stored) return false;
     const parsed = JSON.parse(stored);
