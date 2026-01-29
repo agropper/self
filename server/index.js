@@ -9014,6 +9014,29 @@ app.get('/api/user-status', async (req, res) => {
   }
 });
 
+// Get customer balance from DigitalOcean
+app.get('/api/billing/balance', async (_req, res) => {
+  try {
+    const token = process.env.DIGITALOCEAN_PERSONAL_API_KEY || process.env.DIGITALOCEAN_TOKEN;
+    if (!token) {
+      return res.status(500).json({ error: 'DigitalOcean API token not configured' });
+    }
+    const response = await fetch('https://api.digitalocean.com/v2/customers/my/balance', {
+      headers: {
+        Authorization: `Bearer ${token}`
+      }
+    });
+    if (!response.ok) {
+      const text = await response.text();
+      return res.status(response.status).json({ error: text || `HTTP ${response.status}` });
+    }
+    const data = await response.json();
+    res.json(data);
+  } catch (error) {
+    res.status(500).json({ error: error.message || 'Failed to fetch customer balance' });
+  }
+});
+
 // Wizard debug logging (client -> server terminal)
 app.post('/api/wizard-log', (req, res) => {
   try {

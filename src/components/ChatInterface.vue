@@ -1654,12 +1654,11 @@ const refreshWizardState = async () => {
       wizardCurrentMedications.value = hasMeds || wizardCurrentMedications.value;
       wizardStage2Complete.value = hasMeds || wizardStage2Complete.value;
       if (statusResult?.agentReady !== undefined) {
-        wizardStage1Complete.value = !!statusResult.agentReady;
+        wizardAgentReady.value = !!statusResult.agentReady;
       }
       if (statusResult?.initialFile && !wizardStage2FileName.value) {
         wizardStage2FileName.value = getFileNameFromEntry(statusResult.initialFile);
       }
-      wizardAgentReady.value = !!statusResult?.agentReady;
     }
 
     if (filesResponse.ok) {
