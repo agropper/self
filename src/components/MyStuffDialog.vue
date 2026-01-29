@@ -2869,7 +2869,7 @@ const attachKBToAgentOnly = async () => {
     throw new Error(errorData.message || 'Failed to attach KB to agent');
   }
 
-  const attachResult = await attachResponse.json();
+  await attachResponse.json();
 };
 
 // Attach KB to agent (patient summary generation is disabled)
