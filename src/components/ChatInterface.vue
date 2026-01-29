@@ -334,7 +334,19 @@
               <div class="wizard-stage-text">
                 <div class="wizard-stage-label">2 - Add your Apple Health "Export PDF" file</div>
                 <div class="text-caption text-grey-7 wizard-status-line">
-                  {{ wizardStage2StatusLine }}
+                  <q-chip
+                    v-if="wizardRestoreActive && stage2DisplayFileName"
+                    color="red-5"
+                    text-color="white"
+                    size="sm"
+                    dense
+                    clickable
+                    class="wizard-restore-chip"
+                    @click="handleStage3Restore(stage2DisplayFileName)"
+                  >
+                    RESTORE
+                  </q-chip>
+                  <span>{{ wizardStage2StatusLine }}</span>
                 </div>
               </div>
               <div class="wizard-stage-actions">
@@ -357,16 +369,18 @@
                 <div class="wizard-stage-label">3 - Add any health records you want included</div>
                 <div v-if="stage3HasFiles" class="text-caption text-grey-7 wizard-status-line">
                   <div v-for="file in stage3DisplayFiles" :key="file.name" class="wizard-status-file">
-                    <q-btn
+                    <q-chip
                       v-if="file.needsRestore"
-                      dense
-                      flat
+                      color="red-5"
+                      text-color="white"
                       size="sm"
-                      color="primary"
-                      label="RESTORE"
-                      class="wizard-restore-btn"
+                      dense
+                      clickable
+                      class="wizard-restore-chip"
                       @click="handleStage3Restore(file.name)"
-                    />
+                    >
+                      RESTORE
+                    </q-chip>
                     <span>{{ file.name }}</span>
                   </div>
                 </div>
@@ -509,6 +523,7 @@
       @current-medications-saved="handleCurrentMedicationsSaved"
       @patient-summary-saved="handlePatientSummarySaved"
       @patient-summary-verified="handlePatientSummaryVerified"
+      @rehydration-file-removed="handleRehydrationFileRemoved"
       @rehydration-complete="handleRehydrationComplete"
       v-if="canAccessMyStuff"
     />
@@ -683,6 +698,7 @@ const emit = defineEmits<{
   'sign-out': [SignOutSnapshot];
   'restore-applied': [];
   'rehydration-complete': [payload: { hasInitialFile: boolean }];
+  'rehydration-file-removed': [payload: { bucketKey?: string; fileName?: string }];
   'update:deepLinkInfo': [DeepLinkInfo | null];
 }>();
 
@@ -905,9 +921,11 @@ watch(
 watch(
   () => props.rehydrationActive,
   (active) => {
-    if (active && canAccessMyStuff.value && !showAgentSetupDialog.value) {
-      myStuffInitialTab.value = 'files';
-      showMyStuffDialog.value = true;
+    if (active) {
+      wizardDismissed.value = false;
+      if (!showAgentSetupDialog.value) {
+        showAgentSetupDialog.value = true;
+      }
     }
   },
   { immediate: true }
@@ -916,9 +934,11 @@ watch(
 watch(
   () => (Array.isArray(props.rehydrationFiles) ? props.rehydrationFiles.length : 0),
   (count) => {
-    if (count > 0 && canAccessMyStuff.value && !showAgentSetupDialog.value) {
-      myStuffInitialTab.value = 'files';
-      showMyStuffDialog.value = true;
+    if (count > 0) {
+      wizardDismissed.value = false;
+      if (!showAgentSetupDialog.value) {
+        showAgentSetupDialog.value = true;
+      }
     }
   },
   { immediate: true }
@@ -1701,7 +1721,9 @@ const refreshWizardState = async () => {
   }
 };
 
-const shouldHideSetupWizard = computed(() => wizardPatientSummary.value || !!props.user?.isAdmin || !!props.suppressWizard);
+const shouldHideSetupWizard = computed(() =>
+  (!wizardRestoreActive.value && wizardPatientSummary.value) || !!props.user?.isAdmin || !!props.suppressWizard
+);
 
 const savePatientSummary = async (summary: string) => {
   if (!props.user?.userId || !summary) return;
@@ -4103,6 +4125,10 @@ const handlePatientSummaryVerified = async () => {
   await refreshWizardState();
 };
 
+const handleRehydrationFileRemoved = (payload: { bucketKey?: string; fileName?: string }) => {
+  emit('rehydration-file-removed', payload);
+};
+
 // Parse contextual tip to extract clickable links
 const parsedContextualTip = computed(() => {
   const tip = contextualTip.value;
@@ -4462,7 +4488,7 @@ onUnmounted(() => {
   margin-top: 0;
 }
 
-.wizard-restore-btn {
+.wizard-restore-chip {
   margin-right: 6px;
 }
 

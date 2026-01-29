@@ -134,6 +134,7 @@
             @sign-out="handleSignOut"
             @restore-applied="restoredChatState = null"
             @rehydration-complete="handleRehydrationComplete"
+            @rehydration-file-removed="handleRehydrationFileRemoved"
             @update:deep-link-info="handleDeepLinkInfoUpdate"
           />
         </div>
@@ -914,6 +915,17 @@ const handleSkipRestore = () => {
 const handleRehydrationComplete = (_payload: { hasInitialFile: boolean }) => {
   rehydrationActive.value = false;
   suppressWizard.value = false;
+};
+
+const handleRehydrationFileRemoved = (payload: { bucketKey?: string; fileName?: string }) => {
+  if (!payload) return;
+  const name = payload.fileName || (payload.bucketKey ? payload.bucketKey.split('/').pop() : null);
+  if (!name) return;
+  rehydrationFiles.value = rehydrationFiles.value.filter(entry => {
+    const entryName = entry.fileName || (entry.bucketKey ? entry.bucketKey.split('/').pop() : null);
+    return entryName !== name;
+  });
+  rehydrationActive.value = rehydrationFiles.value.length > 0;
 };
 
 const checkDeepLinkSession = async (shareId: string) => {

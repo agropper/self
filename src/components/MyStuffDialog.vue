@@ -1183,6 +1183,7 @@ const emit = defineEmits<{
   'patient-summary-saved': [data: { userId: string }];
   'patient-summary-verified': [data: { userId: string }];
   'rehydration-complete': [payload: { hasInitialFile: boolean }];
+  'rehydration-file-removed': [payload: { bucketKey?: string; fileName?: string }];
 }>();
 
 // Handle show patient summary from Lists component
@@ -2243,6 +2244,16 @@ const deleteFile = async (file: UserFile) => {
         message: 'File deleted successfully',
         timeout: 3000
       });
+    }
+
+    if (props.rehydrationActive) {
+      const removedName = normalizeRehydrationName(file);
+      rehydrationQueue.value = rehydrationQueue.value.filter(entry => normalizeRehydrationName(entry) !== removedName);
+      rehydrationCompleted.value.delete(removedName);
+      emit('rehydration-file-removed', { bucketKey: file.bucketKey, fileName: file.fileName });
+      if (rehydrationQueue.value.length === 0) {
+        emit('rehydration-complete', { hasInitialFile: false });
+      }
     }
   } catch (err) {
     console.error('Error deleting file:', err);
