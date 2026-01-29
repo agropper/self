@@ -198,7 +198,11 @@
         <div class="text-body2 text-grey q-mb-md">
           Process your initial health record file to extract structured lists (Clinical Notes, Medications, etc.)
         </div>
-        <div v-if="isProcessing" class="q-pa-sm">
+        <div v-if="showWizardAutoExtract" class="q-pa-sm">
+          <q-spinner size="2em" color="primary" />
+          <div class="q-mt-sm">Analyzing for categories in the file...</div>
+        </div>
+        <div v-else-if="isProcessing" class="q-pa-sm">
           <q-spinner size="2em" color="primary" />
           <div class="q-mt-sm">{{ processingMessage || 'Processing initial file...' }}</div>
           <div class="text-caption text-grey q-mt-xs">Parsing and extracting lists from your file.</div>
@@ -577,6 +581,11 @@ const currentMedicationsStatus = ref<'reviewing' | 'consulting' | 'waiting' | ''
 const wizardAutoFlow = ref(false);
 const wizardAutoFlowStorageKey = 'wizardMyListsAuto';
 const wizardAutoStartPending = ref(false);
+const showWizardAutoExtract = computed(() =>
+  wizardAutoFlow.value &&
+  hasInitialFile.value &&
+  !hasSavedResults.value
+);
 const wizardPreparingMeds = computed(() =>
   wizardAutoFlow.value &&
   !currentMedications.value &&

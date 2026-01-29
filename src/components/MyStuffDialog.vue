@@ -1421,6 +1421,10 @@ const handleRehydrationFileSelected = async (event: Event) => {
       fileName: expected,
       remaining: rehydrationRemaining.value.length
     });
+    emit('rehydration-file-removed', {
+      fileName: expected,
+      bucketKey: currentEntry?.bucketKey
+    });
   } catch (error) {
     console.error('Rehydration upload failed:', error);
     if ($q && typeof $q.notify === 'function') {

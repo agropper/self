@@ -9027,8 +9027,23 @@ app.get('/api/billing/balance', async (_req, res) => {
       }
     });
     if (!response.ok) {
+      let errorMessage = `HTTP ${response.status}`;
       const text = await response.text();
-      return res.status(response.status).json({ error: text || `HTTP ${response.status}` });
+      if (text) {
+        try {
+          const errorPayload = JSON.parse(text);
+          if (errorPayload?.message) {
+            errorMessage = errorPayload.message;
+          } else if (errorPayload?.error) {
+            errorMessage = errorPayload.error;
+          } else if (typeof errorPayload === 'string') {
+            errorMessage = errorPayload;
+          }
+        } catch (_err) {
+          errorMessage = text;
+        }
+      }
+      return res.status(response.status).json({ error: errorMessage });
     }
     const data = await response.json();
     res.json(data);

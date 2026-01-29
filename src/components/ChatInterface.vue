@@ -308,6 +308,22 @@
           />
           </div>
 
+          <q-dialog v-model="showRestoreCompleteDialog" persistent>
+            <q-card style="min-width: 480px; max-width: 640px">
+              <q-card-section>
+                <div class="text-h6">Account Restored</div>
+              </q-card-section>
+              <q-card-section class="text-body2">
+                Your account has been restored. The Patient Summary, Private AI knowledge base, and Saved Chats are available. Deep links that were not accessible during account dormancy are available again.
+                <br /><br />
+                Your private information will be in the cloud until you sign out again.
+              </q-card-section>
+              <q-card-actions align="right">
+                <q-btn flat label="OK" color="primary" v-close-popup />
+              </q-card-actions>
+            </q-card>
+          </q-dialog>
+
           <div class="q-mt-md">
             <div class="wizard-stage-row">
               <div class="wizard-stage-col1">
@@ -390,7 +406,7 @@
                   size="sm"
                   :color="step3OkActive ? 'primary' : 'grey-4'"
                   :label="stage3ActionLabel"
-                  :disable="!step3OkEnabled || !stage1Complete"
+                  :disable="!step3OkEnabled || !stage1Complete || stage3IndexingActive"
                   @click="handleStage3Action"
                 />
                 <div v-else-if="!wizardRestoreActive && stage3HasFiles" class="wizard-stage-actions-group">
@@ -400,7 +416,7 @@
                     size="sm"
                     color="primary"
                     label="ADD ANOTHER FILE"
-                    :disable="!step3OkEnabled || !stage1Complete"
+                    :disable="!step3OkEnabled || !stage1Complete || stage3IndexingActive"
                     @click="handleStage3Action"
                   />
                   <q-btn
@@ -409,7 +425,7 @@
                     size="sm"
                     color="primary"
                     label="INDEX"
-                    :disable="!step3OkEnabled || !stage1Complete"
+                    :disable="!step3OkEnabled || !stage1Complete || stage3IndexingActive"
                     @click="handleStage3Index"
                   />
                 </div>
@@ -759,6 +775,9 @@ const wizardStage3Complete = ref(false);
 const wizardStage2Pending = ref(false);
 const wizardUserStorageKey = computed(() => props.user?.userId ? `wizard-completion-${props.user.userId}` : null);
 const wizardRestoreActive = computed(() => !!props.rehydrationActive && (Array.isArray(props.rehydrationFiles) ? props.rehydrationFiles.length > 0 : false));
+const showRestoreCompleteDialog = ref(false);
+const restoreIndexingActive = ref(false);
+const restoreIndexingQueued = ref(false);
 const stage2RestoreFileName = computed(() => {
   if (!wizardRestoreActive.value) return null;
   const files = Array.isArray(props.rehydrationFiles) ? props.rehydrationFiles : [];
@@ -964,6 +983,37 @@ watch(
   { immediate: true }
 );
 
+const startRestoreIndexing = async () => {
+  if (!props.user?.userId) {
+    restoreIndexingQueued.value = false;
+    return;
+  }
+  try {
+    const filesResponse = await fetch(`/api/user-files?userId=${encodeURIComponent(props.user.userId)}`, {
+      credentials: 'include'
+    });
+    if (!filesResponse.ok) {
+      restoreIndexingQueued.value = false;
+      return;
+    }
+    const filesResult = await filesResponse.json();
+    const names = Array.isArray(filesResult?.files)
+      ? filesResult.files
+          .map((file: { fileName?: string; bucketKey?: string }) => getFileNameFromEntry(file))
+          .filter((name: string) => !!name)
+      : [];
+    const uniqueNames = Array.from(new Set(names));
+    if (uniqueNames.length === 0) {
+      restoreIndexingQueued.value = false;
+      return;
+    }
+    wizardStage3Files.value = uniqueNames;
+    await handleStage3Index(uniqueNames, true);
+  } finally {
+    restoreIndexingQueued.value = false;
+  }
+};
+
 const handleRehydrationComplete = async (payload: { hasInitialFile: boolean }) => {
   emit('rehydration-complete', payload);
   let shouldAutoProcess = !!payload?.hasInitialFile;
@@ -993,6 +1043,10 @@ const handleRehydrationComplete = async (payload: { hasInitialFile: boolean }) =
   await refreshWizardState();
   if (!shouldHideSetupWizard.value && !showAgentSetupDialog.value && !wizardDismissed.value) {
     showAgentSetupDialog.value = true;
+  }
+  if (!restoreIndexingQueued.value) {
+    restoreIndexingQueued.value = true;
+    await startRestoreIndexing();
   }
 };
 
@@ -1812,6 +1866,7 @@ const dismissWizard = () => {
 };
 
 const stage3IndexingPoll = ref<ReturnType<typeof setInterval> | null>(null);
+const stage3IndexingPending = ref(false);
 const stage3IndexingStartedAt = ref<number | null>(null);
 const stage3IndexingCompletedAt = ref<number | null>(null);
 const formatElapsed = (start: number | null, end?: number | null) => {
@@ -1822,10 +1877,17 @@ const formatElapsed = (start: number | null, end?: number | null) => {
   const seconds = totalSeconds % 60;
   return `${minutes}m ${seconds}s`;
 };
-const handleStage3Index = async () => {
+const handleStage3Index = async (overrideNames?: string[], fromRestore = false) => {
   if (!props.user?.userId) return;
+  if (stage3IndexingActive.value) return;
+  stage3IndexingPending.value = true;
+  if (fromRestore) {
+    restoreIndexingActive.value = true;
+  }
   try {
-    const stage3Names = stage3DisplayFiles.value.map(entry => entry.name);
+    const stage3Names = (overrideNames && overrideNames.length > 0)
+      ? overrideNames
+      : stage3DisplayFiles.value.map(entry => entry.name);
     if (stage3Names.length > 0) {
       try {
         const filesResponse = await fetch(`/api/user-files?userId=${encodeURIComponent(props.user.userId)}`, {
@@ -1890,6 +1952,7 @@ const handleStage3Index = async () => {
       filesIndexed: 0,
       progress: 0
     };
+    stage3IndexingPending.value = false;
     if (stage3IndexingPoll.value) {
       clearInterval(stage3IndexingPoll.value);
     }
@@ -1922,6 +1985,10 @@ const handleStage3Index = async () => {
             }
             stage3IndexingCompletedAt.value = Date.now();
             refreshWizardState();
+            if (restoreIndexingActive.value) {
+              restoreIndexingActive.value = false;
+              showRestoreCompleteDialog.value = true;
+            }
           }
         } catch (error) {
           // ignore polling errors
@@ -1930,6 +1997,8 @@ const handleStage3Index = async () => {
     }
   } catch (error) {
     console.warn('Failed to start indexing from wizard:', error);
+    restoreIndexingActive.value = false;
+    stage3IndexingPending.value = false;
   }
 };
 
@@ -1951,6 +2020,7 @@ const handleStage2Action = () => {
 };
 
 const handleStage3Action = () => {
+  if (stage3IndexingActive.value) return;
   if (wizardRestoreActive.value) {
     wizardUploadIntent.value = 'restore';
     triggerWizardFileInput();
@@ -3956,6 +4026,11 @@ const indexingStatus = ref<{
   filesIndexed: number;
   progress: number;
 } | null>(null);
+const stage3IndexingActive = computed(() =>
+  stage3IndexingPending.value ||
+  indexingStatus.value?.phase === 'indexing' ||
+  !!stage3IndexingPoll.value
+);
 
 const handleIndexingStarted = (data: { jobId: string; phase: string }) => {
   stage3IndexingStartedAt.value = Date.now();
