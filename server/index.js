@@ -8990,10 +8990,12 @@ app.get('/api/user-status', async (req, res) => {
     // Get KB name for file path resolution
     const kbName = getKBNameFromUserDoc(userDoc, userId);
     
+    const agentReady = !!(userDoc.assignedAgentId && userDoc.agentEndpoint);
     res.json({
       success: true,
       workflowStage,
       hasAgent,
+      agentReady,
       fileCount,
       hasKB,
       hasFilesInKB,

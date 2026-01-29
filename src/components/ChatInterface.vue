@@ -748,7 +748,7 @@ const wizardUploadIntent = ref<'apple' | 'other' | 'restore' | null>(null);
 const wizardMessages = ref<Record<number, string>>({});
 const wizardIntroMessage = ref('');
 const wizardDismissed = ref(false);
-const step2Enabled = computed(() => true);
+const step2Enabled = computed(() => wizardStage1Complete.value);
 const step3OkEnabled = computed(() => true);
 const step4Enabled = computed(() => wizardHasFilesInKB.value);
 const stage1Complete = computed(() => wizardStage1Complete.value);
@@ -1653,12 +1653,13 @@ const refreshWizardState = async () => {
       const hasMeds = !!statusResult?.currentMedications;
       wizardCurrentMedications.value = hasMeds || wizardCurrentMedications.value;
       wizardStage2Complete.value = hasMeds || wizardStage2Complete.value;
+      if (statusResult?.agentReady !== undefined) {
+        wizardStage1Complete.value = !!statusResult.agentReady;
+      }
       if (statusResult?.initialFile && !wizardStage2FileName.value) {
         wizardStage2FileName.value = getFileNameFromEntry(statusResult.initialFile);
       }
-      if (statusResult?.hasAgent) {
-        wizardStage1Complete.value = true;
-      }
+      wizardAgentReady.value = !!statusResult?.agentReady;
     }
 
     if (filesResponse.ok) {

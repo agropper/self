@@ -3113,7 +3113,27 @@ export default function setupFileRoutes(app, cloudant, doClient) {
       // Get user document to access agent info
       const userDoc = await cloudant.getDocument('maia_users', userId);
       
-      if (!userDoc || !userDoc.assignedAgentId || !userDoc.agentEndpoint) {
+      if (!userDoc || !userDoc.assignedAgentId) {
+        return res.status(400).json({ error: 'Private AI agent not configured for user' });
+      }
+      if (!userDoc.agentEndpoint) {
+        try {
+          const agent = await doClient.agent.get(userDoc.assignedAgentId);
+          const endpointFromAgent = agent?.deployment?.url ? `${agent.deployment.url}/api/v1` : null;
+          if (endpointFromAgent) {
+            userDoc.agentEndpoint = endpointFromAgent;
+            const modelNameFromAgent = agent?.model?.inference_name || agent?.model?.name || null;
+            if (modelNameFromAgent) {
+              userDoc.agentModelName = modelNameFromAgent;
+            }
+            userDoc.updatedAt = new Date().toISOString();
+            await cloudant.saveDocument('maia_users', userDoc);
+          }
+        } catch (endpointError) {
+          // ignore and fall through to error
+        }
+      }
+      if (!userDoc.agentEndpoint) {
         return res.status(400).json({ error: 'Private AI agent not configured for user' });
       }
 
