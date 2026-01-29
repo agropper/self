@@ -926,6 +926,9 @@ watch(
       if (!showAgentSetupDialog.value) {
         showAgentSetupDialog.value = true;
       }
+      console.log('[SAVE-RESTORE] Wizard reopened for rehydration', {
+        userId: props.user?.userId || null
+      });
     }
   },
   { immediate: true }
@@ -939,6 +942,10 @@ watch(
       if (!showAgentSetupDialog.value) {
         showAgentSetupDialog.value = true;
       }
+      console.log('[SAVE-RESTORE] Rehydration files updated', {
+        userId: props.user?.userId || null,
+        count
+      });
     }
   },
   { immediate: true }
@@ -1933,6 +1940,10 @@ const handleStage3Index = async () => {
 
 const handleStage3Restore = (_fileName: string) => {
   wizardUploadIntent.value = 'restore';
+  console.log('[SAVE-RESTORE] Restore file picker opened', {
+    userId: props.user?.userId || null,
+    fileName: _fileName || null
+  });
   triggerWizardFileInput();
 };
 
@@ -4126,6 +4137,10 @@ const handlePatientSummaryVerified = async () => {
 };
 
 const handleRehydrationFileRemoved = (payload: { bucketKey?: string; fileName?: string }) => {
+  console.log('[SAVE-RESTORE] Rehydration file removed (wizard)', {
+    userId: props.user?.userId || null,
+    fileName: payload?.fileName || payload?.bucketKey || null
+  });
   emit('rehydration-file-removed', payload);
 };
 

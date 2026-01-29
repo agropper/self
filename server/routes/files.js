@@ -1756,6 +1756,11 @@ export default function setupFileRoutes(app, cloudant, doClient) {
       }
 
       const { bucketKey: providedBucketKey, fileName: providedFileName } = req.body || {};
+      console.log('[SAVE-RESTORE] process-initial-file request', {
+        userId,
+        providedBucketKey: providedBucketKey || null,
+        providedFileName: providedFileName || null
+      });
       
       let initialFileBucketKey;
       let initialFileName;
@@ -1772,12 +1777,21 @@ export default function setupFileRoutes(app, cloudant, doClient) {
         }
 
         if (!userDoc.initialFile || !userDoc.initialFile.bucketKey) {
+          console.log('[SAVE-RESTORE] process-initial-file missing initial file', {
+            userId,
+            hasInitialFile: !!userDoc.initialFile
+          });
           return res.status(400).json({ error: 'No initial file found for this user' });
         }
 
         initialFileBucketKey = userDoc.initialFile.bucketKey;
         initialFileName = userDoc.initialFile.fileName;
       }
+      console.log('[SAVE-RESTORE] process-initial-file resolved initial file', {
+        userId,
+        initialFileBucketKey,
+        initialFileName
+      });
 
       const { client: s3Client, bucketName } = getS3Client();
 
@@ -1792,6 +1806,11 @@ export default function setupFileRoutes(app, cloudant, doClient) {
       try {
         response = await s3Client.send(getCommand);
       } catch (err) {
+        console.log('[SAVE-RESTORE] process-initial-file primary lookup failed', {
+          userId,
+          bucketKey: initialFileBucketKey,
+          error: err?.message || String(err)
+        });
         if (providedBucketKey) {
           return res.status(404).json({ error: `Initial file not found: ${err.message}` });
         }
@@ -1817,6 +1836,10 @@ export default function setupFileRoutes(app, cloudant, doClient) {
         }
 
         let foundKey = null;
+        console.log('[SAVE-RESTORE] process-initial-file fallback keys', {
+          userId,
+          keys: Array.from(fallbackKeys)
+        });
         for (const candidateKey of Array.from(fallbackKeys)) {
           try {
             response = await s3Client.send(new GetObjectCommand({
@@ -1831,6 +1854,11 @@ export default function setupFileRoutes(app, cloudant, doClient) {
         }
 
         if (!response || !foundKey) {
+          console.log('[SAVE-RESTORE] process-initial-file fallback lookup failed', {
+            userId,
+            initialFileName,
+            attempted: Array.from(fallbackKeys)
+          });
           return res.status(404).json({ error: `Initial file not found: ${err.message}` });
         }
 
@@ -1842,6 +1870,10 @@ export default function setupFileRoutes(app, cloudant, doClient) {
           };
           userDoc.updatedAt = new Date().toISOString();
           await cloudant.saveDocument('maia_users', userDoc);
+          console.log('[SAVE-RESTORE] process-initial-file initial file updated', {
+            userId,
+            bucketKey: foundKey
+          });
         } catch (updateErr) {
           // ignore initialFile update errors
         }

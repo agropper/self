@@ -787,6 +787,10 @@ const createTemporarySession = async () => {
 const handleRestoreSnapshot = async () => {
   if (!restoreSnapshot.value || !user.value?.userId) return;
   restoreLoading.value = true;
+  console.log('[SAVE-RESTORE] Starting restore snapshot', {
+    userId: user.value.userId,
+    snapshotUserId: restoreSnapshot.value?.user?.userId || null
+  });
   try {
     const snapshot = restoreSnapshot.value;
     const snapshotFiles = Array.isArray(snapshot?.files?.files) ? snapshot.files.files : [];
@@ -815,6 +819,10 @@ const handleRestoreSnapshot = async () => {
         kbName: snapshotKbName
       }));
     }
+    console.log('[SAVE-RESTORE] Rehydration files prepared', {
+      count: rehydrationFiles.value.length,
+      initialFile: initialFromSnapshot?.fileName || initialFromSnapshot?.bucketKey || null
+    });
     if (initialFromSnapshot && (initialFromSnapshot.bucketKey || initialFromSnapshot.fileName)) {
       const existing = rehydrationFiles.value.find(item =>
         (initialFromSnapshot.bucketKey && item.bucketKey === initialFromSnapshot.bucketKey) ||
@@ -838,6 +846,10 @@ const handleRestoreSnapshot = async () => {
     }
     rehydrationActive.value = rehydrationFiles.value.length > 0;
     suppressWizard.value = false;
+    console.log('[SAVE-RESTORE] Rehydration state set', {
+      active: rehydrationActive.value,
+      count: rehydrationFiles.value.length
+    });
     if (rehydrationActive.value) {
       if ($q && typeof $q.notify === 'function') {
         $q.notify({
@@ -849,6 +861,9 @@ const handleRestoreSnapshot = async () => {
     }
     restoredChatState.value = restoreSnapshot.value.currentChat || null;
     await restoreSavedChats(restoreSnapshot.value);
+    console.log('[SAVE-RESTORE] Saved chats restored', {
+      userId: user.value.userId
+    });
     if (restoreSnapshot.value.currentMedications) {
       try {
         await fetch('/api/user-current-medications', {
@@ -861,6 +876,9 @@ const handleRestoreSnapshot = async () => {
             userId: user.value.userId,
             currentMedications: restoreSnapshot.value.currentMedications
           })
+        });
+        console.log('[SAVE-RESTORE] Current medications restored', {
+          userId: user.value.userId
         });
       } catch (medsError) {
         console.warn('Failed to restore current medications:', medsError);
@@ -878,6 +896,9 @@ const handleRestoreSnapshot = async () => {
             userId: user.value.userId,
             summary: restoreSnapshot.value.patientSummary
           })
+        });
+        console.log('[SAVE-RESTORE] Patient summary restored', {
+          userId: user.value.userId
         });
       } catch (summaryError) {
         console.warn('Failed to restore patient summary:', summaryError);
@@ -903,6 +924,11 @@ const handleRestoreSnapshot = async () => {
   } finally {
     restoreLoading.value = false;
     showRestoreDialog.value = false;
+    console.log('[SAVE-RESTORE] Restore flow finished', {
+      userId: user.value?.userId || null,
+      rehydrationActive: rehydrationActive.value,
+      rehydrationCount: rehydrationFiles.value.length
+    });
   }
 };
 
@@ -915,6 +941,9 @@ const handleSkipRestore = () => {
 const handleRehydrationComplete = (_payload: { hasInitialFile: boolean }) => {
   rehydrationActive.value = false;
   suppressWizard.value = false;
+  console.log('[SAVE-RESTORE] Rehydration complete', {
+    userId: user.value?.userId || null
+  });
 };
 
 const handleRehydrationFileRemoved = (payload: { bucketKey?: string; fileName?: string }) => {
@@ -926,6 +955,11 @@ const handleRehydrationFileRemoved = (payload: { bucketKey?: string; fileName?: 
     return entryName !== name;
   });
   rehydrationActive.value = rehydrationFiles.value.length > 0;
+  console.log('[SAVE-RESTORE] Rehydration file removed', {
+    userId: user.value?.userId || null,
+    fileName: name,
+    remaining: rehydrationFiles.value.length
+  });
 };
 
 const checkDeepLinkSession = async (shareId: string) => {

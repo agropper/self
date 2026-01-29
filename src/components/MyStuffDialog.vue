@@ -1320,6 +1320,10 @@ watch(
       rehydrationQueue.value = files;
       rehydrationCompleted.value = new Set();
       rehydrationStep.value = 0;
+      console.log('[SAVE-RESTORE] Rehydration queue set', {
+        userId: props.userId,
+        count: files.length
+      });
     } else {
       rehydrationQueue.value = [];
       rehydrationCompleted.value = new Set();
@@ -1342,6 +1346,12 @@ const handleRehydrationFileSelected = async (event: Event) => {
   const currentEntry = rehydrationCurrent.value || null;
   const expected = currentEntry ? normalizeRehydrationName(currentEntry) : null;
   if (!expected) return;
+
+  console.log('[SAVE-RESTORE] Rehydration file selected', {
+    userId: props.userId,
+    expected,
+    selected: file.name
+  });
 
   if (file.name !== expected) {
     if ($q && typeof $q.notify === 'function') {
@@ -1393,6 +1403,12 @@ const handleRehydrationFileSelected = async (event: Event) => {
             updateInitialFile: !!currentEntry?.isInitial
           })
         });
+        console.log('[SAVE-RESTORE] Rehydration metadata saved', {
+          userId: props.userId,
+          fileName: uploadResult.fileInfo.fileName,
+          chipStatus,
+          kbName
+        });
       } catch (metadataError) {
         console.warn('Rehydration metadata update failed:', metadataError);
       }
@@ -1400,6 +1416,11 @@ const handleRehydrationFileSelected = async (event: Event) => {
     rehydrationCompleted.value.add(expected);
     rehydrationStep.value += 1;
     await loadFiles();
+    console.log('[SAVE-RESTORE] Rehydration file restored', {
+      userId: props.userId,
+      fileName: expected,
+      remaining: rehydrationRemaining.value.length
+    });
   } catch (error) {
     console.error('Rehydration upload failed:', error);
     if ($q && typeof $q.notify === 'function') {
@@ -1415,6 +1436,10 @@ const handleRehydrationFileSelected = async (event: Event) => {
 
   if (rehydrationRemaining.value.length === 0) {
     const hasInitialFile = rehydrationQueue.value.some(entry => !!entry.isInitial);
+    console.log('[SAVE-RESTORE] Rehydration complete', {
+      userId: props.userId,
+      hasInitialFile
+    });
     emit('rehydration-complete', { hasInitialFile });
   }
 };
@@ -2250,6 +2275,11 @@ const deleteFile = async (file: UserFile) => {
       const removedName = normalizeRehydrationName(file);
       rehydrationQueue.value = rehydrationQueue.value.filter(entry => normalizeRehydrationName(entry) !== removedName);
       rehydrationCompleted.value.delete(removedName);
+      console.log('[SAVE-RESTORE] Rehydration file deleted in Saved Files', {
+        userId: props.userId,
+        fileName: removedName,
+        remaining: rehydrationQueue.value.length
+      });
       emit('rehydration-file-removed', { bucketKey: file.bucketKey, fileName: file.fileName });
       if (rehydrationQueue.value.length === 0) {
         emit('rehydration-complete', { hasInitialFile: false });

@@ -944,9 +944,11 @@ export default function setupAuthRoutes(app, passkeyService, cloudant, doClient,
       if (!restoreUserId || typeof restoreUserId !== 'string') {
         return res.status(400).json({ success: false, error: 'User ID required' });
       }
+      console.log('[SAVE-RESTORE] Temporary restore requested', { userId: restoreUserId });
 
       const agent = await findUserAgent(doClient, restoreUserId);
       if (!agent) {
+        console.log('[SAVE-RESTORE] Temporary restore failed: agent not found', { userId: restoreUserId });
         return res.status(404).json({ success: false, error: 'Agent not found' });
       }
 
@@ -987,7 +989,7 @@ export default function setupAuthRoutes(app, passkeyService, cloudant, doClient,
         sameSite: 'lax'
       });
 
-      console.log(`[LOCAL] Temporary user restored for ${userDoc.userId}`);
+      console.log('[SAVE-RESTORE] Temporary user restored', { userId: userDoc.userId });
       res.json({
         authenticated: true,
         user: {
@@ -997,7 +999,7 @@ export default function setupAuthRoutes(app, passkeyService, cloudant, doClient,
         }
       });
     } catch (error) {
-      console.error('Temporary restore error:', error);
+      console.error('[SAVE-RESTORE] Temporary restore error:', error);
       res.status(500).json({ success: false, error: error.message || 'Failed to restore temp user' });
     }
   });
