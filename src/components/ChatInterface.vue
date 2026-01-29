@@ -1722,8 +1722,8 @@ const refreshWizardState = async () => {
         : null;
       indexedCountFromFiles = kbIndexedCount !== null ? kbIndexedCount : indexedFiles.length;
       indexingNeededFromFiles = !!filesResult?.kbIndexingNeeded;
-      stage3CompleteFromFiles = !indexingNeededFromFiles && indexedCountFromFiles > 0;
-      wizardHasFilesInKB.value = indexedCountFromFiles > 0;
+      stage3CompleteFromFiles = !indexingNeededFromFiles && (indexedCountFromFiles ?? 0) > 0;
+      wizardHasFilesInKB.value = (indexedCountFromFiles ?? 0) > 0;
       tokensFromFiles = filesResult?.kbTotalTokens ? String(filesResult.kbTotalTokens) : null;
       const appleHealthFiles = files.filter((file: { fileName?: string; bucketKey?: string }) =>
         isAppleHealthExport(getFileNameFromEntry(file))
