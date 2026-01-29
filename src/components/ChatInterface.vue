@@ -1343,11 +1343,10 @@ const loadProviders = async () => {
 };
 
 watch(
-  [isPrivateAISelected, () => messages.value.length, () => userResourceStatus.value?.hasAgent, () => userResourceStatus.value?.kbStatus],
-  ([isPrivate, messageCount, hasAgentRaw, kbStatusRaw]) => {
+  [isPrivateAISelected, () => messages.value.length, () => userResourceStatus.value?.hasAgent],
+  ([isPrivate, messageCount, hasAgentRaw]) => {
     const hasAgent = Boolean(hasAgentRaw);
-    const kbAttached = kbStatusRaw === 'attached';
-    const shouldPrefill = isPrivate && messageCount === 0 && hasAgent && kbAttached;
+    const shouldPrefill = isPrivate && messageCount === 0 && hasAgent;
 
     if (shouldPrefill && !inputMessage.value) {
       inputMessage.value = PRIVATE_AI_DEFAULT_PROMPT;

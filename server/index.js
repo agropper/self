@@ -9017,7 +9017,7 @@ app.get('/api/user-status', async (req, res) => {
 // Get customer balance from DigitalOcean
 app.get('/api/billing/balance', async (_req, res) => {
   try {
-    const token = process.env.DIGITALOCEAN_PERSONAL_API_KEY || process.env.DIGITALOCEAN_TOKEN;
+    const token = process.env.DIGITALOCEAN_TOKEN;
     if (!token) {
       return res.status(500).json({ error: 'DigitalOcean API token not configured' });
     }
