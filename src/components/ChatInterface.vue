@@ -1680,6 +1680,10 @@ const isAppleHealthExport = (fileName: string) => {
 
 const refreshWizardState = async () => {
   if (!props.user?.userId) return;
+  let stage3CompleteFromFiles: boolean | null = null;
+  let indexingNeededFromFiles: boolean | null = null;
+  let indexedCountFromFiles: number | null = null;
+  let tokensFromFiles: string | null = null;
   try {
     const [statusResponse, filesResponse, summaryResponse, messagesResponse] = await Promise.all([
       fetch(`/api/user-status?userId=${encodeURIComponent(props.user.userId)}`, {
@@ -1698,7 +1702,6 @@ const refreshWizardState = async () => {
 
     if (statusResponse.ok) {
       const statusResult = await statusResponse.json();
-      wizardHasFilesInKB.value = !!statusResult?.hasFilesInKB;
       const hasMeds = !!statusResult?.currentMedications;
       wizardCurrentMedications.value = hasMeds || wizardCurrentMedications.value;
       wizardStage2Complete.value = hasMeds || wizardStage2Complete.value;
@@ -1713,6 +1716,15 @@ const refreshWizardState = async () => {
     if (filesResponse.ok) {
       const filesResult = await filesResponse.json();
       const files = Array.isArray(filesResult?.files) ? filesResult.files : [];
+      const indexedFiles = Array.isArray(filesResult?.indexedFiles) ? filesResult.indexedFiles : [];
+      const kbIndexedCount = typeof filesResult?.kbIndexedDataSourceCount === 'number'
+        ? filesResult.kbIndexedDataSourceCount
+        : null;
+      indexedCountFromFiles = kbIndexedCount !== null ? kbIndexedCount : indexedFiles.length;
+      indexingNeededFromFiles = !!filesResult?.kbIndexingNeeded;
+      stage3CompleteFromFiles = !indexingNeededFromFiles && indexedCountFromFiles > 0;
+      wizardHasFilesInKB.value = indexedCountFromFiles > 0;
+      tokensFromFiles = filesResult?.kbTotalTokens ? String(filesResult.kbTotalTokens) : null;
       const appleHealthFiles = files.filter((file: { fileName?: string; bucketKey?: string }) =>
         isAppleHealthExport(getFileNameFromEntry(file))
       );
@@ -1723,10 +1735,8 @@ const refreshWizardState = async () => {
       }
       wizardOtherFilesCount.value = files.length - appleHealthFiles.length;
       wizardKbName.value = filesResult?.kbName || wizardKbName.value;
-      wizardKbTotalTokens.value = filesResult?.kbTotalTokens ? String(filesResult.kbTotalTokens) : wizardKbTotalTokens.value;
-      wizardKbIndexedCount.value = typeof filesResult?.kbIndexedDataSourceCount === 'number'
-        ? filesResult.kbIndexedDataSourceCount
-        : wizardKbIndexedCount.value;
+      wizardKbTotalTokens.value = tokensFromFiles || wizardKbTotalTokens.value;
+      wizardKbIndexedCount.value = kbIndexedCount !== null ? kbIndexedCount : wizardKbIndexedCount.value;
       const allFileNames = files
         .map((file: any) => getFileNameFromEntry(file))
         .filter((name: string) => !!name);
@@ -1760,18 +1770,28 @@ const refreshWizardState = async () => {
             // Ignore malformed storage
           }
         }
-        persistWizardCompletion();
       }
 
-      if (wizardHasFilesInKB.value) {
-        wizardStage3Complete.value = true;
-        persistWizardCompletion();
-      }
-
-      if (!wizardHasFilesInKB.value) {
+      if (indexingNeededFromFiles === true) {
         wizardStage3Complete.value = false;
-        persistWizardCompletion();
+        if (!indexingStatus.value || indexingStatus.value.phase !== 'indexing') {
+          stage3IndexingStartedAt.value = Date.now();
+          stage3IndexingCompletedAt.value = null;
+          indexingStatus.value = {
+            active: true,
+            phase: 'indexing',
+            tokens: tokensFromFiles || '0',
+            filesIndexed: indexedCountFromFiles || 0,
+            progress: 0
+          };
+        }
+      } else if (stage3CompleteFromFiles !== null) {
+        wizardStage3Complete.value = stage3CompleteFromFiles;
+        if (indexingStatus.value?.phase === 'indexing') {
+          indexingStatus.value = null;
+        }
       }
+      persistWizardCompletion();
   } catch (error) {
     console.warn('Failed to refresh setup wizard state:', error);
   }

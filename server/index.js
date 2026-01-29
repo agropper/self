@@ -8188,6 +8188,76 @@ app.get('/api/shared-group-chats', async (req, res) => {
   }
 });
 
+const ADMIN_USAGE_LIST_ID = 'admin_usage_list';
+
+const fetchBillingBalance = async () => {
+  const token = process.env.DIGITALOCEAN_TOKEN;
+  if (!token) return null;
+  try {
+    const response = await fetch('https://api.digitalocean.com/v2/customers/my/balance', {
+      headers: {
+        Authorization: `Bearer ${token}`
+      }
+    });
+    if (!response.ok) {
+      return null;
+    }
+    return await response.json();
+  } catch (_error) {
+    return null;
+  }
+};
+
+const extractMonthToDateUsage = (balanceData) => {
+  if (!balanceData || typeof balanceData !== 'object') return null;
+  const candidates = [
+    balanceData.month_to_date_usage,
+    balanceData?.balance?.month_to_date_usage,
+    balanceData.month_to_date_balance,
+    balanceData?.balance?.month_to_date_balance
+  ];
+  const found = candidates.find(value => value !== undefined && value !== null);
+  if (found === undefined || found === null) return null;
+  return typeof found === 'number' ? found.toFixed(2) : String(found);
+};
+
+const appendAdminUsageEntry = async (deletedUserId) => {
+  try {
+    const balanceData = await fetchBillingBalance();
+    const monthToDateUsage = extractMonthToDateUsage(balanceData);
+    const entry = {
+      date: new Date().toISOString(),
+      monthToDateUsage: monthToDateUsage,
+      deletedUserId: deletedUserId || null,
+      changeFromPrevious: null
+    };
+
+    let usageDoc = await cloudant.getDocument('maia_users', ADMIN_USAGE_LIST_ID);
+    if (!usageDoc) {
+      usageDoc = {
+        _id: ADMIN_USAGE_LIST_ID,
+        type: 'admin_usage_list',
+        entries: []
+      };
+    }
+
+    const previous = Array.isArray(usageDoc.entries) && usageDoc.entries.length > 0 ? usageDoc.entries[0] : null;
+    const currentValue = monthToDateUsage !== null ? parseFloat(monthToDateUsage) : NaN;
+    const previousValue = previous?.monthToDateUsage !== undefined && previous?.monthToDateUsage !== null
+      ? parseFloat(previous.monthToDateUsage)
+      : NaN;
+    if (!Number.isNaN(currentValue) && !Number.isNaN(previousValue)) {
+      entry.changeFromPrevious = (currentValue - previousValue).toFixed(2);
+    }
+
+    const existingEntries = Array.isArray(usageDoc.entries) ? usageDoc.entries : [];
+    usageDoc.entries = [entry, ...existingEntries];
+    await cloudant.saveDocument('maia_users', usageDoc);
+  } catch (error) {
+    console.error('Failed to append admin usage entry:', error);
+  }
+};
+
 // Admin: Get all users with statistics
 app.get('/api/admin/users', async (req, res) => {
   try {
@@ -8349,11 +8419,15 @@ app.get('/api/admin/users', async (req, res) => {
     // Count total deep link users
     const totalDeepLinkUsers = deepLinkUserIds.size;
     
+    const usageDoc = await cloudant.getDocument('maia_users', ADMIN_USAGE_LIST_ID);
+    const usageList = Array.isArray(usageDoc?.entries) ? usageDoc.entries : [];
+
     res.json({
       success: true,
       users: userStats,
       totalUsers: userStats.length,
       totalDeepLinkUsers: totalDeepLinkUsers,
+      usageList: usageList,
       passkeyConfig: {
         rpID: passkeyService.rpID,
         origin: passkeyService.origin
@@ -8854,6 +8928,7 @@ app.delete('/api/admin/users/:userId', async (req, res) => {
     }
 
     const deletionDetails = await deleteUserAndResources(userId);
+    await appendAdminUsageEntry(userId);
 
     res.json({
       success: true,

@@ -108,6 +108,41 @@
       </template>
     </q-table>
 
+    <q-card class="q-mt-lg">
+      <q-card-section>
+        <div class="text-h6 q-mb-sm">Usage List</div>
+        <q-table
+          :rows="usageList"
+          :columns="usageColumns"
+          row-key="date"
+          dense
+          :pagination="{ rowsPerPage: 10 }"
+          :loading="loading"
+        >
+          <template v-slot:body-cell-date="props">
+            <q-td :props="props">
+              {{ formatDate(props.value) }}
+            </q-td>
+          </template>
+          <template v-slot:body-cell-monthToDateUsage="props">
+            <q-td :props="props">
+              {{ props.value ?? '—' }}
+            </q-td>
+          </template>
+          <template v-slot:body-cell-changeFromPrevious="props">
+            <q-td :props="props">
+              {{ props.value ?? '—' }}
+            </q-td>
+          </template>
+          <template v-slot:body-cell-deletedUserId="props">
+            <q-td :props="props">
+              {{ props.value || '—' }}
+            </q-td>
+          </template>
+        </q-table>
+      </q-card-section>
+    </q-card>
+
     <q-btn
       v-if="!loading"
       label="Refresh"
@@ -142,11 +177,19 @@ interface PasskeyConfig {
   origin: string;
 }
 
+interface UsageEntry {
+  date: string;
+  monthToDateUsage: string | null;
+  changeFromPrevious: string | null;
+  deletedUserId: string | null;
+}
+
 const users = ref<User[]>([]);
 const loading = ref(false);
 const totalUsers = ref(0);
 const totalDeepLinkUsers = ref(0);
 const passkeyConfig = ref<PasskeyConfig | null>(null);
+const usageList = ref<UsageEntry[]>([]);
 const deletingUsers = ref(new Set<string>());
 const recoveringUsers = ref(new Set<string>());
 const signingOut = ref(false);
@@ -228,6 +271,37 @@ const columns = [
   }
 ];
 
+const usageColumns = [
+  {
+    name: 'date',
+    label: 'Date',
+    align: 'left' as const,
+    field: 'date',
+    sortable: true
+  },
+  {
+    name: 'monthToDateUsage',
+    label: 'Month to Date Usage',
+    align: 'left' as const,
+    field: 'monthToDateUsage',
+    sortable: true
+  },
+  {
+    name: 'changeFromPrevious',
+    label: 'Change',
+    align: 'left' as const,
+    field: 'changeFromPrevious',
+    sortable: true
+  },
+  {
+    name: 'deletedUserId',
+    label: 'Deleted User ID',
+    align: 'left' as const,
+    field: 'deletedUserId',
+    sortable: true
+  }
+];
+
 const balanceEntries = computed(() => {
   if (!balanceData.value) return [];
   const entries: Array<{ key: string; label: string; value: string }> = [];
@@ -300,6 +374,7 @@ async function loadUsers() {
       totalUsers.value = data.totalUsers;
       totalDeepLinkUsers.value = data.totalDeepLinkUsers;
       passkeyConfig.value = data.passkeyConfig || null;
+      usageList.value = Array.isArray(data.usageList) ? data.usageList : [];
     } else {
       if ($q && typeof $q.notify === 'function') {
         $q.notify({
