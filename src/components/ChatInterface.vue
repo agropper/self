@@ -426,7 +426,7 @@
                     color="primary"
                     label="INDEX"
                     :disable="!step3OkEnabled || !stage1Complete || stage3IndexingActive"
-                    @click="handleStage3Index"
+                    @click="() => handleStage3Index()"
                   />
                 </div>
               </div>
@@ -997,11 +997,12 @@ const startRestoreIndexing = async () => {
       return;
     }
     const filesResult = await filesResponse.json();
-    const names = Array.isArray(filesResult?.files)
-      ? filesResult.files
-          .map((file: { fileName?: string; bucketKey?: string }) => getFileNameFromEntry(file))
-          .filter((name: string) => !!name)
+    const files = Array.isArray(filesResult?.files)
+      ? (filesResult.files as Array<{ fileName?: string; bucketKey?: string }>)
       : [];
+    const names = files
+      .map(file => getFileNameFromEntry(file))
+      .filter((name): name is string => !!name);
     const uniqueNames = Array.from(new Set(names));
     if (uniqueNames.length === 0) {
       restoreIndexingQueued.value = false;
