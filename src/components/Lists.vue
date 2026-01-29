@@ -10,27 +10,10 @@
           flat
           icon="arrow_back"
           label="Back to Chat"
-          @click="handleBackToChat"
+          @click="$emit('back-to-chat')"
         />
       </div>
     </div>
-
-    <q-card v-if="showBalance" class="q-mb-md">
-      <q-card-section>
-        <div class="text-h6 q-mb-sm">Customer Balance</div>
-        <div v-if="balanceLoading" class="text-body2 text-grey-7">
-          Loading customer balance...
-        </div>
-        <div v-else-if="balanceError" class="text-body2 text-negative">
-          {{ balanceError }}
-        </div>
-        <div v-else>
-          <div v-for="entry in balanceEntries" :key="entry.key" class="text-body2">
-            <strong>{{ entry.label }}:</strong> {{ entry.value }}
-          </div>
-        </div>
-      </q-card-section>
-    </q-card>
 
     <!-- Current Medications - Always visible -->
     <q-card class="q-mb-md">
@@ -570,10 +553,6 @@ const hasInitialFile = ref(false);
 const markdownContent = ref<string>('');
 const markdownBucketKey = ref<string | null>(null);
 const initialFileInfo = ref<{ bucketKey: string; fileName: string } | null>(null);
-const showBalance = ref(false);
-const balanceLoading = ref(false);
-const balanceError = ref('');
-const balanceData = ref<any | null>(null);
 const categoriesList = ref<Array<{ 
   name: string; 
   page: number; 
@@ -620,7 +599,7 @@ const waitForAgentReady = async () => {
       });
       if (statusResponse.ok) {
         const statusResult = await statusResponse.json();
-        if (statusResult?.hasAgent) {
+        if (statusResult?.agentReady) {
           return true;
         }
       }
@@ -644,49 +623,6 @@ const stage3Complete = computed(() => {
   }
 });
 
-const balanceEntries = computed(() => {
-  if (!balanceData.value) return [];
-  const entries: Array<{ key: string; label: string; value: string }> = [];
-  const balance = balanceData.value.balance;
-  if (balance && typeof balance === 'object') {
-    for (const [key, value] of Object.entries(balance)) {
-      entries.push({ key: `balance.${key}`, label: key.replace(/_/g, ' '), value: String(value) });
-    }
-  }
-  for (const [key, value] of Object.entries(balanceData.value)) {
-    if (key === 'balance') continue;
-    entries.push({ key, label: key.replace(/_/g, ' '), value: String(value) });
-  }
-  return entries;
-});
-
-const loadCustomerBalance = async () => {
-  balanceLoading.value = true;
-  balanceError.value = '';
-  try {
-    const response = await fetch('/api/billing/balance', {
-      credentials: 'include'
-    });
-    if (!response.ok) {
-      const errorData = await response.json().catch(() => ({}));
-      throw new Error(errorData.error || errorData.message || `HTTP ${response.status}`);
-    }
-    balanceData.value = await response.json();
-  } catch (err) {
-    balanceError.value = err instanceof Error ? err.message : 'Failed to load customer balance';
-  } finally {
-    balanceLoading.value = false;
-  }
-};
-
-const handleBackToChat = () => {
-  try {
-    sessionStorage.removeItem('editMedicationsMode');
-  } catch (error) {
-    // ignore storage errors
-  }
-  emit('back-to-chat');
-};
 const autoProcessAttempts = ref(0);
 
 const checkInitialFile = async () => {
@@ -2348,7 +2284,6 @@ onMounted(async () => {
   // Check if we should auto-edit medications (from deep link)
   const autoEdit = sessionStorage.getItem('autoEditMedications');
   if (autoEdit === 'true' && currentMedications.value) {
-    sessionStorage.setItem('editMedicationsMode', 'true');
     // Clear the flag
     sessionStorage.removeItem('autoEditMedications');
     // Wait a bit for the dialog to fully open, then start editing
@@ -2356,12 +2291,6 @@ onMounted(async () => {
     setTimeout(() => {
       startEditingCurrentMedications();
     }, 500);
-  }
-
-  const editMode = sessionStorage.getItem('editMedicationsMode') === 'true';
-  if (editMode) {
-    showBalance.value = true;
-    await loadCustomerBalance();
   }
 
   if (verifyStorageKey.value) {
@@ -2444,6 +2373,15 @@ const loadCurrentMedications = async (forceRefresh = false) => {
     return;
   }
 
+  currentMedicationsStatus.value = 'waiting';
+  const agentReady = await waitForAgentReady();
+  if (!agentReady) {
+    currentMedications.value = null;
+    logWizardEvent('current_meds_agent_not_ready');
+    currentMedicationsStatus.value = '';
+    return;
+  }
+
   isLoadingCurrentMedications.value = true;
   currentMedicationsStatus.value = 'reviewing';
   
@@ -2451,12 +2389,6 @@ const loadCurrentMedications = async (forceRefresh = false) => {
   await new Promise(resolve => setTimeout(resolve, 1000));
   
   try {
-    const agentReady = await waitForAgentReady();
-    if (!agentReady) {
-      currentMedications.value = null;
-      logWizardEvent('current_meds_agent_not_ready');
-      return;
-    }
     currentMedicationsStatus.value = 'consulting';
     
     const response = await fetch('/api/files/lists/current-medications', {

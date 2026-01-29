@@ -294,12 +294,6 @@
         <q-card-section class="q-pt-none">
           <div class="text-body2 wizard-intro wizard-heading" v-html="wizardIntroHtml" />
           <div v-if="agentSetupPollingActive || agentSetupTimedOut" class="q-mt-sm">
-            <p class="text-caption text-grey-7" v-if="agentSetupElapsed">
-              Elapsed: {{ Math.floor(agentSetupElapsed / 60) }}m {{ agentSetupElapsed % 60 }}s
-            </p>
-            <p class="text-caption text-grey-7" v-if="agentSetupStatus">
-              Status: {{ agentSetupStatus }}
-            </p>
             <p class="text-caption text-negative q-mt-sm" v-if="agentSetupTimedOut">
               Agent setup did not complete in 15 minutes. Please try again later.
             </p>
@@ -790,10 +784,11 @@ const wizardIntroHtml = computed(() => {
 });
 const wizardStage1StatusLine = computed(() => {
   if (wizardStage1Complete.value) return 'Ready to chat';
+  const statusSuffix = agentSetupStatus.value ? ` • ${agentSetupStatus.value}` : '';
   if (agentSetupElapsed.value) {
-    return `Pending ${Math.floor(agentSetupElapsed.value / 60)}m ${agentSetupElapsed.value % 60}s`;
+    return `Pending ${Math.floor(agentSetupElapsed.value / 60)}m ${agentSetupElapsed.value % 60}s${statusSuffix}`;
   }
-  return 'Pending <elapsed time>';
+  return `Pending <elapsed time>${statusSuffix}`;
 });
 const wizardStage2FileName = ref<string | null>(null);
 const wizardStage3Files = ref<string[]>([]);

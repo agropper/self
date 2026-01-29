@@ -16,9 +16,25 @@
       <div class="text-body2 text-grey-7 q-mb-xs">
         Total Users: {{ totalUsers }} | Deep Link Users: {{ totalDeepLinkUsers }}
       </div>
-      <div class="text-body2 text-grey-7" v-if="passkeyConfig">
+    <div class="text-body2 text-grey-7" v-if="passkeyConfig">
         Passkey rpID: {{ passkeyConfig.rpID }} | Passkey Origin: {{ passkeyConfig.origin }}
       </div>
+    <q-card class="q-mt-md">
+      <q-card-section>
+        <div class="text-h6 q-mb-sm">Customer Balance</div>
+        <div v-if="balanceLoading" class="text-body2 text-grey-7">
+          Loading customer balance...
+        </div>
+        <div v-else-if="balanceError" class="text-body2 text-negative">
+          {{ balanceError }}
+        </div>
+        <div v-else>
+          <div v-for="entry in balanceEntries" :key="entry.key" class="text-body2">
+            <strong>{{ entry.label }}:</strong> {{ entry.value }}
+          </div>
+        </div>
+      </q-card-section>
+    </q-card>
     </div>
 
     <q-table
@@ -103,7 +119,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted } from 'vue';
+import { ref, onMounted, computed } from 'vue';
 import { useQuasar } from 'quasar';
 
 const $q = useQuasar();
@@ -134,6 +150,9 @@ const passkeyConfig = ref<PasskeyConfig | null>(null);
 const deletingUsers = ref(new Set<string>());
 const recoveringUsers = ref(new Set<string>());
 const signingOut = ref(false);
+const balanceLoading = ref(false);
+const balanceError = ref('');
+const balanceData = ref<any | null>(null);
 
 const columns = [
   {
@@ -208,6 +227,41 @@ const columns = [
     sortable: true
   }
 ];
+
+const balanceEntries = computed(() => {
+  if (!balanceData.value) return [];
+  const entries: Array<{ key: string; label: string; value: string }> = [];
+  const balance = balanceData.value.balance;
+  if (balance && typeof balance === 'object') {
+    for (const [key, value] of Object.entries(balance)) {
+      entries.push({ key: `balance.${key}`, label: key.replace(/_/g, ' '), value: String(value) });
+    }
+  }
+  for (const [key, value] of Object.entries(balanceData.value)) {
+    if (key === 'balance') continue;
+    entries.push({ key, label: key.replace(/_/g, ' '), value: String(value) });
+  }
+  return entries;
+});
+
+const loadCustomerBalance = async () => {
+  balanceLoading.value = true;
+  balanceError.value = '';
+  try {
+    const response = await fetch('/api/billing/balance', {
+      credentials: 'include'
+    });
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({}));
+      throw new Error(errorData.error || errorData.message || `HTTP ${response.status}`);
+    }
+    balanceData.value = await response.json();
+  } catch (err) {
+    balanceError.value = err instanceof Error ? err.message : 'Failed to load customer balance';
+  } finally {
+    balanceLoading.value = false;
+  }
+};
 
 function getWorkflowStageColor(stage: string): string {
   const colors: Record<string, string> = {
@@ -430,6 +484,7 @@ const signOutAdmin = async () => {
 
 onMounted(() => {
   loadUsers();
+  loadCustomerBalance();
 });
 </script>
 
