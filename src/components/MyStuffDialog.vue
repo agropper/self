@@ -2934,7 +2934,6 @@ const handleReplaceSummaryByIndex = async (indexToReplace: number) => {
     // Reload summaries to get updated list
     await loadPatientSummary();
     emit('patient-summary-saved', { userId: props.userId });
-    emit('patient-summary-verified', { userId: props.userId });
     
     if ($q && typeof $q.notify === 'function') {
       $q.notify({
@@ -2987,7 +2986,6 @@ const handleReplaceSummary = async (replaceStrategy: 'keep' | 'oldest' | 'newest
     // Reload summaries to get updated list
     await loadPatientSummary();
     emit('patient-summary-saved', { userId: props.userId });
-    emit('patient-summary-verified', { userId: props.userId });
     
     if ($q && typeof $q.notify === 'function') {
       $q.notify({

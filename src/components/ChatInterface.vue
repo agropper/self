@@ -781,6 +781,9 @@ const wizardStage1StatusLine = computed(() => {
 });
 const wizardStage2FileName = ref<string | null>(null);
 const wizardStage3Files = ref<string[]>([]);
+const wizardKbName = ref<string | null>(null);
+const wizardKbTotalTokens = ref<string | null>(null);
+const wizardKbIndexedCount = ref<number | null>(null);
 const stage2DisplayFileName = computed(() => {
   return wizardStage2FileName.value || stage2RestoreFileName.value || '';
 });
@@ -806,7 +809,8 @@ const stage3DisplayFiles = computed(() => {
       }))
       .filter((entry: { name: string }) => !!entry.name);
   }
-  return wizardStage3Files.value.map(name => ({ name, needsRestore: false }));
+  const uniqueNames = Array.from(new Set(wizardStage3Files.value.filter(name => !!name)));
+  return uniqueNames.map(name => ({ name, needsRestore: false }));
 });
 const stage3HasFiles = computed(() => stage3DisplayFiles.value.length > 0);
 const stage3ShowStatusLine = computed(() =>
@@ -816,13 +820,19 @@ const wizardStage3StatusLine = computed(() => {
   if (!stage3ShowStatusLine.value) return '';
   if (indexingStatus.value?.phase === 'indexing') {
     const elapsed = formatElapsed(stage3IndexingStartedAt.value);
-    return `Indexing... ${elapsed || '<elapsed time>'}`;
+    const files = indexingStatus.value.filesIndexed || stage3DisplayFiles.value.length;
+    const tokens = indexingStatus.value.tokens || wizardKbTotalTokens.value || '';
+    return `Indexing... ${elapsed || '<elapsed time>'} • ${files} files${tokens ? ` • ${tokens} tokens` : ''}`;
   }
   if (indexingStatus.value?.phase === 'complete') {
     const elapsed = formatElapsed(stage3IndexingStartedAt.value, stage3IndexingCompletedAt.value || Date.now());
-    return `Indexing complete ${elapsed || '<elapsed time>'}`;
+    const files = indexingStatus.value.filesIndexed || stage3DisplayFiles.value.length;
+    const tokens = indexingStatus.value.tokens || wizardKbTotalTokens.value || '';
+    return `Indexing complete ${elapsed || '<elapsed time>'} • ${files} files${tokens ? ` • ${tokens} tokens` : ''}`;
   }
-  return `Ready to index ${stage3DisplayFiles.value.length} files`;
+  const readyCount = stage3DisplayFiles.value.length;
+  const readyTokens = wizardKbTotalTokens.value || '';
+  return `Ready to index ${readyCount} files${readyTokens ? ` • ${readyTokens} tokens` : ''}`;
 });
 
 
@@ -832,7 +842,8 @@ const persistWizardCompletion = () => {
   localStorage.setItem(
     wizardUserStorageKey.value,
     JSON.stringify({
-      stage3Complete: wizardStage3Complete.value
+      stage3Complete: wizardStage3Complete.value,
+      stage4Complete: wizardPatientSummary.value
     })
   );
 };
@@ -1635,6 +1646,11 @@ const refreshWizardState = async () => {
         wizardStage2FileName.value = appleFileName;
       }
       wizardOtherFilesCount.value = files.length - appleHealthFiles.length;
+      wizardKbName.value = filesResult?.kbName || wizardKbName.value;
+      wizardKbTotalTokens.value = filesResult?.kbTotalTokens ? String(filesResult.kbTotalTokens) : wizardKbTotalTokens.value;
+      wizardKbIndexedCount.value = typeof filesResult?.kbIndexedDataSourceCount === 'number'
+        ? filesResult.kbIndexedDataSourceCount
+        : wizardKbIndexedCount.value;
       const allFileNames = files
         .map((file: any) => getFileNameFromEntry(file))
         .filter((name: string) => !!name);
@@ -1644,8 +1660,7 @@ const refreshWizardState = async () => {
     }
 
     if (summaryResponse.ok) {
-      const summaryResult = await summaryResponse.json();
-      wizardPatientSummary.value = !!(summaryResult?.summary && String(summaryResult.summary).trim());
+      await summaryResponse.json();
     }
 
     if (messagesResponse.ok) {
@@ -1664,6 +1679,7 @@ const refreshWizardState = async () => {
           try {
             const parsed = JSON.parse(stored);
             wizardStage3Complete.value = !!parsed.stage3Complete || wizardStage3Complete.value;
+            wizardPatientSummary.value = !!parsed.stage4Complete || wizardPatientSummary.value;
           } catch (error) {
             // Ignore malformed storage
           }
@@ -1785,6 +1801,47 @@ const formatElapsed = (start: number | null, end?: number | null) => {
 const handleStage3Index = async () => {
   if (!props.user?.userId) return;
   try {
+    const stage3Names = stage3DisplayFiles.value.map(entry => entry.name);
+    if (stage3Names.length > 0) {
+      try {
+        const filesResponse = await fetch(`/api/user-files?userId=${encodeURIComponent(props.user.userId)}`, {
+          credentials: 'include'
+        });
+        if (filesResponse.ok) {
+          const filesResult = await filesResponse.json();
+          const kbName = filesResult?.kbName || wizardKbName.value;
+          if (kbName && Array.isArray(filesResult?.files)) {
+            const byName = new Map();
+            for (const file of filesResult.files) {
+              const name = getFileNameFromEntry(file);
+              if (!name || byName.has(name)) continue;
+              byName.set(name, file);
+            }
+            for (const name of stage3Names) {
+              const file = byName.get(name);
+              if (!file || !file.bucketKey) continue;
+              await fetch('/api/user-file-metadata', {
+                method: 'POST',
+                headers: {
+                  'Content-Type': 'application/json'
+                },
+                credentials: 'include',
+                body: JSON.stringify({
+                  userId: props.user.userId,
+                  fileMetadata: {
+                    ...file,
+                    knowledgeBases: [kbName]
+                  }
+                })
+              });
+            }
+          }
+        }
+      } catch (ensureError) {
+        // ignore knowledge base sync errors
+      }
+    }
+
     const response = await fetch('/api/update-knowledge-base', {
       method: 'POST',
       headers: {
@@ -4040,6 +4097,7 @@ const handlePatientSummarySaved = async () => {
 
 const handlePatientSummaryVerified = async () => {
   wizardPatientSummary.value = true;
+  persistWizardCompletion();
   showAgentSetupDialog.value = false;
   wizardDismissed.value = true;
   await refreshWizardState();
