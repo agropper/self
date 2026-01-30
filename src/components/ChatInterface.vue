@@ -1769,8 +1769,15 @@ const refreshWizardState = async () => {
     }
 
     if (statusResult?.kbLastIndexingJobId) {
+      const baseStatus = userResourceStatus.value || {
+        hasAgent: !!statusResult?.hasAgent,
+        kbStatus: statusResult?.kbStatus || 'none',
+        hasKB: !!statusResult?.hasKB,
+        hasFilesInKB: !!statusResult?.hasFilesInKB,
+        workflowStage: statusResult?.workflowStage || null
+      };
       userResourceStatus.value = {
-        ...(userResourceStatus.value || {}),
+        ...baseStatus,
         kbLastIndexingJobId: statusResult.kbLastIndexingJobId
       };
     }
@@ -2031,48 +2038,6 @@ const stopStage3ElapsedTimer = () => {
   }
 };
 
-const startStage3Polling = (jobId: string) => {
-  if (!jobId) return;
-  if (stage3IndexingPoll.value) {
-    clearInterval(stage3IndexingPoll.value);
-  }
-  stage3IndexingPoll.value = setInterval(async () => {
-    try {
-      const statusResponse = await fetch(`/api/kb-indexing-status/${jobId}?userId=${encodeURIComponent(props.user?.userId || '')}`, {
-        credentials: 'include'
-      });
-      if (!statusResponse.ok) {
-        throw new Error(`Indexing status error: ${statusResponse.status}`);
-      }
-      const statusResult = await statusResponse.json();
-      if (indexingStatus.value) {
-        indexingStatus.value.phase = statusResult.phase || indexingStatus.value.phase;
-        indexingStatus.value.tokens = statusResult.tokens || indexingStatus.value.tokens;
-        indexingStatus.value.filesIndexed = statusResult.filesIndexed || 0;
-        indexingStatus.value.progress = statusResult.progress || 0;
-      }
-      const isCompleted = statusResult.backendCompleted || statusResult.completed || statusResult.phase === 'complete' || statusResult.status === 'INDEX_JOB_STATUS_COMPLETED';
-      if (isCompleted) {
-        if (stage3IndexingPoll.value) {
-          clearInterval(stage3IndexingPoll.value);
-          stage3IndexingPoll.value = null;
-        }
-        if (indexingStatus.value) {
-          indexingStatus.value.active = false;
-          indexingStatus.value.phase = 'complete';
-        }
-        stage3IndexingCompletedAt.value = Date.now();
-        refreshWizardState();
-        if (restoreIndexingActive.value) {
-          restoreIndexingActive.value = false;
-          showRestoreCompleteDialog.value = true;
-        }
-      }
-    } catch (error) {
-      // ignore polling errors
-    }
-  }, 10000);
-};
 const handleStage3Index = async (overrideNames?: string[], fromRestore = false) => {
   if (!props.user?.userId) return;
   if (stage3IndexingActive.value) return;
