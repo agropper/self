@@ -210,15 +210,14 @@
     <q-dialog v-model="showTempSignOutDialog" persistent>
       <q-card style="min-width: 520px; max-width: 640px">
         <q-card-section>
-          <div class="text-h6">Delete Temporary Account?</div>
+          <div class="text-h6">Sign Out</div>
         </q-card-section>
         <q-card-section class="text-body2">
           <p>
-            If you sign out, your temporary account as <strong>{{ user?.userId }}</strong> will be deleted and you will need to import any files in your health record when you return under some other pseudonym. Your deep links will no longer respond.
+            Signing out ends this session and keeps your account for later. You can restore it on this device.
           </p>
           <p class="q-mt-md">
-            Click <strong>CANCEL</strong> to return to MAIA and download any Saved Chats you want to keep.
-            Click <strong>DELETE MY MAIA</strong> to destroy this account.
+            Use <strong>DESTROY ACCOUNT</strong> only if you want to permanently delete your cloud data.
           </p>
           <div class="q-mt-md q-pa-md" style="border: 1px solid #e0e0e0; border-radius: 4px;">
             <strong>Note:</strong> You can add a passkey to your account instead of destroying it. You will then be able to sign-out the usual way and sign-in from other computers.
@@ -235,7 +234,8 @@
         </q-card-section>
         <q-card-actions align="right">
           <q-btn flat label="CANCEL" color="primary" @click="showTempSignOutDialog = false" />
-          <q-btn flat label="DELETE MY MAIA" color="negative" @click="openDestroyDialog" />
+          <q-btn flat label="SIGN OUT" color="primary" @click="handleTemporarySignOut" />
+          <q-btn flat label="DESTROY ACCOUNT" color="negative" @click="openDestroyDialog" />
         </q-card-actions>
       </q-card>
     </q-dialog>
@@ -344,20 +344,29 @@
     <q-dialog v-model="showDestroyDialog" persistent>
       <q-card style="min-width: 520px; max-width: 640px">
         <q-card-section>
-          <div class="text-h6">Temporary Account Removed</div>
+          <div class="text-h6">Destroy Account</div>
         </q-card-section>
         <q-card-section class="text-body2">
           <p>
-            Your private information has been preserved on your computer and deleted from the cloud host.
-            If you return to MAIA at a later time (from the same computer and web browser) you will be offered an opportunity
-            to restore your MAIA to its previous state. We do this for privacy and to reduce cloud hosting costs.
+            This permanently deletes your cloud data for <strong>{{ user?.userId }}</strong>.
+            Signing out is reversible; destroying is not.
           </p>
+          <p class="q-mt-md">
+            Type <strong>{{ user?.userId }}</strong> to confirm:
+          </p>
+          <q-input
+            v-model="destroyConfirm"
+            dense
+            outlined
+            placeholder="Enter user ID"
+          />
         </q-card-section>
         <q-card-actions align="right">
           <q-btn
-            label="OK"
+            label="DESTROY"
             color="negative"
             :loading="destroyLoading"
+            :disable="destroyConfirm !== user?.userId"
             @click="destroyTemporaryAccount"
           />
         </q-card-actions>
@@ -1015,6 +1024,11 @@ const handleSignOut = async (snapshot?: SignOutSnapshot) => {
     console.warn('Unable to check deep links for sign-out:', error);
   }
 
+  await handleDormantSignOut();
+};
+
+const handleTemporarySignOut = async () => {
+  showTempSignOutDialog.value = false;
   await handleDormantSignOut();
 };
 

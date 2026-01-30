@@ -364,9 +364,18 @@
                   unelevated
                   dense
                   size="sm"
+                  color="grey-4"
+                  label="NO IPHONE OR IPAD"
+                  :disable="!step2Enabled || !stage1Complete || wizardStage2Complete || wizardCurrentMedications || wizardStage2NoDevice"
+                  @click="handleStage2NoDevice"
+                />
+                <q-btn
+                  unelevated
+                  dense
+                  size="sm"
                   :color="step2Active ? 'primary' : 'grey-4'"
                   :label="stage2ActionLabel"
-                  :disable="!step2Enabled || !stage1Complete || wizardStage2Complete || wizardCurrentMedications"
+                  :disable="!step2Enabled || !stage1Complete || wizardStage2Complete || wizardCurrentMedications || wizardStage2NoDevice"
                   @click="handleStage2Action"
                 />
               </div>
@@ -764,7 +773,7 @@ const step4Enabled = computed(() => wizardHasFilesInKB.value);
 const stage1Complete = computed(() => wizardStage1Complete.value);
 const step2Active = computed(() => step2Enabled.value && stage1Complete.value && !wizardStage2Complete.value);
 const stage2Checked = computed(() =>
-  !wizardRestoreActive.value && (wizardStage2Complete.value || wizardHasAppleHealthFile.value || wizardCurrentMedications.value)
+  !wizardRestoreActive.value && (wizardStage2Complete.value || wizardCurrentMedications.value || wizardStage2NoDevice.value)
 );
 const step3OkActive = computed(() => step3OkEnabled.value && stage1Complete.value);
 const stage3Checked = computed(() => !wizardRestoreActive.value && wizardStage3Complete.value);
@@ -774,11 +783,13 @@ const wizardStage2Complete = ref(false);
 const wizardStage3Complete = ref(false);
 const wizardStage2Pending = ref(false);
 const wizardUserStorageKey = computed(() => props.user?.userId ? `wizard-completion-${props.user.userId}` : null);
+const wizardStage2NoDeviceKey = computed(() => props.user?.userId ? `wizardStage2NoDevice-${props.user.userId}` : null);
 const wizardRestoreActive = computed(() => !!props.rehydrationActive && (Array.isArray(props.rehydrationFiles) ? props.rehydrationFiles.length > 0 : false));
 const showRestoreCompleteDialog = ref(false);
 const restoreIndexingActive = ref(false);
 const restoreIndexingQueued = ref(false);
 const wizardRestoreTargetName = ref<string | null>(null);
+const wizardStage2NoDevice = ref(false);
 const stage2RestoreFileName = computed(() => {
   if (!wizardRestoreActive.value) return null;
   const files = Array.isArray(props.rehydrationFiles) ? props.rehydrationFiles : [];
@@ -820,14 +831,19 @@ const stage2DisplayFileName = computed(() => {
 });
 const wizardStage2StatusLine = computed(() => {
   const name = stage2DisplayFileName.value;
-  if (!name) return '';
+  if (!name) {
+    if (wizardStage2NoDevice.value) {
+      return 'No iPhone or iPad; verify Current Medications in Stage 4';
+    }
+    return '';
+  }
   if (wizardStage2Complete.value || wizardCurrentMedications.value) {
     return `${name} and Current Medications verified`;
   }
-  if (wizardStage2Pending.value || wizardHasAppleHealthFile.value) {
-    return `${name} and Current Medications skipped`;
+  if (wizardStage2Pending.value) {
+    return `${name} and Current Medications processing`;
   }
-  return `${name} and Current Medications verified or Skipped`;
+  return `${name} and Current Medications pending`;
 });
 const stage3DisplayFiles = computed(() => {
   if (wizardRestoreActive.value) {
@@ -1706,6 +1722,14 @@ const refreshWizardState = async () => {
       })
     ]);
 
+    if (wizardStage2NoDeviceKey.value) {
+      try {
+        wizardStage2NoDevice.value = localStorage.getItem(wizardStage2NoDeviceKey.value) === 'true';
+      } catch (error) {
+        wizardStage2NoDevice.value = false;
+      }
+    }
+
     if (statusResponse.ok) {
       const statusResult = await statusResponse.json();
       const hasMeds = !!statusResult?.currentMedications;
@@ -1758,6 +1782,17 @@ const refreshWizardState = async () => {
       await summaryResponse.json();
     }
 
+    if (wizardStage2NoDevice.value && (wizardStage2FileName.value || wizardCurrentMedications.value)) {
+      wizardStage2NoDevice.value = false;
+      if (wizardStage2NoDeviceKey.value) {
+        try {
+          localStorage.removeItem(wizardStage2NoDeviceKey.value);
+        } catch (error) {
+          // ignore
+        }
+      }
+    }
+
     if (messagesResponse.ok) {
       const messagesResult = await messagesResponse.json();
       if (messagesResult?.messages && typeof messagesResult.messages === 'object') {
@@ -1781,9 +1816,7 @@ const refreshWizardState = async () => {
         }
       }
 
-      if (wizardHasAppleHealthFile.value && !wizardStage2Complete.value && !wizardCurrentMedications.value) {
-        wizardStage3Complete.value = false;
-      } else if (indexingNeededFromFiles === true) {
+      if (indexingNeededFromFiles === true) {
         wizardStage3Complete.value = false;
         if (!indexingStatus.value || indexingStatus.value.phase !== 'indexing') {
           stage3IndexingStartedAt.value = Date.now();
@@ -2063,6 +2096,19 @@ const handleStage3Action = () => {
   triggerWizardFileInput();
 };
 
+const handleStage2NoDevice = () => {
+  wizardStage2NoDevice.value = true;
+  wizardStage2Pending.value = false;
+  try {
+    if (wizardStage2NoDeviceKey.value) {
+      localStorage.setItem(wizardStage2NoDeviceKey.value, 'true');
+    }
+  } catch (error) {
+    // ignore storage errors
+  }
+  refreshWizardState();
+};
+
 const handleFileSelect = async (event: Event) => {
   const input = event.target as HTMLInputElement;
   const file = input.files?.[0];
@@ -2141,6 +2187,42 @@ const detectFileTypeFromMetadata = (fileName: string, fileType?: string): 'text'
   
   // Otherwise, detect from filename
   return detectFileType(fileName, '');
+};
+
+const triggerStage2Processing = (fileInfo: { bucketKey?: string; fileName?: string }) => {
+  if (!props.user?.userId) return;
+  const bucketKey = fileInfo.bucketKey;
+  const fileName = fileInfo.fileName;
+  if (!bucketKey) return;
+  wizardStage2Pending.value = true;
+  try {
+    sessionStorage.setItem('autoProcessInitialFile', 'true');
+    sessionStorage.setItem('wizardMyListsAuto', 'true');
+  } catch (error) {
+    // ignore storage errors
+  }
+  myStuffInitialTab.value = 'lists';
+  showMyStuffDialog.value = true;
+  void (async () => {
+    try {
+      await fetch('/api/files/lists/process-initial-file', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        credentials: 'include',
+        body: JSON.stringify({
+          bucketKey,
+          fileName
+        })
+      });
+    } catch (error) {
+      console.warn('Stage 2 auto-processing failed:', error);
+    } finally {
+      wizardStage2Pending.value = false;
+      refreshWizardState();
+    }
+  })();
 };
 
 const findRehydrationEntry = (fileName: string) => {
@@ -2318,7 +2400,12 @@ const uploadPDFFile = async (file: File) => {
     uploadedAt: new Date()
   };
 
-  if (!wizardUploadIntent.value) {
+  if (wizardUploadIntent.value === 'apple') {
+    triggerStage2Processing({
+      bucketKey: uploadResult.fileInfo.bucketKey,
+      fileName: uploadResult.fileInfo.fileName
+    });
+  } else if (!wizardUploadIntent.value) {
     uploadedFiles.value.push(uploadedFile);
   }
 };
