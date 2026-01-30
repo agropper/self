@@ -1068,7 +1068,8 @@ const clearWizardAutoFlow = () => {
 const attemptAutoProcessInitialFile = async () => {
   if (isProcessing.value) return;
   const autoProcess = sessionStorage.getItem('autoProcessInitialFile');
-  if (autoProcess !== 'true') return;
+  const shouldAutoProcess = autoProcess === 'true' || wizardAutoFlow.value;
+  if (!shouldAutoProcess) return;
 
   logWizardEvent('lists_auto_start_attempt', {
     attempt: autoProcessAttempts.value + 1,
@@ -1077,7 +1078,9 @@ const attemptAutoProcessInitialFile = async () => {
 
   await checkInitialFile();
   if (hasInitialFile.value) {
-    sessionStorage.removeItem('autoProcessInitialFile');
+    if (autoProcess === 'true') {
+      sessionStorage.removeItem('autoProcessInitialFile');
+    }
     logWizardEvent('lists_auto_start_begin', { hasInitialFile: true });
     processInitialFile();
     return;
@@ -2581,7 +2584,8 @@ onActivated(() => {
 watch(hasInitialFile, (value) => {
   if (!value) return;
   const autoProcess = sessionStorage.getItem('autoProcessInitialFile');
-  if (autoProcess === 'true' && !isProcessing.value && !hasSavedResults.value) {
+  const shouldAutoProcess = autoProcess === 'true' || wizardAutoFlow.value;
+  if (shouldAutoProcess && !isProcessing.value && !hasSavedResults.value) {
     attemptAutoProcessInitialFile();
   }
 });

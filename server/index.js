@@ -205,21 +205,20 @@ function normalizeDataSourcePath(path) {
   return path.endsWith('/') ? path.slice(0, -1) : path;
 }
 
-function buildTempKbFolder(userId, kbName, sourceKey) {
-  const encoded = encodeURIComponent(sourceKey);
-  return `${userId}/${kbName}/${TEMP_KB_PREFIX}${encoded}/`;
+function buildTempKbFolder(userId, kbName) {
+  return `${userId}/${kbName}/`;
 }
 
-function buildKbDataSourcePath(userId, kbName, sourceKey, useEphemeralSpaces) {
+function buildKbDataSourcePath(userId, kbName, _sourceKey, useEphemeralSpaces) {
   if (useEphemeralSpaces) {
-    return buildTempKbFolder(userId, kbName, sourceKey);
+    return buildTempKbFolder(userId, kbName);
   }
-  return sourceKey;
+  return `${userId}/${kbName}/`;
 }
 
 function buildTempKbObjectKey(userId, kbName, sourceKey) {
   const fileName = sourceKey.split('/').pop() || sourceKey;
-  return `${buildTempKbFolder(userId, kbName, sourceKey)}${fileName}`;
+  return `${buildTempKbFolder(userId, kbName)}${fileName}`;
 }
 
 function decodeSourceKeyFromTempPath(path, userId, kbName) {
@@ -247,11 +246,79 @@ function resolveSourceKeyFromDataSourcePath(path, userId, kbName) {
   return normalizedPath.startsWith(`${userId}/`) ? normalizedPath : null;
 }
 
+function isKbFolderDataSourcePath(path, userId, kbName) {
+  const normalizedPath = normalizeDataSourcePath(path);
+  if (!normalizedPath) return false;
+  return normalizedPath === `${userId}/${kbName}`;
+}
+
+async function ensureSingleKbDataSource(kbId, bucketName, folderPath, region, userId, kbName) {
+  const dataSources = await doClient.kb.listDataSources(kbId);
+  const normalizedFolder = normalizeDataSourcePath(folderPath);
+  let folderDataSource = null;
+  const deletions = [];
+
+  for (const ds of dataSources || []) {
+    const dsPath = ds.item_path || ds.path || ds.spaces_data_source?.item_path;
+    const normalizedPath = normalizeDataSourcePath(dsPath);
+    const isSpaces = !!ds.spaces_data_source;
+    const isFolderPath = isKbFolderDataSourcePath(dsPath, userId, kbName);
+
+    if (isFolderPath) {
+      if (!folderDataSource) {
+        folderDataSource = ds;
+      } else {
+        deletions.push(ds);
+      }
+      continue;
+    }
+
+    if (isSpaces && normalizedPath && normalizedFolder && normalizedPath.startsWith(`${normalizedFolder}/`)) {
+      deletions.push(ds);
+    } else if (isSpaces && dsPath && dsPath.includes(`/${TEMP_KB_PREFIX}`)) {
+      deletions.push(ds);
+    }
+  }
+
+  for (const ds of deletions) {
+    const dsUuid = ds.uuid || ds.id;
+    if (!dsUuid) continue;
+    try {
+      await doClient.kb.deleteDataSource(kbId, dsUuid);
+    } catch (error) {
+      console.warn(`[KB Update] ⚠️ Failed to delete legacy datasource ${dsUuid}: ${error.message}`);
+    }
+  }
+
+  if (!folderDataSource) {
+    const created = await doClient.kb.addDataSource(kbId, {
+      bucketName,
+      itemPath: folderPath,
+      region
+    });
+    folderDataSource = created;
+  }
+
+  const folderUuid = folderDataSource?.uuid || folderDataSource?.id || folderDataSource?.knowledge_base_data_source?.uuid || null;
+  return {
+    dataSourceUuid: folderUuid,
+    dataSources: Array.isArray(dataSources) ? dataSources : [],
+    folderPath
+  };
+}
+
 async function verifyKbAgainstDo(userDoc, userId, kbName) {
   if (!userDoc || !userDoc.kbId || !kbName) return;
 
   try {
     const dataSources = await doClient.kb.listDataSources(userDoc.kbId);
+    const hasFolderDataSource = (dataSources || []).some(ds => {
+      const dsPath = ds?.item_path || ds?.path || ds?.spaces_data_source?.item_path;
+      return isKbFolderDataSourcePath(dsPath, userId, kbName);
+    });
+    if (hasFolderDataSource) {
+      return;
+    }
     const doSourceKeys = new Set();
     const decodedSourceKeys = new Set();
     const unmappedPaths = [];
@@ -5274,15 +5341,18 @@ app.get('/api/user-files', async (req, res) => {
       return file;
     });
     
-    // Sync indexed files with stored state (source of truth)
-    let indexedFiles = userDoc.kbIndexedFiles || [];
-    // No cleanup of legacy kbIndexedFiles values.
+    // Sync indexed files with KB folder contents (single-bucket source of truth)
+    const kbNameForIndexed = getKBNameFromUserDoc(userDoc, userId);
+    const kbFolderPrefix = `${userId}/${kbNameForIndexed}/`;
+    const indexingNeeded = !!userDoc.kbIndexingNeeded;
+    let indexedFiles = indexingNeeded
+      ? []
+      : files
+          .filter(file => file.bucketKey && file.bucketKey.startsWith(kbFolderPrefix))
+          .map(file => file.bucketKey)
+          .filter(Boolean);
     
-    if (Array.isArray(indexedFiles)) {
-      indexedFiles = Array.from(new Set(indexedFiles));
-    } else {
-      indexedFiles = [];
-    }
+    indexedFiles = Array.from(new Set(indexedFiles));
 
     let indexedFileTokens = {};
     let indexedFileJobInfo = {};
@@ -5293,37 +5363,16 @@ app.get('/api/user-files', async (req, res) => {
       try {
         const dataSources = await doClient.kb.listDataSources(userDoc.kbId);
         const kbNameForTokens = getKBNameFromUserDoc(userDoc, userId);
-        const tokensByKey = {};
+        const kbFolderPath = `${userId}/${kbNameForTokens}/`;
+        const folderDataSource = (dataSources || []).find(ds => {
+          const dsPath = ds?.item_path || ds?.path || ds?.spaces_data_source?.item_path;
+          return isKbFolderDataSourcePath(dsPath, userId, kbNameForTokens);
+        });
+        indexedFileTokens = {};
+        kbDataSourceCount = folderDataSource ? 1 : 0;
+        kbIndexedDataSourceCount = folderDataSource?.last_datasource_indexing_job ? 1 : 0;
         const dataSourceKeyByUuid = new Map();
         const dataSourcePathByKey = new Map();
-        let indexedCount = 0;
-        for (const ds of dataSources || []) {
-          const dsPath = ds?.item_path || ds?.path || ds?.spaces_data_source?.item_path;
-          const resolvedKey = resolveSourceKeyFromDataSourcePath(dsPath, userId, kbNameForTokens);
-          if (!resolvedKey) continue;
-          const dsUuid = ds?.uuid || ds?.id;
-          if (dsUuid) {
-            dataSourceKeyByUuid.set(dsUuid, resolvedKey);
-          }
-          if (dsPath) {
-            dataSourcePathByKey.set(resolvedKey, dsPath);
-          }
-          const lastJob = ds?.last_datasource_indexing_job;
-          const lastTokens = lastJob?.tokens ||
-            lastJob?.total_tokens ||
-            lastJob?.tokens_indexed ||
-            ds?.tokens ||
-            ds?.total_tokens;
-          if (lastTokens !== undefined && lastTokens !== null) {
-            tokensByKey[resolvedKey] = lastTokens;
-          }
-          if (lastJob) {
-            indexedCount += 1;
-          }
-        }
-        indexedFileTokens = tokensByKey;
-        kbDataSourceCount = Array.isArray(dataSources) ? dataSources.length : null;
-        kbIndexedDataSourceCount = indexedCount;
         try {
           const kbDetails = await doClient.kb.get(userDoc.kbId);
           kbTotalTokens = kbDetails?.total_tokens || kbDetails?.token_count || kbDetails?.tokens || null;
@@ -6484,15 +6533,15 @@ async function setupKnowledgeBase(userId, kbName, filesInKB, bucketName, existin
     
     try {
       console.log(`📝 Creating new KB in DO: ${kbName}`);
-      const firstFileKey = filesInKB[0];
-      const uniqueSourceKeys = Array.from(new Set(filesInKB.filter(Boolean)));
-      const datasources = uniqueSourceKeys.map((sourceKey) => ({
+    const datasources = [
+      {
         spaces_data_source: {
           bucket_name: bucketName,
-          item_path: buildKbDataSourcePath(userId, kbName, sourceKey, useEphemeralSpaces),
+          item_path: buildKbDataSourcePath(userId, kbName, null, useEphemeralSpaces),
           region: process.env.DO_REGION || 'tor1'
         }
-      }));
+      }
+    ];
 
       const kbCreateOptions = {
         name: kbName,
@@ -6911,8 +6960,24 @@ app.post('/api/update-knowledge-base', async (req, res) => {
         if (!jobId) {
           // Get current datasources from KB
           let datasources = kbDetails?.datasources || kbDetails?.data_sources || kbDetails?.knowledge_base_data_sources || [];
-          
-          const kbFolderPath = `${userId}/${kbName}/`;
+          const useSingleBucketDatasource = true;
+          const kbFolderPath = buildKbDataSourcePath(userId, kbName, null, useEphemeralSpaces);
+          let folderDataSourceUuid = null;
+
+          if (useSingleBucketDatasource) {
+            const ensured = await ensureSingleKbDataSource(
+              kbId,
+              indexingBucketName,
+              kbFolderPath,
+              indexingRegion,
+              userId,
+              kbName
+            );
+            datasources = ensured?.dataSources || datasources;
+            folderDataSourceUuid = ensured?.dataSourceUuid || null;
+          }
+
+          if (!useSingleBucketDatasource) {
           const actualFilesInKB = filesInKB;
           console.log(`[KB Update] Found ${actualFilesInKB.length} actual file(s) in KB: ${actualFilesInKB.map(k => k.split('/').pop()).join(', ')}`);
           
@@ -7115,6 +7180,8 @@ app.post('/api/update-knowledge-base', async (req, res) => {
             datasources = kbDetails?.datasources || kbDetails?.data_sources || kbDetails?.knowledge_base_data_sources || [];
           }
           
+          }
+
           // Determine which data sources to index:
           // First, check actual indexing status from DO API to see which data sources need indexing
           // - If kbReindexAll: index all current data sources
@@ -7149,19 +7216,31 @@ app.post('/api/update-knowledge-base', async (req, res) => {
           }
           
           // Build list of all data source UUIDs from the API response (source of truth)
-          const uniqueBySourceKey = new Map();
-          for (const ds of dataSourcesWithStatus) {
-            const dsUuid = ds.uuid || ds.id;
-            if (!dsUuid) continue;
-            const dsPath = ds.item_path || ds.path || ds.spaces_data_source?.item_path;
-            if (!dsPath) continue;
-            const decodedKey = resolveSourceKeyFromDataSourcePath(dsPath, userId, kbName);
-            if (!decodedKey) continue;
-            if (!uniqueBySourceKey.has(decodedKey)) {
-              uniqueBySourceKey.set(decodedKey, dsUuid);
+          let allDsUuids = [];
+          if (useSingleBucketDatasource) {
+            const folderDs = dataSourcesWithStatus.find(ds => {
+              const dsPath = ds.item_path || ds.path || ds.spaces_data_source?.item_path;
+              return isKbFolderDataSourcePath(dsPath, userId, kbName);
+            });
+            const dsUuid = folderDataSourceUuid || folderDs?.uuid || folderDs?.id || null;
+            if (dsUuid) {
+              allDsUuids = [dsUuid];
             }
+          } else {
+            const uniqueBySourceKey = new Map();
+            for (const ds of dataSourcesWithStatus) {
+              const dsUuid = ds.uuid || ds.id;
+              if (!dsUuid) continue;
+              const dsPath = ds.item_path || ds.path || ds.spaces_data_source?.item_path;
+              if (!dsPath) continue;
+              const decodedKey = resolveSourceKeyFromDataSourcePath(dsPath, userId, kbName);
+              if (!decodedKey) continue;
+              if (!uniqueBySourceKey.has(decodedKey)) {
+                uniqueBySourceKey.set(decodedKey, dsUuid);
+              }
+            }
+            allDsUuids = Array.from(uniqueBySourceKey.values());
           }
-          const allDsUuids = Array.from(uniqueBySourceKey.values());
           
           // Build map of data source UUID -> indexing status
           const dsIndexingStatus = new Map();

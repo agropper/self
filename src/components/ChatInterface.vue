@@ -1772,7 +1772,9 @@ const refreshWizardState = async () => {
         }
       }
 
-      if (indexingNeededFromFiles === true) {
+      if (wizardHasAppleHealthFile.value && !wizardStage2Complete.value && !wizardCurrentMedications.value) {
+        wizardStage3Complete.value = false;
+      } else if (indexingNeededFromFiles === true) {
         wizardStage3Complete.value = false;
         if (!indexingStatus.value || indexingStatus.value.phase !== 'indexing') {
           stage3IndexingStartedAt.value = Date.now();
