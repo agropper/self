@@ -1744,6 +1744,13 @@ const loadFiles = async () => {
     
     // Sync dirty flag with server's KB indexing state
     kbNeedsUpdate.value = !!result.kbIndexingNeeded;
+    if (!kbNeedsUpdate.value && pendingFileName) {
+      const pendingFile = userFiles.value.find(file => file.fileName === pendingFileName);
+      if (pendingFile && isFileIndexed.value(pendingFile.bucketKey)) {
+        pendingFile.pendingKbAdd = false;
+        clearWizardPendingStorage();
+      }
+    }
     
   } catch (err) {
     filesError.value = err instanceof Error ? err.message : 'Failed to load files';
@@ -2170,6 +2177,11 @@ const onCheckboxChange = async (file: UserFile, options: { silent?: boolean; ret
           timeout: 2000
         });
       }
+    }
+
+    if (newStatus) {
+      const keysToClear = [oldBucketKey, result.newBucketKey].filter(Boolean);
+      emit('files-archived', keysToClear);
     }
     
     // Mark KB as dirty since a file was moved in/out of KB

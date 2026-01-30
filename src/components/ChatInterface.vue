@@ -778,6 +778,7 @@ const wizardRestoreActive = computed(() => !!props.rehydrationActive && (Array.i
 const showRestoreCompleteDialog = ref(false);
 const restoreIndexingActive = ref(false);
 const restoreIndexingQueued = ref(false);
+const wizardRestoreTargetName = ref<string | null>(null);
 const stage2RestoreFileName = computed(() => {
   if (!wizardRestoreActive.value) return null;
   const files = Array.isArray(props.rehydrationFiles) ? props.rehydrationFiles : [];
@@ -1018,6 +1019,7 @@ const startRestoreIndexing = async () => {
 const handleRehydrationComplete = async (payload: { hasInitialFile: boolean }) => {
   emit('rehydration-complete', payload);
   let shouldAutoProcess = !!payload?.hasInitialFile;
+  let hasCurrentMedications = false;
   if (!shouldAutoProcess && props.user?.userId) {
     try {
       const statusResponse = await fetch(`/api/user-status?userId=${encodeURIComponent(props.user.userId)}`, {
@@ -1026,10 +1028,14 @@ const handleRehydrationComplete = async (payload: { hasInitialFile: boolean }) =
       if (statusResponse.ok) {
         const statusResult = await statusResponse.json();
         shouldAutoProcess = !!statusResult?.initialFile;
+        hasCurrentMedications = !!statusResult?.currentMedications;
       }
     } catch (error) {
       // ignore status fetch errors
     }
+  }
+  if (hasCurrentMedications) {
+    shouldAutoProcess = false;
   }
   if (shouldAutoProcess) {
     try {
@@ -1707,6 +1713,9 @@ const refreshWizardState = async () => {
       wizardStage2Complete.value = hasMeds || wizardStage2Complete.value;
       if (statusResult?.agentReady !== undefined) {
         wizardAgentReady.value = !!statusResult.agentReady;
+        if (wizardAgentReady.value && props.rehydrationActive && !wizardStage1Complete.value) {
+          wizardStage1Complete.value = true;
+        }
       }
       if (statusResult?.initialFile && !wizardStage2FileName.value) {
         wizardStage2FileName.value = getFileNameFromEntry(statusResult.initialFile);
@@ -2026,6 +2035,7 @@ const handleStage3Index = async (overrideNames?: string[], fromRestore = false) 
 
 const handleStage3Restore = (_fileName: string) => {
   wizardUploadIntent.value = 'restore';
+  wizardRestoreTargetName.value = _fileName || null;
   console.log('[SAVE-RESTORE] Restore file picker opened', {
     userId: props.user?.userId || null,
     fileName: _fileName || null
@@ -2035,7 +2045,7 @@ const handleStage3Restore = (_fileName: string) => {
 
 const handleStage2Action = () => {
   if (wizardRestoreActive.value) {
-    openMyStuffTab('files');
+    handleStage3Restore(stage2DisplayFileName.value || '');
     return;
   }
   handleStage2Ok();
@@ -2045,6 +2055,7 @@ const handleStage3Action = () => {
   if (stage3IndexingActive.value) return;
   if (wizardRestoreActive.value) {
     wizardUploadIntent.value = 'restore';
+    wizardRestoreTargetName.value = null;
     triggerWizardFileInput();
     return;
   }
@@ -2057,6 +2068,21 @@ const handleFileSelect = async (event: Event) => {
   const file = input.files?.[0];
   
   if (!file) return;
+
+  if (wizardUploadIntent.value === 'restore') {
+    isUploadingFile.value = true;
+    try {
+      await uploadRestoreFile(file);
+    } catch (error) {
+      console.error('Error restoring file:', error);
+      alert(`Error restoring file: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    } finally {
+      isUploadingFile.value = false;
+      wizardUploadIntent.value = null;
+      wizardRestoreTargetName.value = null;
+    }
+    return;
+  }
 
   if (wizardUploadIntent.value === 'other') {
     try {
@@ -2115,6 +2141,75 @@ const detectFileTypeFromMetadata = (fileName: string, fileType?: string): 'text'
   
   // Otherwise, detect from filename
   return detectFileType(fileName, '');
+};
+
+const findRehydrationEntry = (fileName: string) => {
+  if (!fileName) return null;
+  const files = Array.isArray(props.rehydrationFiles) ? props.rehydrationFiles : [];
+  return files.find(entry => {
+    const entryName = entry?.fileName || (entry?.bucketKey ? entry.bucketKey.split('/').pop() : null);
+    return entryName === fileName;
+  }) || null;
+};
+
+const uploadRestoreFile = async (file: File) => {
+  if (!props.user?.userId) return;
+  const targetName = wizardRestoreTargetName.value || file.name;
+  const entry = findRehydrationEntry(targetName);
+  if (!entry) {
+    throw new Error(`Restore entry not found for ${targetName}`);
+  }
+  if (file.name !== targetName) {
+    throw new Error(`Please select the file named "${targetName}".`);
+  }
+
+  const formData = new FormData();
+  formData.append('file', file);
+  const uploadResponse = await fetch('/api/files/upload', {
+    method: 'POST',
+    credentials: 'include',
+    body: formData
+  });
+  if (!uploadResponse.ok) {
+    const errorData = await uploadResponse.json().catch(() => ({}));
+    throw new Error(errorData.message || errorData.error || 'Failed to upload file');
+  }
+  const uploadResult = await uploadResponse.json();
+
+  const kbName = entry?.kbName || null;
+  const chipStatus = entry?.chipStatus || 'not_in_kb';
+  const knowledgeBases = chipStatus === 'not_in_kb' || !kbName ? [] : [kbName];
+  await fetch('/api/user-file-metadata', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    credentials: 'include',
+    body: JSON.stringify({
+      userId: props.user.userId,
+      fileMetadata: {
+        fileName: uploadResult.fileInfo.fileName,
+        bucketKey: uploadResult.fileInfo.bucketKey,
+        bucketPath: uploadResult.fileInfo.userFolder,
+        fileSize: uploadResult.fileInfo.size,
+        fileType: uploadResult.fileInfo.mimeType,
+        uploadedAt: uploadResult.fileInfo.uploadedAt,
+        knowledgeBases
+      },
+      updateInitialFile: !!entry?.isInitial
+    })
+  });
+
+  emit('rehydration-file-removed', {
+    fileName: targetName,
+    bucketKey: entry?.bucketKey
+  });
+
+  const remaining = Array.isArray(props.rehydrationFiles) ? props.rehydrationFiles : [];
+  if (remaining.length === 1) {
+    const hasInitialFile = remaining.some(item => !!item?.isInitial);
+    emit('rehydration-complete', { hasInitialFile });
+  }
 };
 
 const uploadPDFFile = async (file: File) => {
@@ -2223,7 +2318,9 @@ const uploadPDFFile = async (file: File) => {
     uploadedAt: new Date()
   };
 
-  uploadedFiles.value.push(uploadedFile);
+  if (!wizardUploadIntent.value) {
+    uploadedFiles.value.push(uploadedFile);
+  }
 };
 
 const uploadTextFile = async (file: File) => {
