@@ -68,6 +68,8 @@ export default function setupChatRoutes(app, chatClient, cloudant, doClient) {
     // Declare userAgentProvider outside try block for error handling
     let userAgentProvider = null;
     let agentOwnerId = null;
+    let userId = null;
+    let agentId = null;
     
     try {
       const { provider } = req.params;
@@ -93,9 +95,17 @@ export default function setupChatRoutes(app, chatClient, cloudant, doClient) {
       }
 
       // For DigitalOcean provider, check if user has a specific agent
-      let userId = req.session?.userId || null;
+      const bodyUserId = req.body?.userId || null;
+      const sessionUserId = req.session?.userId || null;
+      if (sessionUserId && bodyUserId && sessionUserId !== bodyUserId) {
+        return res.status(403).json({
+          error: 'User ID mismatch',
+          type: 'USER_ID_MISMATCH',
+          status: 403
+        });
+      }
+      userId = sessionUserId || bodyUserId || null;
       let userDoc = null;
-      let agentId = null;
       let ownerChatDoc = null;
       
       if (provider === 'digitalocean' && cloudant && doClient) {
@@ -137,6 +147,13 @@ export default function setupChatRoutes(app, chatClient, cloudant, doClient) {
 
         userId = effectiveUserId;
         agentOwnerId = effectiveUserId;
+        if (bodyUserId && agentOwnerId && bodyUserId !== agentOwnerId) {
+          return res.status(403).json({
+            error: 'User ID mismatch',
+            type: 'USER_ID_MISMATCH',
+            status: 403
+          });
+        }
 
         try {
           userDoc = await cloudant.getDocument('maia_users', userId);
@@ -262,17 +279,19 @@ export default function setupChatRoutes(app, chatClient, cloudant, doClient) {
       let errorMessage = error.message || 'Chat request failed';
       
       // Handle 401 Unauthorized on agent endpoints - recreate the API key
-      if (statusCode === 401 && userAgentProvider && userId && agentId && cloudant && doClient) {
-        console.error(`401 Unauthorized on agent endpoint for agent ${agentId}. Attempting to recreate API key...`);
+      const resolvedUserId = agentOwnerId || userId || bodyUserId;
+      const resolvedAgentId = agentId;
+      if (statusCode === 401 && userAgentProvider && resolvedUserId && resolvedAgentId && cloudant && doClient) {
+        console.error(`401 Unauthorized on agent endpoint for agent ${resolvedAgentId}. Attempting to recreate API key...`);
         
         try {
           // Recreate the API key (already imported at top of file)
-          const newApiKey = await recreateAgentApiKey(doClient, cloudant, userId, agentId);
-          console.log(`✅ Successfully recreated API key for agent ${agentId}`);
+          const newApiKey = await recreateAgentApiKey(doClient, cloudant, resolvedUserId, resolvedAgentId);
+          console.log(`✅ Successfully recreated API key for agent ${resolvedAgentId}`);
           
           errorMessage = 'Authentication failed for your Private AI agent. The API key has been automatically recreated. Please try your request again.';
         } catch (recreateError) {
-          console.error(`Failed to recreate API key for agent ${agentId}:`, recreateError.message);
+          console.error(`Failed to recreate API key for agent ${resolvedAgentId}:`, recreateError.message);
           errorMessage = 'Authentication failed for your Private AI agent. Please contact support if this issue persists.';
         }
       } else if (statusCode === 401 && userAgentProvider) {

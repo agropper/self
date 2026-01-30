@@ -497,7 +497,6 @@ async function createUserBucketFolders(userId, kbName) {
     // Create placeholder files to make folders visible in dashboard
     const rootPlaceholder = `${userId}/.keep`;
     const archivedPlaceholder = `${userId}/archived/.keep`;
-    const kbPlaceholder = `${userId}/${kbName}/.keep`;
     
     // Create root userId folder placeholder (for new imports)
     // Use Buffer.from('') instead of empty string to avoid SDK warning about stream length
@@ -524,21 +523,34 @@ async function createUserBucketFolders(userId, kbName) {
         createdAt: new Date().toISOString()
       }
     }));
-    // Create KB folder placeholder
-    await s3Client.send(new PutObjectCommand({
-      Bucket: bucketName,
-      Key: kbPlaceholder,
-      Body: Buffer.from(''),
-      ContentType: 'text/plain',
-      ContentLength: 0,
-      Metadata: {
-        createdBy: 'registration',
-        createdAt: new Date().toISOString()
-      }
-    }));
     return { root: `${userId}/`, archived: `${userId}/archived/`, kb: `${userId}/${kbName}/` };
   } catch (err) {
     throw new Error(`Failed to create bucket folders: ${err.message}`);
+  }
+}
+
+async function deleteKbFolderPlaceholder(userId, kbName) {
+  const bucketUrl = process.env.DIGITALOCEAN_BUCKET;
+  if (!bucketUrl || !userId || !kbName) return;
+  const bucketName = bucketUrl.split('//')[1]?.split('.')[0] || 'maia';
+  try {
+    const { S3Client, DeleteObjectCommand } = await import('@aws-sdk/client-s3');
+    const s3Client = new S3Client({
+      endpoint: process.env.DIGITALOCEAN_ENDPOINT_URL || 'https://tor1.digitaloceanspaces.com',
+      region: 'us-east-1',
+      forcePathStyle: process.env.S3_FORCE_PATH_STYLE === 'true',
+      credentials: {
+        accessKeyId: process.env.DIGITALOCEAN_AWS_ACCESS_KEY_ID || '',
+        secretAccessKey: process.env.DIGITALOCEAN_AWS_SECRET_ACCESS_KEY || ''
+      }
+    });
+    const kbPlaceholder = `${userId}/${kbName}/.keep`;
+    await s3Client.send(new DeleteObjectCommand({
+      Bucket: bucketName,
+      Key: kbPlaceholder
+    }));
+  } catch (error) {
+    // Ignore if not present or deletion fails
   }
 }
 
@@ -2937,18 +2949,10 @@ async function verifyProvisioningComplete(userId, agentId, agentName, kbName, ex
             Bucket: bucketName,
             Key: archivedKeep
           }));
-          
-          // Check KB folder
-          const kbKeep = `${userId}/${kbName}/.keep`;
-          const kbCheck = await s3Client.send(new GetObjectCommand({
-            Bucket: bucketName,
-            Key: kbKeep
-          }));
-          
-          if (rootCheck && archivedCheck && kbCheck) {
-          verificationResults.bucketFolders.passed = true;
-            verificationResults.bucketFolders.message = `Bucket folders created and verified: ${userId}/ (root), ${userId}/archived/ (archived), and ${userId}/${kbName}/ (KB)`;
-          logProvisioning(userId, `✅ Bucket folders verified`, 'success');
+          if (rootCheck && archivedCheck) {
+            verificationResults.bucketFolders.passed = true;
+            verificationResults.bucketFolders.message = `Bucket folders verified: ${userId}/ (root) and ${userId}/archived/ (archived); KB folder is implicit`;
+            logProvisioning(userId, `✅ Bucket folders verified`, 'success');
           } else {
             verificationResults.bucketFolders.message = `Bucket folders missing .keep files`;
             logProvisioning(userId, `⚠️  Bucket folders missing .keep files`, 'warning');
@@ -6726,6 +6730,9 @@ app.post('/api/update-knowledge-base', async (req, res) => {
       }
     }
 
+    // Remove KB folder placeholder to avoid indexing it
+    await deleteKbFolderPlaceholder(userId, kbName);
+
     // Get list of files currently in KB (tracked in metadata, not bucket path)
     const filesInKB = (userDoc.files || [])
       .filter(file => Array.isArray(file.knowledgeBases) && file.knowledgeBases.includes(kbName))
@@ -9156,7 +9163,8 @@ app.get('/api/user-status', async (req, res) => {
       kbStatus, // 'none' | 'not_attached' | 'attached'
       kbName, // KB folder name (e.g., 'userId-agent-YYYYMMDD-HHMMSS')
       initialFile,
-      currentMedications: userDoc.currentMedications || null
+      currentMedications: userDoc.currentMedications || null,
+      kbLastIndexingJobId: userDoc.kbLastIndexingJobId || null
     });
   } catch (error) {
     console.error('❌ Error fetching user status:', error);

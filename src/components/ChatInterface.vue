@@ -331,7 +331,7 @@
               </div>
               <div class="wizard-stage-text">
                 <div class="wizard-stage-label">1 - Creating your Private AI agent</div>
-                <div class="text-caption text-grey-7 wizard-status-line">
+                <div class="text-caption wizard-status-line" :class="wizardStage1TimerActive ? 'text-green-7' : 'text-grey-7'">
                   {{ wizardStage1StatusLine }}
                 </div>
               </div>
@@ -364,8 +364,9 @@
                   unelevated
                   dense
                   size="sm"
-                  color="grey-4"
-                  label="NO IPHONE OR IPAD"
+                  :color="step2Active ? 'primary' : 'grey-4'"
+                  label="NO iPHONE OR iPAD"
+                  class="wizard-no-device-btn"
                   :disable="!step2Enabled || !stage1Complete || wizardStage2Complete || wizardCurrentMedications || wizardStage2NoDevice"
                   @click="handleStage2NoDevice"
                 />
@@ -403,8 +404,9 @@
                     <span>{{ file.name }}</span>
                   </div>
                 </div>
-                <div v-if="stage3ShowStatusLine" class="text-caption text-grey-7 wizard-status-line">
-                  {{ wizardStage3StatusLine }}
+                <div v-if="stage3ShowStatusLine" class="text-caption wizard-status-line" :class="stage3TimerActive ? 'text-green-7' : 'text-grey-7'">
+                  <span>{{ wizardStage3StatusLine }}</span>
+                  <q-spinner v-if="stage3PendingUploadActive" size="12px" class="q-ml-xs" />
                 </div>
               </div>
               <div class="wizard-stage-actions">
@@ -415,7 +417,7 @@
                   size="sm"
                   :color="step3OkActive ? 'primary' : 'grey-4'"
                   :label="stage3ActionLabel"
-                  :disable="!step3OkEnabled || !stage1Complete || stage3IndexingActive"
+                  :disable="!step3OkEnabled || !stage1Complete || stage3IndexingActive || stage3PendingUploadActive"
                   @click="handleStage3Action"
                 />
                 <div v-else-if="!wizardRestoreActive && stage3HasFiles" class="wizard-stage-actions-group">
@@ -425,7 +427,7 @@
                     size="sm"
                     color="primary"
                     label="ADD ANOTHER FILE"
-                    :disable="!step3OkEnabled || !stage1Complete || stage3IndexingActive"
+                    :disable="!step3OkEnabled || !stage1Complete || stage3IndexingActive || stage3PendingUploadActive"
                     @click="handleStage3Action"
                   />
                   <q-btn
@@ -434,7 +436,7 @@
                     size="sm"
                     color="primary"
                     label="INDEX"
-                    :disable="!step3OkEnabled || !stage1Complete || stage3IndexingActive"
+                    :disable="!step3OkEnabled || !stage1Complete || stage3IndexingActive || stage3PendingUploadActive"
                     @click="() => handleStage3Index()"
                   />
                 </div>
@@ -454,7 +456,7 @@
                   size="sm"
                   :color="step4Active ? 'primary' : 'grey-4'"
                   label="VERIFY SUMMARY"
-                  :disable="!step4Enabled || !stage1Complete"
+                  :disable="!step4Enabled || !stage1Complete || !stage3Checked"
                   @click="openMyStuffTab('summary')"
                 />
               </div>
@@ -776,12 +778,17 @@ const stage2Checked = computed(() =>
   !wizardRestoreActive.value && (wizardStage2Complete.value || wizardCurrentMedications.value || wizardStage2NoDevice.value)
 );
 const step3OkActive = computed(() => step3OkEnabled.value && stage1Complete.value);
-const stage3Checked = computed(() => !wizardRestoreActive.value && wizardStage3Complete.value);
+const stage3Checked = computed(() =>
+  !wizardRestoreActive.value && wizardStage3Complete.value && !stage3IndexingActive.value
+);
 const step4Active = computed(() => step4Enabled.value && stage1Complete.value);
 const showPrivateUnavailableDialog = ref(false);
 const wizardStage2Complete = ref(false);
 const wizardStage3Complete = ref(false);
 const wizardStage2Pending = ref(false);
+const wizardStage1TimerActive = computed(() =>
+  agentSetupElapsed.value > 0 && !wizardStage1Complete.value && !agentSetupTimedOut.value
+);
 const wizardUserStorageKey = computed(() => props.user?.userId ? `wizard-completion-${props.user.userId}` : null);
 const wizardStage2NoDeviceKey = computed(() => props.user?.userId ? `wizardStage2NoDevice-${props.user.userId}` : null);
 const wizardRestoreActive = computed(() => !!props.rehydrationActive && (Array.isArray(props.rehydrationFiles) ? props.rehydrationFiles.length > 0 : false));
@@ -823,6 +830,7 @@ const wizardStage1StatusLine = computed(() => {
 });
 const wizardStage2FileName = ref<string | null>(null);
 const wizardStage3Files = ref<string[]>([]);
+const stage3PendingUploadName = ref<string | null>(null);
 const wizardKbName = ref<string | null>(null);
 const wizardKbTotalTokens = ref<string | null>(null);
 const wizardKbIndexedCount = ref<number | null>(null);
@@ -860,12 +868,25 @@ const stage3DisplayFiles = computed(() => {
   return uniqueNames.map(name => ({ name, needsRestore: false }));
 });
 const stage3HasFiles = computed(() => stage3DisplayFiles.value.length > 0);
+const stage3PendingUploadActive = computed(() => {
+  const name = stage3PendingUploadName.value;
+  if (!name) return false;
+  return !stage3DisplayFiles.value.some(file => file.name === name);
+});
+const stage3TimerActive = computed(() => indexingStatus.value?.phase === 'indexing');
 const stage3ShowStatusLine = computed(() =>
-  stage3HasFiles.value || indexingStatus.value?.phase === 'indexing' || indexingStatus.value?.phase === 'complete'
+  stage3HasFiles.value ||
+  stage3PendingUploadActive.value ||
+  indexingStatus.value?.phase === 'indexing' ||
+  indexingStatus.value?.phase === 'complete'
 );
 const wizardStage3StatusLine = computed(() => {
   if (!stage3ShowStatusLine.value) return '';
+  if (stage3PendingUploadActive.value && !stage3IndexingActive.value) {
+    return `Adding ${stage3PendingUploadName.value}...`;
+  }
   if (indexingStatus.value?.phase === 'indexing') {
+    void stage3ElapsedTick.value;
     const elapsed = formatElapsed(stage3IndexingStartedAt.value);
     const files = indexingStatus.value.filesIndexed || stage3DisplayFiles.value.length;
     const tokens = indexingStatus.value.tokens || wizardKbTotalTokens.value || '';
@@ -1120,7 +1141,7 @@ const currentChatSnapshot = computed(() => JSON.stringify(getComparableChatState
 const canSaveLocally = computed(() => currentChatSnapshot.value !== lastLocalSaveSnapshot.value);
 const canSaveToGroup = computed(() => currentChatSnapshot.value !== lastGroupSaveSnapshot.value);
 
-const userResourceStatus = ref<{ hasAgent: boolean; kbStatus: string; hasKB: boolean; hasFilesInKB: boolean; workflowStage?: string | null } | null>(null);
+const userResourceStatus = ref<{ hasAgent: boolean; kbStatus: string; hasKB: boolean; hasFilesInKB: boolean; workflowStage?: string | null; kbLastIndexingJobId?: string | null } | null>(null);
 const isRequestSent = computed(() => userResourceStatus.value?.workflowStage === 'request_sent');
 const statusPollInterval = ref<ReturnType<typeof setInterval> | null>(null);
 const showRequestSentModal = ref(false);
@@ -1730,8 +1751,9 @@ const refreshWizardState = async () => {
       }
     }
 
+    let statusResult = null;
     if (statusResponse.ok) {
-      const statusResult = await statusResponse.json();
+      statusResult = await statusResponse.json();
       const hasMeds = !!statusResult?.currentMedications;
       wizardCurrentMedications.value = hasMeds || wizardCurrentMedications.value;
       wizardStage2Complete.value = hasMeds || wizardStage2Complete.value;
@@ -1744,6 +1766,13 @@ const refreshWizardState = async () => {
       if (statusResult?.initialFile && !wizardStage2FileName.value) {
         wizardStage2FileName.value = getFileNameFromEntry(statusResult.initialFile);
       }
+    }
+
+    if (statusResult?.kbLastIndexingJobId) {
+      userResourceStatus.value = {
+        ...(userResourceStatus.value || {}),
+        kbLastIndexingJobId: statusResult.kbLastIndexingJobId
+      };
     }
 
     if (filesResponse.ok) {
@@ -1775,6 +1804,9 @@ const refreshWizardState = async () => {
         .filter((name: string) => !!name);
       if (allFileNames.length > 0) {
         wizardStage3Files.value = Array.from(new Set(allFileNames));
+        if (stage3PendingUploadName.value && wizardStage3Files.value.includes(stage3PendingUploadName.value)) {
+          stage3PendingUploadName.value = null;
+        }
       }
     }
 
@@ -1803,19 +1835,6 @@ const refreshWizardState = async () => {
       }
     }
 
-      if (wizardUserStorageKey.value) {
-        const stored = localStorage.getItem(wizardUserStorageKey.value);
-        if (stored) {
-          try {
-            const parsed = JSON.parse(stored);
-            wizardStage3Complete.value = !!parsed.stage3Complete || wizardStage3Complete.value;
-            wizardPatientSummary.value = !!parsed.stage4Complete || wizardPatientSummary.value;
-          } catch (error) {
-            // Ignore malformed storage
-          }
-        }
-      }
-
       if (indexingNeededFromFiles === true) {
         wizardStage3Complete.value = false;
         if (!indexingStatus.value || indexingStatus.value.phase !== 'indexing') {
@@ -1828,11 +1847,66 @@ const refreshWizardState = async () => {
             filesIndexed: indexedCountFromFiles || 0,
             progress: 0
           };
+          startStage3ElapsedTimer();
+          const jobId = statusResult?.kbLastIndexingJobId || null;
+          if (jobId) {
+            if (stage3IndexingPoll.value) {
+              clearInterval(stage3IndexingPoll.value);
+            }
+            stage3IndexingPoll.value = setInterval(async () => {
+              try {
+                const statusResponse = await fetch(`/api/kb-indexing-status/${jobId}?userId=${encodeURIComponent(props.user?.userId || '')}`, {
+                  credentials: 'include'
+                });
+                if (!statusResponse.ok) {
+                  throw new Error(`Indexing status error: ${statusResponse.status}`);
+                }
+                const statusResult = await statusResponse.json();
+                if (indexingStatus.value) {
+                  indexingStatus.value.phase = statusResult.phase || indexingStatus.value.phase;
+                  indexingStatus.value.tokens = statusResult.tokens || indexingStatus.value.tokens;
+                  indexingStatus.value.filesIndexed = statusResult.filesIndexed || 0;
+                  indexingStatus.value.progress = statusResult.progress || 0;
+                }
+                const isCompleted = statusResult.backendCompleted || statusResult.completed || statusResult.phase === 'complete' || statusResult.status === 'INDEX_JOB_STATUS_COMPLETED';
+                if (isCompleted) {
+                  if (stage3IndexingPoll.value) {
+                    clearInterval(stage3IndexingPoll.value);
+                    stage3IndexingPoll.value = null;
+                  }
+                  if (indexingStatus.value) {
+                    indexingStatus.value.active = false;
+                    indexingStatus.value.phase = 'complete';
+                  }
+                  stage3IndexingCompletedAt.value = Date.now();
+                  stopStage3ElapsedTimer();
+                  refreshWizardState();
+                }
+              } catch (_error) {
+                // ignore polling errors
+              }
+            }, 10000);
+          }
         }
       } else if (stage3CompleteFromFiles !== null) {
         wizardStage3Complete.value = stage3CompleteFromFiles;
         if (indexingStatus.value?.phase === 'indexing') {
           indexingStatus.value = null;
+          stopStage3ElapsedTimer();
+        }
+      }
+      if (wizardUserStorageKey.value) {
+        const stored = localStorage.getItem(wizardUserStorageKey.value);
+        if (stored) {
+          try {
+            const parsed = JSON.parse(stored);
+            if (!indexingNeededFromFiles && !stage3IndexingActive.value) {
+              wizardStage3Complete.value = !!parsed.stage3Complete || wizardStage3Complete.value;
+            }
+            wizardPatientSummary.value = !!parsed.stage4Complete || wizardPatientSummary.value;
+          } catch (error) {
+            // Ignore malformed storage
+          }
         }
       }
       persistWizardCompletion();
@@ -1933,13 +2007,71 @@ const stage3IndexingPoll = ref<ReturnType<typeof setInterval> | null>(null);
 const stage3IndexingPending = ref(false);
 const stage3IndexingStartedAt = ref<number | null>(null);
 const stage3IndexingCompletedAt = ref<number | null>(null);
+const stage3ElapsedTick = ref(0);
+let stage3ElapsedTimer: ReturnType<typeof setInterval> | null = null;
 const formatElapsed = (start: number | null, end?: number | null) => {
   if (!start) return '';
+  void stage3ElapsedTick.value;
   const elapsedMs = (end || Date.now()) - start;
   const totalSeconds = Math.max(0, Math.floor(elapsedMs / 1000));
   const minutes = Math.floor(totalSeconds / 60);
   const seconds = totalSeconds % 60;
   return `${minutes}m ${seconds}s`;
+};
+const startStage3ElapsedTimer = () => {
+  if (stage3ElapsedTimer) return;
+  stage3ElapsedTimer = setInterval(() => {
+    stage3ElapsedTick.value += 1;
+  }, 1000);
+};
+const stopStage3ElapsedTimer = () => {
+  if (stage3ElapsedTimer) {
+    clearInterval(stage3ElapsedTimer);
+    stage3ElapsedTimer = null;
+  }
+};
+
+const startStage3Polling = (jobId: string) => {
+  if (!jobId) return;
+  if (stage3IndexingPoll.value) {
+    clearInterval(stage3IndexingPoll.value);
+  }
+  stage3IndexingPoll.value = setInterval(async () => {
+    try {
+      const statusResponse = await fetch(`/api/kb-indexing-status/${jobId}?userId=${encodeURIComponent(props.user?.userId || '')}`, {
+        credentials: 'include'
+      });
+      if (!statusResponse.ok) {
+        throw new Error(`Indexing status error: ${statusResponse.status}`);
+      }
+      const statusResult = await statusResponse.json();
+      if (indexingStatus.value) {
+        indexingStatus.value.phase = statusResult.phase || indexingStatus.value.phase;
+        indexingStatus.value.tokens = statusResult.tokens || indexingStatus.value.tokens;
+        indexingStatus.value.filesIndexed = statusResult.filesIndexed || 0;
+        indexingStatus.value.progress = statusResult.progress || 0;
+      }
+      const isCompleted = statusResult.backendCompleted || statusResult.completed || statusResult.phase === 'complete' || statusResult.status === 'INDEX_JOB_STATUS_COMPLETED';
+      if (isCompleted) {
+        if (stage3IndexingPoll.value) {
+          clearInterval(stage3IndexingPoll.value);
+          stage3IndexingPoll.value = null;
+        }
+        if (indexingStatus.value) {
+          indexingStatus.value.active = false;
+          indexingStatus.value.phase = 'complete';
+        }
+        stage3IndexingCompletedAt.value = Date.now();
+        refreshWizardState();
+        if (restoreIndexingActive.value) {
+          restoreIndexingActive.value = false;
+          showRestoreCompleteDialog.value = true;
+        }
+      }
+    } catch (error) {
+      // ignore polling errors
+    }
+  }, 10000);
 };
 const handleStage3Index = async (overrideNames?: string[], fromRestore = false) => {
   if (!props.user?.userId) return;
@@ -2016,6 +2148,7 @@ const handleStage3Index = async (overrideNames?: string[], fromRestore = false) 
       filesIndexed: 0,
       progress: 0
     };
+    startStage3ElapsedTimer();
     stage3IndexingPending.value = false;
     if (stage3IndexingPoll.value) {
       clearInterval(stage3IndexingPoll.value);
@@ -2048,6 +2181,7 @@ const handleStage3Index = async (overrideNames?: string[], fromRestore = false) 
               indexingStatus.value.phase = 'complete';
             }
             stage3IndexingCompletedAt.value = Date.now();
+            stopStage3ElapsedTimer();
             refreshWizardState();
             if (restoreIndexingActive.value) {
               restoreIndexingActive.value = false;
@@ -2131,6 +2265,7 @@ const handleFileSelect = async (event: Event) => {
   }
 
   if (wizardUploadIntent.value === 'other') {
+    stage3PendingUploadName.value = file.name;
     try {
       const pendingKey = props.user?.userId ? `wizardKbPendingFileName-${props.user.userId}` : 'wizardKbPendingFileName';
       localStorage.setItem(pendingKey, file.name);
@@ -2156,6 +2291,7 @@ const handleFileSelect = async (event: Event) => {
   } catch (error) {
     console.error('Error uploading file:', error);
     alert(`Error uploading file: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    stage3PendingUploadName.value = null;
   } finally {
     isUploadingFile.value = false;
     if (wizardUploadIntent.value) {
@@ -4248,6 +4384,7 @@ const handleIndexingStarted = (data: { jobId: string; phase: string }) => {
     filesIndexed: 0,
     progress: 0
   };
+  startStage3ElapsedTimer();
   updateContextualTip();
 };
 
@@ -4264,6 +4401,7 @@ const handleIndexingStatusUpdate = (data: { jobId: string; phase: string; tokens
 const handleIndexingFinished = (_data: { jobId: string; phase: string; error?: string }) => {
   stage3IndexingCompletedAt.value = Date.now();
   indexingStatus.value = null;
+  stopStage3ElapsedTimer();
   // Update status tip to show normal status
   updateContextualTip();
   refreshWizardState();
@@ -4401,6 +4539,10 @@ const handleCurrentMedicationsSaved = async () => {
 };
 
 const handlePatientSummarySaved = async () => {
+  wizardPatientSummary.value = true;
+  persistWizardCompletion();
+  showAgentSetupDialog.value = false;
+  wizardDismissed.value = true;
   await refreshWizardState();
 };
 
@@ -4731,6 +4873,7 @@ onUnmounted(() => {
     clearInterval(stage3IndexingPoll.value);
     stage3IndexingPoll.value = null;
   }
+  stopStage3ElapsedTimer();
 });
 </script>
 
@@ -4840,6 +4983,10 @@ onUnmounted(() => {
 .wizard-stage-actions-group {
   display: flex;
   gap: 8px;
+}
+
+.wizard-no-device-btn {
+  margin-right: 15px;
 }
 
 .wizard-heading {

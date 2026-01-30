@@ -232,10 +232,12 @@
             </div>
           </div>
         </q-card-section>
-        <q-card-actions align="right">
-          <q-btn flat label="CANCEL" color="primary" @click="showTempSignOutDialog = false" />
-          <q-btn flat label="SIGN OUT" color="primary" @click="handleTemporarySignOut" />
+        <q-card-actions align="between" class="full-width">
           <q-btn flat label="DESTROY ACCOUNT" color="negative" @click="openDestroyDialog" />
+          <div class="row items-center">
+            <q-btn flat label="CANCEL" color="primary" @click="showTempSignOutDialog = false" />
+            <q-btn flat label="SIGN OUT" color="primary" @click="handleTemporarySignOut" />
+          </div>
         </q-card-actions>
       </q-card>
     </q-dialog>
