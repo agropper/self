@@ -69,28 +69,10 @@
                     />
                   </div>
 
-                  <!-- Video and Caption Section - at bottom, side by side -->
-                  <div class="row q-col-gutter-md q-mt-lg">
-                    <!-- Smaller Video -->
-                    <div class="col-12 col-md-5">
-                      <div class="video-container" style="position: relative; padding-bottom: 56.25%; height: 0; overflow: hidden; max-width: 100%; background: #000; border-radius: 4px;">
-                        <video
-                          style="position: absolute; top: 0; left: 0; width: 100%; height: 100%; object-fit: contain;"
-                          controls
-                          preload="auto"
-                          playsinline
-                        >
-                          <source src="/MAIA.mp4" type="video/mp4">
-                          Your browser does not support the video tag.
-                        </video>
-                      </div>
-                    </div>
-
-                    <!-- Caption to the right of video -->
-                    <div class="col-12 col-md-7">
-                      <div class="text-body2 text-grey-7 q-pa-md" style="background-color: #f5f5f5; border-radius: 4px; height: 100%; display: flex; align-items: center;">
-                        <vue-markdown :source="welcomeCaption || 'Loading...'" />
-                      </div>
+                  <!-- Caption (full width, two columns) -->
+                  <div class="q-mt-lg">
+                    <div class="welcome-caption text-body2 text-grey-7 q-pa-md">
+                      <vue-markdown :source="welcomeCaption || 'Loading...'" />
                     </div>
                   </div>
 
@@ -1342,6 +1324,20 @@ onMounted(async () => {
 
 .q-page {
   padding: 0 !important;
+}
+
+.welcome-caption {
+  background-color: #f5f5f5;
+  border-radius: 4px;
+  column-count: 2;
+  column-gap: 24px;
+  column-fill: balance;
+}
+
+@media (max-width: 768px) {
+  .welcome-caption {
+    column-count: 1;
+  }
 }
 </style>
 
