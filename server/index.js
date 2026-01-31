@@ -9032,8 +9032,8 @@ app.delete('/api/admin/users/:userId', async (req, res) => {
   }
 });
 
-// Temporary user deletion (self-service)
-app.post('/api/temporary/delete', async (req, res) => {
+// Self-service deletion (signed-in user only)
+app.post('/api/self/delete', async (req, res) => {
   try {
     const sessionUserId = req.session?.userId;
     const confirmUserId = req.body?.userId;
@@ -9044,38 +9044,24 @@ app.post('/api/temporary/delete', async (req, res) => {
       return res.status(400).json({ success: false, error: 'User ID confirmation does not match' });
     }
 
-    const userDoc = await cloudant.getDocument('maia_users', sessionUserId);
-    if (!userDoc?.temporaryAccount) {
-      return res.status(403).json({ success: false, error: 'Temporary account required' });
-    }
-
-    console.log(`[LOCAL] Temporary sign-out requested by ${sessionUserId}`);
-    const deletionDetails = await deleteUserAndResources(sessionUserId, { deleteAgent: false });
+    console.log(`[SELF-DELETE] Account deletion requested by ${sessionUserId}`);
+    const deletionDetails = await deleteUserAndResources(sessionUserId);
+    await appendAdminUsageEntry(sessionUserId);
 
     req.session.destroy(() => {
       res.clearCookie('maia_temp_user');
-      console.log(`[LOCAL] Temporary cookie cleared for ${sessionUserId}`);
-      if (deletionDetails.kbDeleted) {
-        console.log(`[LOCAL] KB deleted for ${sessionUserId}`);
-      }
-      if (deletionDetails.spacesDeleted) {
-        console.log(`[LOCAL] Spaces folder deleted for ${sessionUserId}`);
-      }
-      if (deletionDetails.userDocDeleted || deletionDetails.chatsDeleted || deletionDetails.sessionsDeleted) {
-        console.log(`[LOCAL] CouchDB docs deleted for ${sessionUserId}`);
-      }
       res.json({
         success: true,
-        message: 'Temporary account deleted',
+        message: 'User account deleted',
         details: deletionDetails
       });
     });
   } catch (error) {
-    console.error('Error deleting temporary user:', error);
+    console.error('Error deleting user account:', error);
     const status = error.statusCode || 500;
     res.status(status).json({
       success: false,
-      error: error.message || 'Failed to delete temporary user',
+      error: error.message || 'Failed to delete user account',
       details: error.details
     });
   }

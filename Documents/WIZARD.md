@@ -157,7 +157,6 @@ verify/edit actions complete Stage 4.
 
 - `POST /api/temporary/start`
 - `POST /api/temporary/restore`
-- `POST /api/temporary/delete`
 - `GET /api/agent-exists`
 - `GET /api/user-status`
 - `GET /api/user-files`

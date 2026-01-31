@@ -1079,7 +1079,7 @@ const startTemporarySession = async () => {
 
 const openDestroyDialog = () => {
   showTempSignOutDialog.value = false;
-  destroyConfirm.value = user.value?.userId || '';
+  destroyConfirm.value = '';
   showDestroyDialog.value = true;
 };
 
@@ -1111,7 +1111,7 @@ const destroyTemporaryAccount = async () => {
   destroyLoading.value = true;
   try {
     await saveLocalSnapshot(signOutSnapshot.value);
-    const response = await fetch('/api/temporary/delete', {
+    const response = await fetch('/api/self/delete', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json'
@@ -1332,6 +1332,10 @@ onMounted(async () => {
   column-count: 2;
   column-gap: 24px;
   column-fill: balance;
+}
+
+.welcome-caption hr:last-child {
+  display: none;
 }
 
 @media (max-width: 768px) {
