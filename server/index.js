@@ -7467,7 +7467,7 @@ app.post('/api/update-knowledge-base', async (req, res) => {
     // Start polling for indexing jobs in background (non-blocking)
       // Poll every 30 seconds for max 60 minutes (120 polls)
     let startTime = Date.now();
-    const pollDelayMs = 30000; // 30 seconds
+    const pollDelayMs = 15000; // 15 seconds
     const maxPolls = Math.ceil((60 * 60 * 1000) / pollDelayMs);
     let pollCount = 0;
       let activeJobId = jobId; // Track the specific job we started
@@ -7788,14 +7788,12 @@ app.post('/api/update-knowledge-base', async (req, res) => {
                             // Only complete if this is EXACTLY the job we started
                             currentJobId === activeJobId;
 
-          if (isCompleted) {
+           if (isCompleted) {
              console.log(`[KB AUTO] ✅ Detected completion for job ${activeJobId} (poll ${pollCount})`);
              await completeIndexing(job, fileCount, tokens, indexedFiles);
              return;
-           } else if (pollCount % 6 === 0) {
-             // Log progress every 6 polls (3 minutes)
-             console.log(`[KB AUTO] 📊 Polling job ${activeJobId} (poll ${pollCount}/${maxPolls}): status=${status}, files=${fileCount}, tokens=${tokens}`);
            }
+           console.log(`[KB Status] job=${activeJobId} poll=${pollCount}/${maxPolls} status=${status} files=${fileCount} tokens=${tokens}`);
          } else {
            // No job found - check if it failed or if we should continue
            const failedJob = jobsArray.find(j => {
@@ -7821,10 +7819,8 @@ app.post('/api/update-knowledge-base', async (req, res) => {
              console.error(`[KB AUTO] ❌ Indexing job ${failedJobId} failed:`, failedJob.error || failedJob.message || 'Unknown error');
             await cleanupEphemeralIndexing('failed');
              return;
-           } else if (pollCount % 6 === 0) {
-             // Log when job not found (might have completed and been removed from list)
-             console.log(`[KB AUTO] ⚠️ Job ${activeJobId} not found in jobs list (poll ${pollCount}). Jobs found: ${jobsArray.length}`);
            }
+           console.log(`[KB Status] job=${activeJobId} poll=${pollCount}/${maxPolls} status=not_found jobs=${jobsArray.length}`);
          }
        } catch (error) {
          console.error(`[KB AUTO] ❌ Error polling indexing status (poll ${pollCount}):`, error.message);
