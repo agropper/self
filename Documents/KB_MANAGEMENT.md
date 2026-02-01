@@ -174,3 +174,112 @@ After review, implement in this order:
 - Manual force refresh: **No**
 - DO API outage fallback: **No**
 - Display active job ID to users: **No**
+
+---
+
+## Folder Management
+
+### File choice → KB subfolder placement (current flow)
+
+1. **User selects a file in the UI (Wizard Stage 3 or paperclip).**
+2. **Client uploads the file** to the root bucket path:
+   - `POST /api/files/upload`
+   - Default target: `userId/<filename>`
+3. **Client writes metadata** to the user document:
+   - `POST /api/user-file-metadata`
+   - Persists `fileName`, `bucketKey`, `fileSize`, `fileType`, `uploadedAt`
+4. **When the user clicks Index**, the app moves the file(s) into the KB subfolder:
+   - `POST /api/toggle-file-knowledge-base`
+   - Move path: `userId/<filename>` → `userId/archived/<filename>` → `userId/<kbName>/<filename>`
+5. **Indexing starts on the KB folder datasource**:
+   - `POST /api/update-knowledge-base`
+   - Starts indexing on the single KB folder data source
+
+### DO API calls in this flow
+
+These are the DigitalOcean API calls used to create and index the KB folder:
+
+- **KB existence and details**
+  - `doClient.kb.get(kbId)`
+  - Reads: KB metadata, token totals
+- **KB data sources**
+  - `doClient.kb.listDataSources(kbId)`
+  - Reads: data source list to locate the KB folder data source
+- **Ensure folder data source**
+  - `doClient.kb.createDataSource(kbId, ...)` (only if missing)
+  - Writes: creates the single KB folder data source
+- **Indexing jobs**
+  - `doClient.indexing.listForKB(kbId)`
+  - Reads: existing jobs to avoid duplicates
+- **Start indexing**
+  - `doClient.indexing.startGlobal(kbId, [dataSourceUuid])`
+  - Writes: creates a new indexing job
+- **Check status**
+  - `doClient.indexing.getStatus(jobId)`
+  - Reads: current job status/progress
+
+### Database reads/writes (user document)
+
+**Reads**
+- `GET /api/user-files` → read `userDoc.files[]`
+- `POST /api/update-knowledge-base` → read `userDoc.files[]` and `kbName`
+- `POST /api/toggle-file-knowledge-base` → read `userDoc.files[]` and `kbName`
+
+**Writes**
+- `POST /api/user-file-metadata`
+  - Insert/update `userDoc.files[]` entry for the uploaded file
+- `POST /api/toggle-file-knowledge-base`
+  - Update `bucketKey` when a file is moved into/out of the KB folder
+- `POST /api/update-knowledge-base`
+  - Updates `kbId`, `kbCreatedAt`, `connectedKBs` (attachment metadata)
+
+### Notes
+
+- Root folder files are not indexed.
+- Only files in `userId/<kbName>/` are indexed.
+- The KB folder must be populated before indexing begins.
+
+---
+
+## Wizard KB Build and Index (Swapped Stages)
+
+This section describes the Wizard flow after swapping Stage 2 and Stage 3:
+the KB is built and indexed first, then Current Medications (old Stage 2)
+becomes the new Stage 3, followed by Patient Summary verification.
+
+### New Wizard Order
+
+1. **Stage 1**: Agent provisioning (unchanged)
+2. **Stage 2**: Build + index the KB from all available files
+3. **Stage 3**: Current Medications (Apple Health import; old Stage 2)
+4. **Stage 4**: Patient Summary verify
+
+### Stage 2: Build + Index the KB
+
+1. **User selects files to include**
+   - Any available files can be chosen (wizard or Saved Files list).
+2. **Persist file metadata**
+   - `POST /api/user-file-metadata` for new imports.
+3. **Move files into the KB folder**
+   - `POST /api/toggle-file-knowledge-base` for each selected file.
+   - Moves `userId/<file>` (or `userId/archived/<file>`) to `userId/<kbName>/<file>`.
+4. **Start indexing**
+   - `POST /api/update-knowledge-base` triggers indexing on the KB folder datasource.
+5. **Poll for completion**
+   - `GET /api/kb-indexing-status/:jobId` until DO reports completed or no changes.
+
+### Stage 3: Current Medications (Old Stage 2)
+
+1. **User uploads Apple Health Export PDF**
+2. **Parse and process**
+   - `POST /api/files/parse-pdf`
+   - `POST /api/files/lists/process-initial-file`
+3. **Persist metadata**
+   - `POST /api/user-file-metadata` (for the Apple Health file)
+
+### Stage 4: Patient Summary
+
+1. **Generate summary**
+   - `POST /api/generate-patient-summary` (after KB indexing completes)
+2. **Verify summary**
+   - Save and mark as verified in the Wizard

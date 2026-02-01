@@ -200,23 +200,9 @@
                     </q-item-label>
                     <q-item-label caption>
                       {{ formatFileSize(file.fileSize) }} • Uploaded {{ formatDate(file.uploadedAt) }}
-                      <span v-if="file.inKnowledgeBase">
-                        • KB tokens:
-                        <span v-if="indexedFileTokens[file.bucketKey] !== undefined">
-                          {{ formatTokenCount(indexedFileTokens[file.bucketKey]) }}
-                        </span>
-                        <span v-else>n/a</span>
-                      </span>
                       <span v-if="updatingFiles.has(file.bucketKey)" class="q-ml-sm text-primary">
                         Moving file...
                       </span>
-                    </q-item-label>
-                    <q-item-label
-                      v-if="indexedFileJobInfo[file.bucketKey]"
-                      caption
-                      class="text-grey-6"
-                    >
-                      {{ formatIndexedJobInfo(file.bucketKey) }}
                     </q-item-label>
                   </q-item-section>
                   <q-item-section side>
@@ -1125,7 +1111,6 @@ interface UserFile {
   uploadedAt: string;
   inKnowledgeBase: boolean;
   pendingKbAdd?: boolean;
-  knowledgeBases?: string[];
   fileType?: string;
 }
 
@@ -1225,8 +1210,7 @@ const kbInfo = ref<{
   name: string;
   kbId: string;
   connected: boolean;
-  indexedFiles: string[];
-  lastIndexedAt: string | null;
+  indexedDataSourceCount?: number | null;
 } | null>(null);
 const togglingKB = ref(false);
 
@@ -1274,7 +1258,6 @@ const viewingFile = ref<any>(null);
 
 // KB management
 const originalFiles = ref<UserFile[]>([]);
-const originalIndexedFiles = ref<string[]>([]); // Track original indexed files state
 const indexedFiles = ref<string[]>([]); // Track which files are actually indexed
 const kbNeedsUpdate = ref(false); // Track if KB needs to be updated (files moved)
 const kbSummaryTokens = ref<string | number | null>(null);
@@ -1282,8 +1265,6 @@ const kbSummaryFiles = ref<number | null>(null);
 const showWizardSummaryActions = computed(() => !!props.wizardActive && currentTab.value === 'summary');
 const kbDataSourceCount = ref<number | null>(null);
 const kbIndexedDataSourceCount = ref<number | null>(null);
-const indexedFileTokens = ref<Record<string, number | string>>({});
-const indexedFileJobInfo = ref<Record<string, any>>({});
 
 // Rehydration flow (temporary account restore)
 const rehydrationQueue = ref<Array<{ fileName?: string; bucketKey?: string; fileSize?: number; uploadedAt?: string; chipStatus?: string; kbName?: string | null; isInitial?: boolean }>>([]);
@@ -1380,9 +1361,6 @@ const handleRehydrationFileSelected = async (event: Event) => {
     const uploadResult = await response.json();
     if (uploadResult?.fileInfo) {
       try {
-        const chipStatus = currentEntry?.chipStatus || 'not_in_kb';
-        const kbName = currentEntry?.kbName || null;
-        const knowledgeBases = chipStatus === 'not_in_kb' || !kbName ? [] : [kbName];
         await fetch('/api/user-file-metadata', {
           method: 'POST',
           headers: {
@@ -1397,8 +1375,7 @@ const handleRehydrationFileSelected = async (event: Event) => {
               bucketPath: uploadResult.fileInfo.userFolder,
               fileSize: uploadResult.fileInfo.size,
               fileType: uploadResult.fileInfo.mimeType,
-              uploadedAt: uploadResult.fileInfo.uploadedAt,
-              knowledgeBases
+              uploadedAt: uploadResult.fileInfo.uploadedAt
             },
             updateInitialFile: !!currentEntry?.isInitial
           })
@@ -1406,8 +1383,8 @@ const handleRehydrationFileSelected = async (event: Event) => {
         console.log('[SAVE-RESTORE] Rehydration metadata saved', {
           userId: props.userId,
           fileName: uploadResult.fileInfo.fileName,
-          chipStatus,
-          kbName
+          chipStatus: currentEntry?.chipStatus || 'not_in_kb',
+          kbName: currentEntry?.kbName || null
         });
       } catch (metadataError) {
         console.warn('Rehydration metadata update failed:', metadataError);
@@ -1490,59 +1467,6 @@ const isFileIndexed = computed(() => {
   };
 });
 
-const formatTokenCount = (value: number | string) => {
-  const numeric = Number(value);
-  if (!Number.isFinite(numeric)) return value;
-  return new Intl.NumberFormat().format(numeric);
-};
-
-const formatIndexedJobInfo = (bucketKey: string) => {
-  const info = indexedFileJobInfo.value[bucketKey];
-  if (!info) return '';
-
-  const jobParts: string[] = [];
-  if (info.dataSourceUuid) {
-    jobParts.push(`ds uuid: ${info.dataSourceUuid}`);
-  }
-  if (info.dataSourcePath) {
-    jobParts.push(`ds path: ${info.dataSourcePath}`);
-  }
-  if (info.tokens !== undefined && info.tokens !== null) {
-    jobParts.push(`job tokens: ${formatTokenCount(info.tokens)}`);
-  }
-  if (info.totalTokens !== undefined && info.totalTokens !== null) {
-    jobParts.push(`job total tokens: ${formatTokenCount(info.totalTokens)}`);
-  }
-  if (info.totalDatasources !== undefined && info.totalDatasources !== null) {
-    jobParts.push(`job total datasources: ${info.totalDatasources}`);
-  }
-  if (info.completedDatasources !== undefined && info.completedDatasources !== null) {
-    jobParts.push(`job completed datasources: ${info.completedDatasources}`);
-  }
-  if (info.status) {
-    jobParts.push(`job status: ${info.status}`);
-  }
-  if (info.phase) {
-    jobParts.push(`job phase: ${info.phase}`);
-  }
-
-  const ds = info.dataSourceJob;
-  if (ds) {
-    if (ds.status) jobParts.push(`ds status: ${ds.status}`);
-    if (ds.indexed_file_count) jobParts.push(`ds indexed files: ${ds.indexed_file_count}`);
-    if (ds.total_file_count) jobParts.push(`ds total files: ${ds.total_file_count}`);
-    if (ds.indexed_item_count) jobParts.push(`ds indexed items: ${ds.indexed_item_count}`);
-    if (ds.failed_item_count) jobParts.push(`ds failed items: ${ds.failed_item_count}`);
-    if (ds.removed_item_count) jobParts.push(`ds removed items: ${ds.removed_item_count}`);
-    if (ds.skipped_item_count) jobParts.push(`ds skipped items: ${ds.skipped_item_count}`);
-    if (ds.total_bytes) jobParts.push(`ds total bytes: ${ds.total_bytes}`);
-    if (ds.total_bytes_indexed) jobParts.push(`ds bytes indexed: ${ds.total_bytes_indexed}`);
-    if (ds.error_msg) jobParts.push(`ds error: ${ds.error_msg}`);
-    if (ds.error_details) jobParts.push(`ds error details: ${ds.error_details}`);
-  }
-
-  return jobParts.join(' • ');
-};
 const indexingKB = ref(false);
 const indexingStatus = ref({
   phase: 'moving', // 'moving' | 'kb_setup' | 'indexing_started' | 'indexing' | 'complete' | 'error'
@@ -1613,37 +1537,10 @@ const loadFiles = async () => {
   filesError.value = '';
 
   try {
-    // First, auto-archive any files at root level (userId/)
-    // This ensures files imported via paper clip are moved to archived when opening SAVED FILES tab
-    try {
-      const archiveResponse = await fetch('/api/archive-user-files', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        credentials: 'include',
-        body: JSON.stringify({
-          userId: props.userId
-        })
-      });
-      
-      if (archiveResponse.ok) {
-        const archiveResult = await archiveResponse.json();
-        // Emit event with archived file bucketKeys so chat interface can clear badges
-        // The archive endpoint returns archivedFiles array with filenames
-        // Original bucketKeys would have been userId/filename before archiving
-        if (archiveResult.archivedFiles && Array.isArray(archiveResult.archivedFiles) && archiveResult.archivedFiles.length > 0) {
-          const originalRootKeys = archiveResult.archivedFiles.map((fileName: string) => `${props.userId}/${fileName}`);
-          emit('files-archived', originalRootKeys);
-        }
-      }
-      // Don't fail if archiving fails - just continue to load files
-    } catch (archiveErr) {
-      console.warn('Failed to auto-archive files:', archiveErr);
-    }
+    // no-op
 
     // Then load files as normal
-    const response = await fetch(`/api/user-files?userId=${encodeURIComponent(props.userId)}`, {
+    const response = await fetch(`/api/user-files?userId=${encodeURIComponent(props.userId)}&source=saved`, {
       credentials: 'include'
     });
     if (!response.ok) {
@@ -1652,10 +1549,12 @@ const loadFiles = async () => {
     const result = await response.json();
     
     const kbName = result.kbName as string | undefined;
+    const kbFolderPrefix = kbName ? `${props.userId}/${kbName}/` : null;
     userFiles.value = (result.files || []).map((file: any) => {
-      const isInKB = Array.isArray(file.knowledgeBases) && kbName
-        ? file.knowledgeBases.includes(kbName)
-        : false;
+      const bucketKey = file.bucketKey || '';
+      const isInKB = typeof file.inKnowledgeBase === 'boolean'
+        ? file.inKnowledgeBase
+        : (kbFolderPrefix ? bucketKey.startsWith(kbFolderPrefix) : false);
       return {
         ...file,
         inKnowledgeBase: isInKB,
@@ -1684,67 +1583,21 @@ const loadFiles = async () => {
       }
     }
     
-    // Load indexed files from user document (single source of truth)
-    // Do NOT derive from userFiles - that creates a mismatch with server state
-    if (result.indexedFiles && Array.isArray(result.indexedFiles)) {
-      indexedFiles.value = result.indexedFiles;
-      originalIndexedFiles.value = [...result.indexedFiles]; // Save original state
-      kbSummaryFiles.value = result.indexedFiles.length;
-    } else {
-      // If server doesn't provide indexedFiles, initialize as empty array
-      // This indicates files haven't been indexed yet, not that they should match userFiles
-      indexedFiles.value = [];
-      originalIndexedFiles.value = [];
-      kbSummaryFiles.value = 0;
-    }
-
-    if (result.indexedFileTokens && typeof result.indexedFileTokens === 'object') {
-      indexedFileTokens.value = result.indexedFileTokens;
-    } else {
-      indexedFileTokens.value = {};
-    }
-
-    if (result.indexedFileJobInfo && typeof result.indexedFileJobInfo === 'object') {
-      indexedFileJobInfo.value = result.indexedFileJobInfo;
-    } else {
-      indexedFileJobInfo.value = {};
-    }
-
-    const currentKeys = new Set(userFiles.value.map(file => file.bucketKey));
-    const indexedKeys = indexedFiles.value.filter(key => currentKeys.has(key));
-    kbSummaryFiles.value = indexedKeys.length;
-
-    const jobInfoValues = Object.values(indexedFileJobInfo.value || {});
-    const hasNoChangeJob = jobInfoValues.some((info: any) => info?.status === 'INDEX_JOB_STATUS_NO_CHANGES');
-    const tokenValues = indexedKeys
-      .map(key => indexedFileTokens.value[key])
-      .filter(value => value !== undefined && value !== null)
-      .map(value => Number(value))
-      .filter(value => Number.isFinite(value));
-    const summedTokens = tokenValues.length > 0
-      ? tokenValues.reduce((total, value) => total + value, 0)
-      : null;
-    const fallbackTotalTokens = result.kbTotalTokens !== undefined && result.kbTotalTokens !== null
-      ? result.kbTotalTokens
-      : (result.kbLastIndexingTokens !== undefined && result.kbLastIndexingTokens !== null
-        ? result.kbLastIndexingTokens
-        : null);
-    if (hasNoChangeJob && (!summedTokens || summedTokens === 0)) {
-      kbSummaryTokens.value = null;
-    } else if (summedTokens !== null) {
-      kbSummaryTokens.value = summedTokens;
-    } else if (fallbackTotalTokens !== null && fallbackTotalTokens !== 0 && fallbackTotalTokens !== '0') {
-      kbSummaryTokens.value = fallbackTotalTokens;
-    } else {
-      kbSummaryTokens.value = null;
-    }
-
+    const indexingActive = !!result.kbIndexingActive;
     kbDataSourceCount.value = typeof result.kbDataSourceCount === 'number' ? result.kbDataSourceCount : null;
     kbIndexedDataSourceCount.value = typeof result.kbIndexedDataSourceCount === 'number' ? result.kbIndexedDataSourceCount : null;
-    
-    // Sync dirty flag with server's KB indexing state
-    kbNeedsUpdate.value = !!result.kbIndexingNeeded;
-    if (!kbNeedsUpdate.value && pendingFileName) {
+
+    const canMarkIndexed = !indexingActive && (kbIndexedDataSourceCount.value || 0) > 0;
+    indexedFiles.value = canMarkIndexed
+      ? userFiles.value.filter(file => file.inKnowledgeBase).map(file => file.bucketKey)
+      : [];
+    kbSummaryFiles.value = indexedFiles.value.length;
+    kbSummaryTokens.value = result.kbTotalTokens !== undefined && result.kbTotalTokens !== null
+      ? result.kbTotalTokens
+      : null;
+
+    kbNeedsUpdate.value = false;
+    if (!indexingActive && pendingFileName) {
       const pendingFile = userFiles.value.find(file => file.fileName === pendingFileName);
       if (pendingFile && isFileIndexed.value(pendingFile.bucketKey)) {
         pendingFile.pendingKbAdd = false;
@@ -2007,11 +1860,7 @@ const toggleKBConnection = async () => {
 
 // Get file names from indexed files (extract from bucketKey) - computed property for performance
 const indexedFileNames = computed((): string[] => {
-  if (!kbInfo.value || !kbInfo.value.indexedFiles) {
-    return [];
-  }
-  
-  return kbInfo.value.indexedFiles.map(bucketKey => {
+  return indexedFiles.value.map(bucketKey => {
     // Extract filename from bucketKey (format: userId/kbName/filename or userId/archived/filename)
     const parts = bucketKey.split('/');
     return parts[parts.length - 1] || bucketKey;
@@ -2427,16 +2276,16 @@ const updateAndIndexKB = async () => {
         }
         
         try {
-          // Check user status to see if job ID is available
-          const statusResponse = await fetch(`/api/user-status?userId=${props.userId}`, {
+          const statusResponse = await fetch(`/api/user-files?userId=${props.userId}`, {
             method: 'GET',
             credentials: 'include'
           });
           
           if (statusResponse.ok) {
             const statusData = await statusResponse.json();
-            if (statusData.kbLastIndexingJobId) {
-              foundJobId = statusData.kbLastIndexingJobId;
+            const jobId = statusData.kbIndexingJobId || statusData.kbLatestJobId || null;
+            if (jobId) {
+              foundJobId = jobId;
               break;
             }
           }
@@ -2694,7 +2543,7 @@ const pollIndexingProgress = async (jobId: string) => {
       // result.completed, result.phase, or result.status
       // backendCompleted is the most reliable indicator that everything is done
       // Log completion detection for debugging
-      const isCompleted = result.backendCompleted || result.completed || result.phase === 'complete' || result.status === 'INDEX_JOB_STATUS_COMPLETED';
+      const isCompleted = result.completed || result.phase === 'complete' || result.status === 'INDEX_JOB_STATUS_COMPLETED' || result.status === 'INDEX_JOB_STATUS_NO_CHANGES';
       
       if (isCompleted) {
         if (pollingInterval.value !== null) {
@@ -2708,13 +2557,6 @@ const pollIndexingProgress = async (jobId: string) => {
         indexingStatus.value.phase = 'complete';
         indexingStatus.value.message = 'Knowledge base indexed successfully!';
         
-        // Use kbIndexedFiles from server response (single source of truth from DO API)
-        // The server queries DO API directly when completion is detected, ensuring we get the correct state
-        if (result.kbIndexedFiles && Array.isArray(result.kbIndexedFiles)) {
-          indexedFiles.value = result.kbIndexedFiles;
-          originalIndexedFiles.value = [...result.kbIndexedFiles];
-        }
-
         if (result.tokens !== undefined) {
           kbSummaryTokens.value = result.tokens;
         }
@@ -2722,15 +2564,8 @@ const pollIndexingProgress = async (jobId: string) => {
           kbSummaryFiles.value = result.filesIndexed;
         }
         
-        // Reload files to refresh the file list (for chips, etc.)
-        // But we've already set indexedFiles from the completion response, so it won't be overwritten
+        // Reload files to refresh the file list
         await loadFiles();
-        
-        // Ensure indexedFiles from completion response is preserved
-        // loadFiles() may return stale data if userDoc hasn't been updated yet, but we have the correct data from DO API
-        if (result.kbIndexedFiles && Array.isArray(result.kbIndexedFiles)) {
-          indexedFiles.value = result.kbIndexedFiles;
-        }
         
         emit('indexing-finished', { jobId, phase: 'complete' });
         
@@ -5318,22 +5153,21 @@ watch(() => props.modelValue, async (newValue) => {
     
     // Check for active indexing job and restore polling if needed
     try {
-      const statusResponse = await fetch(`/api/user-status?userId=${encodeURIComponent(props.userId)}`, {
+      const statusResponse = await fetch(`/api/user-files?userId=${encodeURIComponent(props.userId)}`, {
         credentials: 'include'
       });
       if (statusResponse.ok) {
         const statusData = await statusResponse.json();
-        if (statusData.kbLastIndexingJobId && !currentIndexingJobId.value) {
-          // Check if indexing is still active by querying job status
+        const jobId = statusData.kbIndexingJobId || statusData.kbLatestJobId || null;
+        if (statusData.kbIndexingActive && jobId && !currentIndexingJobId.value) {
           try {
-            const jobStatusResponse = await fetch(`/api/kb-indexing-status/${statusData.kbLastIndexingJobId}?userId=${encodeURIComponent(props.userId)}`, {
+            const jobStatusResponse = await fetch(`/api/kb-indexing-status/${jobId}?userId=${encodeURIComponent(props.userId)}`, {
               credentials: 'include'
             });
             if (jobStatusResponse.ok) {
               const jobStatusData = await jobStatusResponse.json();
-              // Only restore if job is still in progress (not completed or failed)
               if (jobStatusData.phase && jobStatusData.phase !== 'complete' && jobStatusData.phase !== 'error') {
-                currentIndexingJobId.value = statusData.kbLastIndexingJobId;
+                currentIndexingJobId.value = jobId;
                 indexingKB.value = true;
                 indexingStatus.value = {
                   phase: jobStatusData.phase || 'indexing',
@@ -5344,8 +5178,7 @@ watch(() => props.modelValue, async (newValue) => {
                   progress: jobStatusData.progress || 0,
                   error: jobStatusData.error || ''
                 };
-                // Start polling for progress
-                pollIndexingProgress(statusData.kbLastIndexingJobId);
+                pollIndexingProgress(jobId);
               }
             }
           } catch (jobStatusError) {

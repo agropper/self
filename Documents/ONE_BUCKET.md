@@ -133,13 +133,12 @@ Save/Restore currently assumes per‑file datasources and uses file movement to 
 **Required changes:**
 1. **Rehydration uploads** should:
    - Restore files to the **correct folder** (`archived` vs `kbName`)
-   - Update `knowledgeBases` metadata only as a local indicator (not DO datasource per file)
 2. **After all files are restored**, trigger a single KB indexing job.
 3. **Do not attempt to recreate per‑file datasources.**
 
 **Code locations:**
 - `src/components/MyStuffDialog.vue`
-  - `handleRehydrationFileSelected` (uses `knowledgeBases`, `updateInitialFile`)
+  - `handleRehydrationFileSelected` (uses `updateInitialFile`)
   - Rehydration completion logic
 - `src/components/ChatInterface.vue`
   - Restore completion indexing trigger

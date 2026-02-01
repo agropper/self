@@ -13,6 +13,8 @@
  * @param {string} bucketName - S3 bucket name
  * @returns {Promise<Array<{category: string, bucketKey: string, observationCount: number}>>} Array of saved category files
  */
+import { putObjectWithLog, deleteObjectWithLog } from './spaces-ops.js';
+
 export async function extractAndSaveCategoryFiles(fullMarkdown, userId, listsFolder, s3Client, bucketName) {
   const categoryFiles = [];
   let lines = fullMarkdown.split('\n');
@@ -128,8 +130,6 @@ export async function extractAndSaveCategoryFiles(fullMarkdown, userId, listsFol
   };
   
   // SECOND PASS: Extract observations for each category and save to file
-  const { PutObjectCommand, DeleteObjectCommand } = await import('@aws-sdk/client-s3');
-  
   for (const [categoryName, boundaries] of categoryBoundaries.entries()) {
     const observations = [];
     const categoryLower = categoryName.toLowerCase();
@@ -281,27 +281,29 @@ export async function extractAndSaveCategoryFiles(fullMarkdown, userId, listsFol
       
       // Delete existing category file if it exists
       try {
-        await s3Client.send(new DeleteObjectCommand({
-          Bucket: bucketName,
-          Key: categoryBucketKey
-        }));
+        await deleteObjectWithLog({
+          s3Client,
+          bucketName,
+          key: categoryBucketKey
+        });
       } catch (deleteErr) {
         // File doesn't exist - that's fine
       }
       
       // Save category file
-      await s3Client.send(new PutObjectCommand({
-        Bucket: bucketName,
-        Key: categoryBucketKey,
-        Body: categoryMarkdown,
-        ContentType: 'text/markdown',
-        Metadata: {
+      await putObjectWithLog({
+        s3Client,
+        bucketName,
+        key: categoryBucketKey,
+        body: categoryMarkdown,
+        contentType: 'text/markdown',
+        metadata: {
           categoryName: categoryName,
           observationCount: observations.length.toString(),
           processedAt: new Date().toISOString(),
           userId: userId
         }
-      }));
+      });
       
       
       categoryFiles.push({

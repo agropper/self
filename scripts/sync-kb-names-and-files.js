@@ -143,12 +143,6 @@ async function syncKB() {
           file.bucketKey = file.bucketKey.replace(oldKBName, actualKBName);
           console.log(`   Updated file bucketKey: ${oldBucketKey} → ${file.bucketKey}`);
         }
-        if (file.knowledgeBases && Array.isArray(file.knowledgeBases)) {
-          const idx = file.knowledgeBases.indexOf(oldKBName);
-          if (idx !== -1) {
-            file.knowledgeBases[idx] = actualKBName;
-          }
-        }
       });
     }
 

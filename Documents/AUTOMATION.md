@@ -247,7 +247,6 @@ When a user registers and uploads an initial PDF file, the provisioning process 
     fileName: "example.pdf",
     size: 1234567,
     uploadedAt: "2025-12-17T...",
-    knowledgeBases: [kbName],
     kbDataSourceUuid: datasourceUuid
   }
   ```

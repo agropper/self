@@ -596,8 +596,9 @@ const saveLocalSnapshot = async (snapshot?: SignOutSnapshot | null) => {
     const kbName = files?.kbName || null;
     const fileStatusSummary = filesList.map((file: any) => {
       const bucketKey = file.bucketKey || '';
-      const inKnowledgeBase = kbName && Array.isArray(file.knowledgeBases)
-        ? file.knowledgeBases.includes(kbName)
+      const kbFolderPrefix = kbName ? `${currentUserId}/${kbName}/` : null;
+      const inKnowledgeBase = kbFolderPrefix
+        ? (file.bucketKey || '').startsWith(kbFolderPrefix)
         : false;
       let chipStatus: 'indexed' | 'pending' | 'not_in_kb' = 'not_in_kb';
       if (inKnowledgeBase && indexedSet.has(bucketKey)) {

@@ -5,11 +5,12 @@
 
 import multer from 'multer';
 import pdf from 'pdf-parse';
-import { S3Client, PutObjectCommand, GetObjectCommand, ListObjectsV2Command } from '@aws-sdk/client-s3';
+import { S3Client, GetObjectCommand, ListObjectsV2Command } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { extractPdfWithPages, extractIndividualClinicalNotes } from '../utils/pdf-parser.js';
 import { ClinicalNotesClient } from '../../lib/opensearch/clinical-notes.js';
 import { extractAndSaveCategoryFiles } from '../utils/lists-processor.js';
+import { putObjectWithLog, deleteObjectWithLog } from '../utils/spaces-ops.js';
 
 /**
  * Extract medication records from markdown
@@ -756,19 +757,18 @@ export default function setupFileRoutes(app, cloudant, doClient) {
       }
 
       // Upload file as binary
-      const uploadCommand = new PutObjectCommand({
-        Bucket: bucketName,
-        Key: bucketKey,
-        Body: req.file.buffer,
-        ContentType: req.file.mimetype,
-        Metadata: {
+      await putObjectWithLog({
+        s3Client,
+        bucketName,
+        key: bucketKey,
+        body: req.file.buffer,
+        contentType: req.file.mimetype,
+        metadata: {
           uploadedBy: userId,
           uploadedAt: new Date().toISOString(),
           originalName: fileName
         }
       });
-
-      await s3Client.send(uploadCommand);
       
       if (isInitialImport) {
         console.log(`[NEW FLOW 2] ✅ Initial import file uploaded successfully: ${fileName} to ${bucketKey}`);
@@ -1096,6 +1096,59 @@ export default function setupFileRoutes(app, cloudant, doClient) {
   });
 
   /**
+   * Parse PDF first page from bucket
+   * GET /api/files/parse-pdf-first-page/:bucketKey(*)
+   */
+  app.get('/api/files/parse-pdf-first-page/:bucketKey(*)', async (req, res) => {
+    try {
+      const userId = req.session?.userId || req.session?.deepLinkUserId;
+      if (!userId) {
+        return res.status(401).json({ error: 'Authentication required' });
+      }
+
+      const { bucketKey } = req.params;
+      const bucketUrl = process.env.DIGITALOCEAN_BUCKET;
+      const bucketName = bucketUrl?.split('//')[1]?.split('.')[0] || 'maia';
+
+      const s3Client = new S3Client({
+        endpoint: process.env.DIGITALOCEAN_ENDPOINT_URL || 'https://tor1.digitaloceanspaces.com',
+        region: 'us-east-1',
+        forcePathStyle: process.env.S3_FORCE_PATH_STYLE === 'true',
+        credentials: {
+          accessKeyId: process.env.DIGITALOCEAN_AWS_ACCESS_KEY_ID || '',
+          secretAccessKey: process.env.DIGITALOCEAN_AWS_SECRET_ACCESS_KEY || ''
+        }
+      });
+
+      const getCommand = new GetObjectCommand({
+        Bucket: bucketName,
+        Key: bucketKey
+      });
+      const response = await s3Client.send(getCommand);
+
+      const chunks = [];
+      for await (const chunk of response.Body) {
+        chunks.push(chunk);
+      }
+      const buffer = Buffer.concat(chunks);
+
+      const parsed = await extractPdfWithPages(buffer);
+      const firstPage = parsed?.pages?.[0];
+      res.json({
+        success: true,
+        firstPageText: firstPage?.text || '',
+        pages: parsed?.totalPages || null
+      });
+    } catch (error) {
+      console.error('❌ Error parsing PDF first page from bucket:', error);
+      res.status(500).json({
+        success: false,
+        error: `Failed to parse PDF: ${error.message}`
+      });
+    }
+  });
+
+  /**
    * Get user's storage usage
    * GET /api/files/storage-usage?userId=xxx
    */
@@ -1247,13 +1300,13 @@ export default function setupFileRoutes(app, cloudant, doClient) {
         const existingFiles = (listResult.Contents || [])
           .filter(obj => obj.Key && !obj.Key.endsWith('.keep'));
         
-        const { DeleteObjectCommand } = await import('@aws-sdk/client-s3');
         for (const file of existingFiles) {
           try {
-            await s3Client.send(new DeleteObjectCommand({
-              Bucket: bucketName,
-              Key: file.Key
-            }));
+            await deleteObjectWithLog({
+              s3Client,
+              bucketName,
+              key: file.Key
+            });
           } catch (err) {
           }
         }
@@ -1269,17 +1322,18 @@ export default function setupFileRoutes(app, cloudant, doClient) {
         
         // Save PDF file to Lists folder
         savedPdfBucketKey = `${listsFolder}${cleanFileName}`;
-        await s3Client.send(new PutObjectCommand({
-          Bucket: bucketName,
-          Key: savedPdfBucketKey,
-          Body: req.file.buffer,
-          ContentType: 'application/pdf',
-          Metadata: {
+        await putObjectWithLog({
+          s3Client,
+          bucketName,
+          key: savedPdfBucketKey,
+          body: req.file.buffer,
+          contentType: 'application/pdf',
+          metadata: {
             originalName: req.file.originalname,
             processedAt: new Date().toISOString(),
             userId: userId
           }
-        }));
+        });
 
         // Save processing results as JSON
         const resultsFileName = cleanFileName.replace(/\.pdf$/i, '_results.json');
@@ -1295,17 +1349,18 @@ export default function setupFileRoutes(app, cloudant, doClient) {
           pdfProcessedAt: new Date().toISOString() // Track when PDF was processed
         };
         
-        await s3Client.send(new PutObjectCommand({
-          Bucket: bucketName,
-          Key: savedResultsBucketKey,
-          Body: JSON.stringify(processingResults, null, 2),
-          ContentType: 'application/json',
-          Metadata: {
+        await putObjectWithLog({
+          s3Client,
+          bucketName,
+          key: savedResultsBucketKey,
+          body: JSON.stringify(processingResults, null, 2),
+          contentType: 'application/json',
+          metadata: {
             originalName: req.file.originalname,
             processedAt: new Date().toISOString(),
             userId: userId
           }
-        }));
+        });
       } catch (saveError) {
         // Don't fail the request if saving fails
       }
@@ -1355,13 +1410,13 @@ export default function setupFileRoutes(app, cloudant, doClient) {
           const listFiles = (listResult.Contents || [])
             .filter(obj => obj.Key && obj.Key.endsWith('_list.json'));
           
-          const { DeleteObjectCommand } = await import('@aws-sdk/client-s3');
           for (const file of listFiles) {
             try {
-              await s3Client.send(new DeleteObjectCommand({
-                Bucket: bucketName,
-                Key: file.Key
-              }));
+              await deleteObjectWithLog({
+                s3Client,
+                bucketName,
+                key: file.Key
+              });
             } catch (err) {
               // Failed to delete cached file - continue
             }
@@ -1428,13 +1483,13 @@ export default function setupFileRoutes(app, cloudant, doClient) {
         const existingFiles = (listResult.Contents || [])
           .filter(obj => obj.Key && !obj.Key.endsWith('.keep'));
         
-        const { DeleteObjectCommand } = await import('@aws-sdk/client-s3');
         for (const file of existingFiles) {
           try {
-            await s3Client.send(new DeleteObjectCommand({
-              Bucket: bucketName,
-              Key: file.Key
-            }));
+            await deleteObjectWithLog({
+              s3Client,
+              bucketName,
+              key: file.Key
+            });
           } catch (err) {
           }
         }
@@ -1451,18 +1506,19 @@ export default function setupFileRoutes(app, cloudant, doClient) {
         // Copy PDF file to Lists folder (if not already there)
         if (!bucketKey.startsWith(listsFolder)) {
           savedPdfBucketKey = `${listsFolder}${cleanFileName}`;
-          await s3Client.send(new PutObjectCommand({
-            Bucket: bucketName,
-            Key: savedPdfBucketKey,
-            Body: pdfBuffer,
-            ContentType: 'application/pdf',
-            Metadata: {
+          await putObjectWithLog({
+            s3Client,
+            bucketName,
+            key: savedPdfBucketKey,
+            body: pdfBuffer,
+            contentType: 'application/pdf',
+            metadata: {
               originalName: fileName,
               processedAt: new Date().toISOString(),
               userId: userId,
               sourceBucketKey: bucketKey
             }
-          }));
+          });
         } else {
           savedPdfBucketKey = bucketKey;
         }
@@ -1481,17 +1537,18 @@ export default function setupFileRoutes(app, cloudant, doClient) {
           pdfProcessedAt: new Date().toISOString() // Track when PDF was processed
         };
         
-        await s3Client.send(new PutObjectCommand({
-          Bucket: bucketName,
-          Key: savedResultsBucketKey,
-          Body: JSON.stringify(processingResults, null, 2),
-          ContentType: 'application/json',
-          Metadata: {
+        await putObjectWithLog({
+          s3Client,
+          bucketName,
+          key: savedResultsBucketKey,
+          body: JSON.stringify(processingResults, null, 2),
+          contentType: 'application/json',
+          metadata: {
             originalName: fileName,
             processedAt: new Date().toISOString(),
             userId: userId
           }
-        }));
+        });
       } catch (saveError) {
         // Don't fail the request if saving fails
       }
@@ -1664,18 +1721,19 @@ export default function setupFileRoutes(app, cloudant, doClient) {
         pdfProcessedAt: processingResults.pdfProcessedAt
       };
 
-      await s3Client.send(new PutObjectCommand({
-        Bucket: bucketName,
-        Key: listBucketKey,
-        Body: JSON.stringify(listData, null, 2),
-        ContentType: 'application/json',
-        Metadata: {
+      await putObjectWithLog({
+        s3Client,
+        bucketName,
+        key: listBucketKey,
+        body: JSON.stringify(listData, null, 2),
+        contentType: 'application/json',
+        metadata: {
           categoryName: categoryName,
           fileName: processingResults.fileName,
           processedAt: new Date().toISOString(),
           userId: userId
         }
-      }));
+      });
 
       res.json({
         success: true,
@@ -1718,15 +1776,15 @@ export default function setupFileRoutes(app, cloudant, doClient) {
       const allFiles = (listResult.Contents || [])
         .filter(obj => obj.Key && !obj.Key.endsWith('.keep'));
 
-      const { DeleteObjectCommand } = await import('@aws-sdk/client-s3');
       let deletedCount = 0;
       
       for (const file of allFiles) {
         try {
-          await s3Client.send(new DeleteObjectCommand({
-            Bucket: bucketName,
-            Key: file.Key
-          }));
+          await deleteObjectWithLog({
+            s3Client,
+            bucketName,
+            key: file.Key
+          });
           deletedCount++;
         } catch (err) {
         }
@@ -2001,17 +2059,18 @@ export default function setupFileRoutes(app, cloudant, doClient) {
 
       // Always delete existing markdown file if it exists (to ensure fresh creation)
       try {
-        const { HeadObjectCommand, DeleteObjectCommand } = await import('@aws-sdk/client-s3');
+        const { HeadObjectCommand } = await import('@aws-sdk/client-s3');
         try {
           await s3Client.send(new HeadObjectCommand({
             Bucket: bucketName,
             Key: markdownBucketKey
           }));
           // File exists - delete it
-          await s3Client.send(new DeleteObjectCommand({
-            Bucket: bucketName,
-            Key: markdownBucketKey
-          }));
+          await deleteObjectWithLog({
+            s3Client,
+            bucketName,
+            key: markdownBucketKey
+          });
         } catch (headErr) {
           // File doesn't exist - that's fine, we'll create it
         }
@@ -2020,22 +2079,21 @@ export default function setupFileRoutes(app, cloudant, doClient) {
       }
 
       // Save markdown file
-      const { PutObjectCommand, HeadObjectCommand } = await import('@aws-sdk/client-s3');
+      const { HeadObjectCommand } = await import('@aws-sdk/client-s3');
       
       try {
-        const putCommand = new PutObjectCommand({
-          Bucket: bucketName,
-          Key: markdownBucketKey,
-          Body: fullMarkdown,
-          ContentType: 'text/markdown',
-          Metadata: {
+        await putObjectWithLog({
+          s3Client,
+          bucketName,
+          key: markdownBucketKey,
+          body: fullMarkdown,
+          contentType: 'text/markdown',
+          metadata: {
             fileName: initialFileName,
             processedAt: new Date().toISOString(),
             userId: userId
           }
         });
-        
-        await s3Client.send(putCommand);
         
         // Verify the file was actually saved
         try {
@@ -2093,7 +2151,7 @@ export default function setupFileRoutes(app, cloudant, doClient) {
       }
 
       const { client: s3Client, bucketName } = getS3Client();
-      const { PutObjectCommand, HeadObjectCommand, DeleteObjectCommand } = await import('@aws-sdk/client-s3');
+      const { HeadObjectCommand } = await import('@aws-sdk/client-s3');
       
       // Sanitize category name for filename
       const sanitizedCategoryName = categoryName
@@ -2141,18 +2199,19 @@ export default function setupFileRoutes(app, cloudant, doClient) {
         }).join('\n---\n');
 
       // Save category file
-      await s3Client.send(new PutObjectCommand({
-        Bucket: bucketName,
-        Key: categoryBucketKey,
-        Body: categoryMarkdown,
-        ContentType: 'text/markdown',
-        Metadata: {
+      await putObjectWithLog({
+        s3Client,
+        bucketName,
+        key: categoryBucketKey,
+        body: categoryMarkdown,
+        contentType: 'text/markdown',
+        metadata: {
           categoryName: categoryName,
           observationCount: observations.length.toString(),
           processedAt: new Date().toISOString(),
           userId: userId
         }
-      }));
+      });
 
       res.json({
         success: true,
@@ -2541,7 +2600,7 @@ export default function setupFileRoutes(app, cloudant, doClient) {
 
       // Get the most recent markdown file
       const markdownKey = markdownFiles[0].Key;
-      const { GetObjectCommand, PutObjectCommand } = await import('@aws-sdk/client-s3');
+      const { GetObjectCommand } = await import('@aws-sdk/client-s3');
       const getCommand = new GetObjectCommand({
         Bucket: bucketName,
         Key: markdownKey
@@ -2658,17 +2717,18 @@ export default function setupFileRoutes(app, cloudant, doClient) {
       }
 
       // Save cleaned markdown back
-      await s3Client.send(new PutObjectCommand({
-        Bucket: bucketName,
-        Key: markdownKey,
-        Body: cleanedMarkdown,
-        ContentType: 'text/markdown',
-        Metadata: {
+      await putObjectWithLog({
+        s3Client,
+        bucketName,
+        key: markdownKey,
+        body: cleanedMarkdown,
+        contentType: 'text/markdown',
+        metadata: {
           cleanedAt: new Date().toISOString(),
           pagesCleaned: pagesCleaned.toString(),
           userId: userId
         }
-      }));
+      });
 
 
       res.json({
