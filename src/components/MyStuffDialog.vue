@@ -197,6 +197,16 @@
                       @click="viewFileInPdfViewer(file)"
                     >
                       {{ file.fileName }}
+                      <q-chip
+                        v-if="file.isAppleHealth"
+                        color="blue-6"
+                        text-color="white"
+                        size="sm"
+                        dense
+                        class="q-ml-xs"
+                      >
+                        Apple Health
+                      </q-chip>
                     </q-item-label>
                     <q-item-label caption>
                       {{ formatFileSize(file.fileSize) }} • Uploaded {{ formatDate(file.uploadedAt) }}
@@ -1112,6 +1122,7 @@ interface UserFile {
   inKnowledgeBase: boolean;
   pendingKbAdd?: boolean;
   fileType?: string;
+  isAppleHealth?: boolean;
 }
 
 interface SavedChat {
@@ -1361,6 +1372,9 @@ const handleRehydrationFileSelected = async (event: Event) => {
     const uploadResult = await response.json();
     if (uploadResult?.fileInfo) {
       try {
+        const isAppleHealth = String(uploadResult.fileInfo.fileName || '').toLowerCase().endsWith('.pdf')
+          ? await detectAppleHealthFromBucket(uploadResult.fileInfo.bucketKey)
+          : false;
         await fetch('/api/user-file-metadata', {
           method: 'POST',
           headers: {
@@ -1375,7 +1389,8 @@ const handleRehydrationFileSelected = async (event: Event) => {
               bucketPath: uploadResult.fileInfo.userFolder,
               fileSize: uploadResult.fileInfo.size,
               fileType: uploadResult.fileInfo.mimeType,
-              uploadedAt: uploadResult.fileInfo.uploadedAt
+              uploadedAt: uploadResult.fileInfo.uploadedAt,
+              isAppleHealth: isAppleHealth
             },
             updateInitialFile: !!currentEntry?.isInitial
           })
@@ -1587,9 +1602,8 @@ const loadFiles = async () => {
     kbDataSourceCount.value = typeof result.kbDataSourceCount === 'number' ? result.kbDataSourceCount : null;
     kbIndexedDataSourceCount.value = typeof result.kbIndexedDataSourceCount === 'number' ? result.kbIndexedDataSourceCount : null;
 
-    const canMarkIndexed = !indexingActive && (kbIndexedDataSourceCount.value || 0) > 0;
-    indexedFiles.value = canMarkIndexed
-      ? userFiles.value.filter(file => file.inKnowledgeBase).map(file => file.bucketKey)
+    indexedFiles.value = Array.isArray(result.kbIndexedBucketKeys)
+      ? result.kbIndexedBucketKeys
       : [];
     kbSummaryFiles.value = indexedFiles.value.length;
     kbSummaryTokens.value = result.kbTotalTokens !== undefined && result.kbTotalTokens !== null
@@ -1917,6 +1931,25 @@ const getGroupParticipants = (chat: SavedChat): string => {
 const formatDate = (dateString: string) => {
   const date = new Date(dateString);
   return date.toLocaleDateString() + ' ' + date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+};
+
+const detectAppleHealthFromBucket = async (bucketKey: string): Promise<boolean> => {
+  if (!bucketKey) return false;
+  try {
+    const parseResponse = await fetch(`/api/files/parse-pdf-first-page/${encodeURIComponent(bucketKey)}`, {
+      method: 'GET',
+      credentials: 'include'
+    });
+    if (!parseResponse.ok) return false;
+    const parseResult = await parseResponse.json();
+    const pageText = String(parseResult?.firstPageText || '')
+      .toLowerCase()
+      .replace(/\s+/g, ' ')
+      .trim();
+    return pageText.includes('this summary displays certain health information made available to you by your healthcare provider and may not completely');
+  } catch (error) {
+    return false;
+  }
 };
 
 const formatFileSize = (bytes: number) => {
@@ -4635,6 +4668,9 @@ const handleReferenceFileSelect = async (event: Event) => {
 
     // Update user document with file metadata
     try {
+      const isAppleHealth = String(uploadResult.fileInfo.fileName || '').toLowerCase().endsWith('.pdf')
+        ? await detectAppleHealthFromBucket(uploadResult.fileInfo.bucketKey)
+        : false;
       await fetch('/api/user-file-metadata', {
         method: 'POST',
         headers: {
@@ -4650,6 +4686,7 @@ const handleReferenceFileSelect = async (event: Event) => {
             fileSize: uploadResult.fileInfo.size,
             fileType: file.name.endsWith('.pdf') ? 'pdf' : (file.name.endsWith('.md') ? 'markdown' : 'text'),
             uploadedAt: uploadResult.fileInfo.uploadedAt,
+            isAppleHealth: isAppleHealth,
             isReference: true // Mark as reference file
           }
         })

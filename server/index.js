@@ -4685,7 +4685,8 @@ app.post('/api/user-file-metadata', async (req, res) => {
       // ignore verification errors
     }
 
-    // Intentionally quiet: no debug logging on import
+    const appleLabel = fileMetadata?.isAppleHealth ? 'Apple Health' : 'Not Apple Health';
+    console.log(`[WIZ] Import ${fileMetadata.fileName || 'unknown'}: ${appleLabel}`);
     
     res.json({
       success: true,
@@ -5258,12 +5259,14 @@ app.get('/api/user-files', async (req, res) => {
         // First occurrence of this filename - add it
         filesByFileName.set(fileName, file);
       } else {
+        const mergedAppleHealth = !!existing.isAppleHealth || !!file.isAppleHealth;
         // Duplicate filename found - prefer KB folder entry
         const existingIsInKB = kbFolderPrefix ? (existing.bucketKey || '').startsWith(kbFolderPrefix) : false;
         const currentIsInKB = kbFolderPrefix ? (file.bucketKey || '').startsWith(kbFolderPrefix) : false;
         
         if (currentIsInKB && !existingIsInKB) {
           // Current file is in KB, existing is not - replace
+          file.isAppleHealth = mergedAppleHealth;
           filesByFileName.set(fileName, file);
         } else if (!currentIsInKB && !existingIsInKB) {
           // Neither is in KB - prefer the one with better metadata
@@ -5272,11 +5275,17 @@ app.get('/api/user-files', async (req, res) => {
           
           if (currentHasMetadata && !existingHasMetadata) {
             // Current has metadata, existing doesn't - replace
+            file.isAppleHealth = mergedAppleHealth;
             filesByFileName.set(fileName, file);
+          } else {
+            existing.isAppleHealth = mergedAppleHealth;
           }
           // Otherwise keep existing (first one wins if both have same metadata quality)
         }
         // If existing is in KB and current is not, keep existing (don't replace)
+        if (existingIsInKB && !currentIsInKB) {
+          existing.isAppleHealth = mergedAppleHealth;
+        }
       }
     }
     
@@ -5301,12 +5310,14 @@ app.get('/api/user-files', async (req, res) => {
     });
     
     let kbTotalTokens = null;
+    let kbLastIndexedAt = null;
     let kbDataSourceCount = null;
     let kbIndexedDataSourceCount = null;
     let kbIndexingActive = false;
     let kbIndexingJobId = null;
     let kbLatestJobId = null;
     let kbLatestJobStatus = null;
+    const kbIndexedBucketKeys = Array.isArray(userDoc.kbIndexedBucketKeys) ? userDoc.kbIndexedBucketKeys : [];
     if (!subfolder && kbInfo?.id) {
       try {
         const dataSources = await doClient.kb.listDataSources(kbInfo.id);
@@ -5320,6 +5331,7 @@ app.get('/api/user-files', async (req, res) => {
         try {
           const kbDetails = await doClient.kb.get(kbInfo.id);
           kbTotalTokens = kbDetails?.total_tokens || kbDetails?.token_count || kbDetails?.tokens || null;
+          kbLastIndexedAt = kbDetails?.last_indexed_at || kbDetails?.lastIndexedAt || kbDetails?.updated_at || kbDetails?.updatedAt || null;
         } catch (kbTokenError) {
           console.warn('[KB Update] ⚠️ Failed to read KB total tokens:', kbTokenError.message);
         }
@@ -5347,7 +5359,9 @@ app.get('/api/user-files', async (req, res) => {
       kbTotalTokens: kbTotalTokens,
       kbDataSourceCount: kbDataSourceCount,
       kbIndexedDataSourceCount: kbIndexedDataSourceCount,
-      kbName: kbName
+      kbName: kbName,
+      kbLastIndexedAt: kbLastIndexedAt,
+      kbIndexedBucketKeys
     };
 
     // Intentionally quiet: no debug logging on file listing
@@ -6713,6 +6727,19 @@ app.post('/api/update-knowledge-base', async (req, res) => {
           } else {
             finalUserDoc.workflowStage = 'agent_deployed';
           }
+          await cloudant.saveDocument('maia_users', finalUserDoc);
+        }
+
+        const kbName = getKBNameFromUserDoc(finalUserDoc, userId);
+        if (kbName) {
+          const kbFolderPrefix = `${userId}/${kbName}/`;
+          const indexedKeys = Array.isArray(finalUserDoc.files)
+            ? finalUserDoc.files
+              .map(file => file?.bucketKey)
+              .filter(key => typeof key === 'string' && key.startsWith(kbFolderPrefix))
+            : [];
+          finalUserDoc.kbIndexedBucketKeys = indexedKeys;
+          finalUserDoc.kbIndexedAt = new Date().toISOString();
           await cloudant.saveDocument('maia_users', finalUserDoc);
         }
 

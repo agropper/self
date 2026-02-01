@@ -372,6 +372,16 @@
                     >
                       RESTORE
                     </q-chip>
+                    <q-chip
+                      v-else-if="file.isAppleHealth"
+                      color="blue-6"
+                      text-color="white"
+                      size="sm"
+                      dense
+                      class="q-ml-xs"
+                    >
+                      Apple Health
+                    </q-chip>
                     <span>{{ file.name }}</span>
                   </div>
                 </div>
@@ -830,7 +840,7 @@ const wizardStage1StatusLine = computed(() => {
   return `Pending <elapsed time>${statusSuffix}`;
 });
 const wizardStage2FileName = ref<string | null>(null);
-const wizardStage3Files = ref<string[]>([]);
+const wizardStage3Files = ref<Array<{ name: string; isAppleHealth?: boolean }>>([]);
 const stage3PendingUploadName = ref<string | null>(null);
 const wizardKbName = ref<string | null>(null);
 const wizardKbTotalTokens = ref<string | null>(null);
@@ -864,18 +874,26 @@ const stage3DisplayFiles = computed(() => {
       .filter((file: { isInitial?: boolean }) => !file?.isInitial)
       .map((file: { fileName?: string; bucketKey?: string }) => ({
         name: getFileNameFromEntry(file),
-        needsRestore: true
+        needsRestore: true,
+        isAppleHealth: false
       }))
       .filter((entry: { name: string }) => !!entry.name);
   }
-  const uniqueNames = Array.from(new Set(wizardStage3Files.value.filter(name => !!name)));
-  return uniqueNames.map(name => ({ name, needsRestore: false }));
+  const seen = new Set<string>();
+  return wizardStage3Files.value
+    .filter(entry => !!entry.name)
+    .filter(entry => {
+      if (seen.has(entry.name)) return false;
+      seen.add(entry.name);
+      return true;
+    })
+    .map(entry => ({ name: entry.name, needsRestore: false, isAppleHealth: entry.isAppleHealth }));
 });
 const stage3HasFiles = computed(() => stage3DisplayFiles.value.length > 0);
 const stage3PendingUploadActive = computed(() => {
   const name = stage3PendingUploadName.value;
   if (!name) return false;
-  return !wizardStage3Files.value.includes(name);
+  return !wizardStage3Files.value.some(file => file.name === name);
 });
 const stage3TimerActive = computed(() => indexingStatus.value?.phase === 'indexing');
 const stage3ShowStatusLine = computed(() =>
@@ -1823,12 +1841,15 @@ const refreshWizardState = async () => {
       wizardKbName.value = kbName || wizardKbName.value;
       wizardKbTotalTokens.value = tokensFromFiles || wizardKbTotalTokens.value;
       wizardKbIndexedCount.value = kbIndexedCount !== null ? kbIndexedCount : wizardKbIndexedCount.value;
-      const allFileNames = files
-        .map((file: { fileName?: string; bucketKey?: string }) => getFileNameFromEntry(file))
-        .filter((name: string) => !!name);
-      if (allFileNames.length > 0) {
-        wizardStage3Files.value = Array.from(new Set(allFileNames));
-        if (stage3PendingUploadName.value && wizardStage3Files.value.includes(stage3PendingUploadName.value)) {
+      const fileEntries = files
+        .map((file: { fileName?: string; bucketKey?: string; isAppleHealth?: boolean }) => ({
+          name: getFileNameFromEntry(file),
+          isAppleHealth: !!file?.isAppleHealth
+        }))
+        .filter((entry: { name: string }) => !!entry.name);
+      if (fileEntries.length > 0) {
+        wizardStage3Files.value = fileEntries;
+        if (stage3PendingUploadName.value && wizardStage3Files.value.some(entry => entry.name === stage3PendingUploadName.value)) {
           stage3PendingUploadName.value = null;
         }
       }
@@ -2047,7 +2068,7 @@ const handleStage3Index = async (overrideNames?: string[], fromRestore = false) 
   try {
     const stage3Names = (overrideNames && overrideNames.length > 0)
       ? overrideNames
-      : Array.from(new Set(wizardStage3Files.value));
+      : Array.from(new Set(wizardStage3Files.value.map(file => file.name)));
     if (stage3Names.length > 0) {
       const fetchWizardFiles = async () => {
         const filesResponse = await fetch(`/api/user-files?userId=${encodeURIComponent(props.user.userId)}&source=wizard`, {
@@ -2268,7 +2289,20 @@ const handleAppleExportResponse = async (hasAppleFile: boolean) => {
   }
 
   wizardStage2NoDevice.value = false;
-  const match = await findAppleHealthExportFile();
+  let match: { bucketKey?: string; fileName?: string; fileSize?: number } | null = null;
+  try {
+    const filesResponse = await fetch(`/api/user-files?userId=${encodeURIComponent(props.user.userId)}`, {
+      credentials: 'include'
+    });
+    if (filesResponse.ok) {
+      const filesResult = await filesResponse.json();
+      const files = Array.isArray(filesResult?.files) ? filesResult.files : [];
+      match = files.find((file: { isAppleHealth?: boolean }) => !!file?.isAppleHealth) || null;
+    }
+  } catch (error) {
+    // ignore
+  }
+
   if (!match) {
     alert('No Apple Health export file found in your indexed PDFs.');
     refreshWizardState();
@@ -2388,6 +2422,25 @@ const detectFileTypeFromMetadata = (fileName: string, fileType?: string): 'text'
   return detectFileType(fileName, '');
 };
 
+const detectAppleHealthFromBucket = async (bucketKey: string): Promise<boolean> => {
+  if (!bucketKey) return false;
+  try {
+    const parseResponse = await fetch(`/api/files/parse-pdf-first-page/${encodeURIComponent(bucketKey)}`, {
+      method: 'GET',
+      credentials: 'include'
+    });
+    if (!parseResponse.ok) return false;
+    const parseResult = await parseResponse.json();
+    const pageText = String(parseResult?.firstPageText || '')
+      .toLowerCase()
+      .replace(/\s+/g, ' ')
+      .trim();
+    return pageText.includes(appleExportFooterNormalized);
+  } catch (error) {
+    return false;
+  }
+};
+
 const triggerStage2Processing = (fileInfo: { bucketKey?: string; fileName?: string }) => {
   if (!props.user?.userId) return;
   const bucketKey = fileInfo.bucketKey;
@@ -2424,49 +2477,6 @@ const triggerStage2Processing = (fileInfo: { bucketKey?: string; fileName?: stri
   })();
 };
 
-const findAppleHealthExportFile = async () => {
-  if (!props.user?.userId) return null;
-  wizardStage2Pending.value = true;
-  try {
-    const filesResponse = await fetch(`/api/user-files?userId=${encodeURIComponent(props.user.userId)}`, {
-      credentials: 'include'
-    });
-    if (!filesResponse.ok) return null;
-    const filesResult = await filesResponse.json();
-    const files = Array.isArray(filesResult?.files) ? filesResult.files : [];
-    const candidates = files.filter((file: { fileName?: string; fileType?: string; bucketKey?: string; inKnowledgeBase?: boolean }) => {
-      if (!file?.bucketKey) return false;
-      if (!file?.inKnowledgeBase) return false;
-      if (file?.fileType === 'pdf') return true;
-      const name = file?.fileName || '';
-      return name.toLowerCase().endsWith('.pdf');
-    });
-
-    for (const file of candidates) {
-      const bucketKey = file.bucketKey;
-      if (!bucketKey) continue;
-      try {
-        const parseResponse = await fetch(`/api/files/parse-pdf-first-page/${encodeURIComponent(bucketKey)}`, {
-          method: 'GET',
-          credentials: 'include'
-        });
-        if (!parseResponse.ok) {
-          continue;
-        }
-        const parseResult = await parseResponse.json();
-        const pageText = String(parseResult?.firstPageText || '').toLowerCase().replace(/\s+/g, ' ').trim();
-        if (pageText.includes(appleExportFooterNormalized)) {
-          return file;
-        }
-      } catch (error) {
-        // ignore per-file errors
-      }
-    }
-  } finally {
-    wizardStage2Pending.value = false;
-  }
-  return null;
-};
 
 const findRehydrationEntry = (fileName: string) => {
   if (!fileName) return null;
@@ -2578,6 +2588,7 @@ const uploadPDFFile = async (file: File) => {
   // Update user document with file metadata
   if (props.user?.userId) {
     try {
+      const isAppleHealth = await detectAppleHealthFromBucket(uploadResult.fileInfo.bucketKey);
       await fetch('/api/user-file-metadata', {
         method: 'POST',
         headers: {
@@ -2592,7 +2603,8 @@ const uploadPDFFile = async (file: File) => {
             bucketPath: uploadResult.fileInfo.userFolder,
             fileSize: uploadResult.fileInfo.size,
             fileType: 'pdf',
-            uploadedAt: uploadResult.fileInfo.uploadedAt
+            uploadedAt: uploadResult.fileInfo.uploadedAt,
+            isAppleHealth: isAppleHealth
           },
           updateInitialFile: false
         })
