@@ -324,20 +324,6 @@
             </q-card>
           </q-dialog>
 
-          <q-dialog v-model="showAppleExportDialog" persistent>
-            <q-card style="min-width: 420px; max-width: 560px">
-              <q-card-section>
-                <div class="text-h6">Apple Health Export</div>
-              </q-card-section>
-              <q-card-section class="text-body2">
-                Do you have an Apple Health PDF Export file?
-              </q-card-section>
-              <q-card-actions align="right">
-                <q-btn flat label="NO" color="grey-7" @click="handleAppleExportResponse(false)" />
-                <q-btn unelevated label="YES" color="primary" @click="handleAppleExportResponse(true)" />
-              </q-card-actions>
-            </q-card>
-          </q-dialog>
 
           <div class="q-mt-md">
             <div class="wizard-stage-row">
@@ -437,7 +423,7 @@
               </div>
               <div class="wizard-stage-actions">
                 <q-btn
-                  v-if="!stage3Checked"
+                  v-if="!stage3Checked && !wizardStage2NoDevice"
                   unelevated
                   dense
                   size="sm"
@@ -775,7 +761,6 @@ const wizardUploadIntent = ref<'other' | 'restore' | null>(null);
 const wizardMessages = ref<Record<number, string>>({});
 const wizardIntroMessage = ref('');
 const wizardDismissed = ref(false);
-const showAppleExportDialog = ref(false);
 const appleExportFooterSnippet = 'This summary displays certain health information made available to you by your healthcare provider and may not completely';
 const appleExportFooterNormalized = appleExportFooterSnippet.toLowerCase().replace(/\s+/g, ' ').trim();
 const step2Enabled = computed(() => wizardStage1Complete.value);
@@ -853,9 +838,6 @@ const wizardStage2StatusLine = computed(() => {
   if (!name) {
     if (wizardStage2NoDevice.value) {
       return 'No Apple Health export; verify Current Medications in Stage 4';
-    }
-    if (wizardHasAppleFileAnswer.value === true) {
-      return 'Apple Health export selected; scanning for Current Medications...';
     }
     return '';
   }
@@ -1788,18 +1770,9 @@ const refreshWizardState = async () => {
       wizardCurrentMedications.value = hasMeds || wizardCurrentMedications.value;
       wizardStage2Complete.value = hasMeds || wizardStage2Complete.value;
       if (statusResult?.hasAppleFile !== undefined && typeof statusResult.hasAppleFile === 'boolean') {
-        wizardHasAppleFileAnswer.value = statusResult.hasAppleFile;
-        wizardStage2NoDevice.value = !statusResult.hasAppleFile;
-        if (wizardStage2NoDeviceKey.value) {
-          try {
-            if (statusResult.hasAppleFile) {
-              localStorage.removeItem(wizardStage2NoDeviceKey.value);
-            } else {
-              localStorage.setItem(wizardStage2NoDeviceKey.value, 'true');
-            }
-          } catch (error) {
-            // ignore storage errors
-          }
+        // Prefer metadata-based detection over stored flag; only use this as a fallback.
+        if (!statusResult.hasAppleFile) {
+          wizardStage2NoDevice.value = true;
         }
       }
       if (statusResult?.agentReady !== undefined) {
@@ -1847,6 +1820,12 @@ const refreshWizardState = async () => {
           isAppleHealth: !!file?.isAppleHealth
         }))
         .filter((entry: { name: string }) => !!entry.name);
+      const hasAppleHealth = fileEntries.some(entry => entry.isAppleHealth);
+      if (!hasAppleHealth) {
+        wizardStage2NoDevice.value = true;
+      } else if (wizardStage2NoDevice.value) {
+        wizardStage2NoDevice.value = false;
+      }
       if (fileEntries.length > 0) {
         wizardStage3Files.value = fileEntries;
         if (stage3PendingUploadName.value && wizardStage3Files.value.some(entry => entry.name === stage3PendingUploadName.value)) {
@@ -1899,20 +1878,24 @@ const refreshWizardState = async () => {
             }
             stage3IndexingPoll.value = setInterval(async () => {
               try {
-                const statusResponse = await fetch(`/api/kb-indexing-status/${indexingJobIdFromFiles}?userId=${encodeURIComponent(props.user?.userId || '')}`, {
+                const statusResponse = await fetch(`/api/user-files?userId=${encodeURIComponent(props.user?.userId || '')}&source=wizard`, {
                   credentials: 'include'
                 });
                 if (!statusResponse.ok) {
                   throw new Error(`Indexing status error: ${statusResponse.status}`);
                 }
                 const statusResult = await statusResponse.json();
-                if (indexingStatus.value) {
-                  indexingStatus.value.phase = statusResult.phase || indexingStatus.value.phase;
-                  indexingStatus.value.tokens = statusResult.tokens || indexingStatus.value.tokens;
-                  indexingStatus.value.filesIndexed = statusResult.filesIndexed || 0;
-                  indexingStatus.value.progress = statusResult.progress || 0;
+                const storedStatus = statusResult?.kbIndexingStatus || {};
+                if (storedStatus.jobId && indexingJobIdFromFiles && storedStatus.jobId !== indexingJobIdFromFiles) {
+                  return;
                 }
-                const isCompleted = statusResult.completed || statusResult.phase === 'complete' || statusResult.status === 'INDEX_JOB_STATUS_COMPLETED' || statusResult.status === 'INDEX_JOB_STATUS_NO_CHANGES';
+                if (indexingStatus.value) {
+                  indexingStatus.value.phase = storedStatus.phase || indexingStatus.value.phase;
+                  indexingStatus.value.tokens = storedStatus.tokens || indexingStatus.value.tokens;
+                  indexingStatus.value.filesIndexed = storedStatus.filesIndexed || 0;
+                  indexingStatus.value.progress = storedStatus.progress || 0;
+                }
+                const isCompleted = storedStatus.backendCompleted === true;
                 if (isCompleted) {
                   if (stage3IndexingPoll.value) {
                     clearInterval(stage3IndexingPoll.value);
@@ -2015,7 +1998,8 @@ const triggerWizardFileInput = async () => {
 
 const handleStage3MedsAction = () => {
   if (!step3OkEnabled.value || wizardStage2Pending.value) return;
-  showAppleExportDialog.value = true;
+  myStuffInitialTab.value = 'lists';
+  showMyStuffDialog.value = true;
 };
 
 const handleWizardFileSelect = () => {
@@ -2194,20 +2178,21 @@ const handleStage3Index = async (overrideNames?: string[], fromRestore = false) 
       const jobId = result.jobId;
       stage3IndexingPoll.value = setInterval(async () => {
         try {
-          const statusResponse = await fetch(`/api/kb-indexing-status/${jobId}?userId=${encodeURIComponent(props.user?.userId || '')}`, {
+          const statusResponse = await fetch(`/api/user-files?userId=${encodeURIComponent(props.user?.userId || '')}&source=wizard`, {
             credentials: 'include'
           });
           if (!statusResponse.ok) {
             throw new Error(`Indexing status error: ${statusResponse.status}`);
           }
           const statusResult = await statusResponse.json();
+          const kbStatus = statusResult.kbIndexingStatus || {};
           if (indexingStatus.value) {
-            indexingStatus.value.phase = statusResult.phase || indexingStatus.value.phase;
-            indexingStatus.value.tokens = statusResult.tokens || indexingStatus.value.tokens;
-            indexingStatus.value.filesIndexed = statusResult.filesIndexed || 0;
-            indexingStatus.value.progress = statusResult.progress || 0;
+            indexingStatus.value.phase = kbStatus.phase || indexingStatus.value.phase;
+            indexingStatus.value.tokens = kbStatus.tokens || indexingStatus.value.tokens;
+            indexingStatus.value.filesIndexed = kbStatus.filesIndexed || 0;
+            indexingStatus.value.progress = kbStatus.progress || 0;
           }
-          const isCompleted = statusResult.backendCompleted || statusResult.completed || statusResult.phase === 'complete' || statusResult.status === 'INDEX_JOB_STATUS_COMPLETED';
+          const isCompleted = kbStatus.backendCompleted === true;
           if (isCompleted) {
             if (stage3IndexingPoll.value) {
               clearInterval(stage3IndexingPoll.value);
@@ -2261,84 +2246,6 @@ const handleStage3Action = () => {
   triggerWizardFileInput();
 };
 
-const handleAppleExportResponse = async (hasAppleFile: boolean) => {
-  showAppleExportDialog.value = false;
-  wizardHasAppleFileAnswer.value = hasAppleFile;
-  wizardStage2Pending.value = false;
-  if (!props.user?.userId) return;
-  try {
-    await fetch('/api/user-apple-file-status', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json'
-      },
-      credentials: 'include',
-      body: JSON.stringify({
-        userId: props.user.userId,
-        hasAppleFile
-      })
-    });
-  } catch (error) {
-    console.warn('Failed to store Apple Health export choice:', error);
-  }
-
-  if (!hasAppleFile) {
-    wizardStage2NoDevice.value = true;
-    refreshWizardState();
-    return;
-  }
-
-  wizardStage2NoDevice.value = false;
-  let match: { bucketKey?: string; fileName?: string; fileSize?: number } | null = null;
-  try {
-    const filesResponse = await fetch(`/api/user-files?userId=${encodeURIComponent(props.user.userId)}`, {
-      credentials: 'include'
-    });
-    if (filesResponse.ok) {
-      const filesResult = await filesResponse.json();
-      const files = Array.isArray(filesResult?.files) ? filesResult.files : [];
-      match = files.find((file: { isAppleHealth?: boolean }) => !!file?.isAppleHealth) || null;
-    }
-  } catch (error) {
-    // ignore
-  }
-
-  if (!match) {
-    alert('No Apple Health export file found in your indexed PDFs.');
-    refreshWizardState();
-    return;
-  }
-  if (match.fileName) {
-    wizardStage2FileName.value = match.fileName;
-  }
-  if (match.bucketKey) {
-    try {
-      await fetch('/api/user-file-metadata', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        credentials: 'include',
-        body: JSON.stringify({
-          userId: props.user.userId,
-          fileMetadata: {
-            fileName: match.fileName,
-            bucketKey: match.bucketKey,
-            fileSize: match.fileSize || 0,
-            fileType: 'pdf'
-          },
-          updateInitialFile: true
-        })
-      });
-    } catch (error) {
-      console.warn('Failed to mark Apple Health export as initial file:', error);
-    }
-    triggerStage2Processing({
-      bucketKey: match.bucketKey,
-      fileName: match.fileName
-    });
-  }
-};
 
 const handleFileSelect = async (event: Event) => {
   const input = event.target as HTMLInputElement;

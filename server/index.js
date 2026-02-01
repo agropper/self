@@ -721,6 +721,30 @@ const isIndexingActiveStatus = (status) => (
   status === 'in_progress'
 );
 
+const persistKbIndexingStatus = async (userId, statusPayload) => {
+  if (!userId || !statusPayload) return;
+  let attempts = 0;
+  while (attempts < 3) {
+    attempts += 1;
+    const doc = await cloudant.getDocument('maia_users', userId);
+    if (!doc) return;
+    doc.kbIndexingStatus = {
+      ...(doc.kbIndexingStatus || {}),
+      ...statusPayload,
+      updatedAt: new Date().toISOString()
+    };
+    try {
+      await cloudant.saveDocument('maia_users', doc);
+      return;
+    } catch (error) {
+      if (error?.statusCode === 409 && attempts < 3) {
+        continue;
+      }
+      return;
+    }
+  }
+};
+
 const isIndexingCompletedStatus = (status) => (
   status === 'INDEX_JOB_STATUS_COMPLETED' ||
   status === 'INDEX_JOB_STATUS_NO_CHANGES' ||
@@ -5361,7 +5385,8 @@ app.get('/api/user-files', async (req, res) => {
       kbIndexedDataSourceCount: kbIndexedDataSourceCount,
       kbName: kbName,
       kbLastIndexedAt: kbLastIndexedAt,
-      kbIndexedBucketKeys
+      kbIndexedBucketKeys,
+      kbIndexingStatus: userDoc.kbIndexingStatus || null
     };
 
     // Intentionally quiet: no debug logging on file listing
@@ -6643,6 +6668,17 @@ app.post('/api/update-knowledge-base', async (req, res) => {
       jobId: jobId || null,
       phase: indexingStarted ? 'indexing_started' : 'kb_created'
     });
+    if (jobId) {
+      await persistKbIndexingStatus(userId, {
+        jobId,
+        status: 'INDEX_JOB_STATUS_IN_PROGRESS',
+        phase: 'indexing',
+        tokens: '0',
+        filesIndexed: 0,
+        progress: 0,
+        backendCompleted: false
+      });
+    }
     
     // Only start polling if we actually started a new job
     // Don't poll if we didn't start a job - that would find old completed jobs incorrectly
@@ -6744,6 +6780,16 @@ app.post('/api/update-knowledge-base', async (req, res) => {
         }
 
         console.log(`[KB INDEXING] ✅ Indexing completed successfully: ${finalFileCount} files, ${finalTokens} tokens, ${elapsedMinutes}m ${elapsedSeconds}s`);
+        await persistKbIndexingStatus(userId, {
+          jobId: activeJobId,
+          status: 'INDEX_JOB_STATUS_COMPLETED',
+          phase: 'complete',
+          tokens: finalTokens,
+          filesIndexed: finalFileCount,
+          progress: 1.0,
+          backendCompleted: true,
+          completedAt: new Date().toISOString()
+        });
 
         // Attach KB to agent if needed
         try {
@@ -6817,7 +6863,7 @@ const runPoll = async () => {
          });
          }
          
-         if (job) {
+        if (job) {
            const currentJobId = job.uuid || job.id || job.indexing_job_id;
            const status = job.status || job.job_status || job.state;
            
@@ -6842,6 +6888,19 @@ const runPoll = async () => {
                             (job.phase === 'BATCH_JOB_PHASE_SUCCEEDED')) &&
                             // Only complete if this is EXACTLY the job we started
                             currentJobId === activeJobId;
+
+           const phase = isCompleted
+             ? 'complete'
+             : (status === 'INDEX_JOB_STATUS_PENDING' ? 'indexing_started' : 'indexing');
+           await persistKbIndexingStatus(userId, {
+             jobId: currentJobId || activeJobId,
+             status,
+             phase,
+             tokens,
+             filesIndexed: fileCount,
+             progress: isCompleted ? 1.0 : (phase === 'indexing_started' ? 0.1 : 0.5),
+             backendCompleted: false
+           });
 
            if (isCompleted) {
              console.log(`[KB AUTO] ✅ Detected completion for job ${activeJobId} (poll ${pollCount})`);
@@ -6929,32 +6988,31 @@ app.get('/api/kb-indexing-status/:jobId', async (req, res) => {
       });
     }
 
-    const kbInfo = await resolveKbForUserFromDo(userId, { forceRefresh: true });
-    if (!kbInfo?.id) {
-      return res.status(404).json({
-        success: false,
-        message: 'Knowledge base not found',
-        error: 'KB_NOT_FOUND'
+    const userDoc = await cloudant.getDocument('maia_users', userId);
+    if (userDoc?.kbIndexingStatus && (!jobId || userDoc.kbIndexingStatus.jobId === jobId)) {
+      const stored = userDoc.kbIndexingStatus;
+      return res.json({
+        success: stored.status !== 'INDEX_JOB_STATUS_FAILED',
+        phase: stored.phase || 'indexing',
+        status: stored.status || 'INDEX_JOB_STATUS_RUNNING',
+        kb: userDoc.kbName || null,
+        tokens: stored.tokens || '0',
+        filesIndexed: stored.filesIndexed || 0,
+        completed: !!stored.backendCompleted,
+        backendCompleted: !!stored.backendCompleted,
+        progress: stored.progress || 0
       });
     }
-
-    let jobPayload = await doClient.indexing.getStatus(jobId);
-    jobPayload = jobPayload?.job || jobPayload?.indexing_job || jobPayload;
-    const status = jobPayload?.status || jobPayload?.job_status || jobPayload?.state || 'INDEX_JOB_STATUS_RUNNING';
-    const tokens = String(jobPayload?.tokens || jobPayload?.total_tokens || jobPayload?.tokens_indexed || 0);
-    const filesIndexed = Number(jobPayload?.indexed_file_count || jobPayload?.files_indexed || jobPayload?.completed_datasources || 0);
-    const completed = isIndexingCompletedStatus(status);
-    const phase = completed ? 'complete' : (status == 'INDEX_JOB_STATUS_PENDING' ? 'indexing_started' : 'indexing');
-
-    res.json({
-      success: status != 'INDEX_JOB_STATUS_FAILED',
-      phase,
-      status,
-      kb: kbInfo.name,
-      tokens,
-      filesIndexed,
-      completed,
-      progress: completed ? 1.0 : (phase == 'indexing_started' ? 0.1 : 0.5)
+    return res.json({
+      success: true,
+      phase: 'indexing',
+      status: 'INDEX_JOB_STATUS_PENDING',
+      kb: userDoc?.kbName || null,
+      tokens: '0',
+      filesIndexed: 0,
+      completed: false,
+      backendCompleted: false,
+      progress: 0
     });
   } catch (error) {
     console.error('❌ Error in KB indexing status endpoint:', error);

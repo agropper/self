@@ -2540,7 +2540,7 @@ const pollIndexingProgress = async (jobId: string) => {
         return;
       }
       
-      const response = await fetch(`/api/kb-indexing-status/${jobId}?userId=${encodeURIComponent(props.userId)}`, {
+      const response = await fetch(`/api/user-files?userId=${encodeURIComponent(props.userId)}&source=saved`, {
         credentials: 'include'
       });
 
@@ -2549,18 +2549,22 @@ const pollIndexingProgress = async (jobId: string) => {
       }
 
       const result = await response.json();
+      const statusResult = result.kbIndexingStatus || {};
+      if (statusResult.jobId && statusResult.jobId !== jobId) {
+        return;
+      }
       
       // Status check for job (verbose logging removed)
       
       // Update status with all fields from response
       indexingStatus.value = {
-        phase: result.phase || indexingStatus.value.phase,
-        message: result.message || indexingStatus.value.message,
-        kb: result.kb || indexingStatus.value.kb,
-        tokens: result.tokens || indexingStatus.value.tokens || '0',
-        filesIndexed: result.filesIndexed || 0,
-        progress: result.progress || 0,
-        error: result.error || ''
+        phase: statusResult.phase || indexingStatus.value.phase,
+        message: indexingStatus.value.message,
+        kb: result.kbName || indexingStatus.value.kb,
+        tokens: statusResult.tokens || indexingStatus.value.tokens || '0',
+        filesIndexed: statusResult.filesIndexed || 0,
+        progress: statusResult.progress || 0,
+        error: statusResult.error || ''
       };
       
       // Emit status update to parent for status tip
@@ -2576,7 +2580,7 @@ const pollIndexingProgress = async (jobId: string) => {
       // result.completed, result.phase, or result.status
       // backendCompleted is the most reliable indicator that everything is done
       // Log completion detection for debugging
-      const isCompleted = result.completed || result.phase === 'complete' || result.status === 'INDEX_JOB_STATUS_COMPLETED' || result.status === 'INDEX_JOB_STATUS_NO_CHANGES';
+      const isCompleted = statusResult.backendCompleted === true;
       
       if (isCompleted) {
         if (pollingInterval.value !== null) {

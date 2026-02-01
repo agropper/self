@@ -233,7 +233,14 @@
     <div v-if="(pdfData || markdownContent) && !isProcessing">
 
       <!-- Categories Section -->
-      <q-card v-if="categoriesList.length > 0" class="q-mb-md">
+      <q-card v-if="!hasAppleHealthFile" class="q-mb-md">
+        <q-card-section>
+          <div class="text-body2 text-grey-7">
+            Categories index currently requires an Apple Health Export PDF file.
+          </div>
+        </q-card-section>
+      </q-card>
+      <q-card v-else-if="categoriesList.length > 0" class="q-mb-md">
         <q-card-section>
           <div class="text-h6 q-mb-md">Categories</div>
           <q-list bordered separator>
@@ -359,75 +366,6 @@
         </q-card-section>
       </q-card>
 
-      <!-- Markdown Categories List -->
-      <q-card v-if="categories.length > 0 || pdfData?.categoryError" class="q-mb-md">
-        <q-card-section>
-          <div class="text-h6 q-mb-md">Markdown Categories ({{ categories.length }})</div>
-          
-          <!-- Show category extraction error if present -->
-          <q-banner v-if="pdfData?.categoryError" rounded class="bg-negative text-white q-mb-md">
-            <template v-slot:avatar>
-              <q-icon name="error" />
-            </template>
-            <div class="text-subtitle2 q-mb-xs">Failed to extract categories:</div>
-            {{ pdfData.categoryError }}
-          </q-banner>
-          
-          <q-list v-if="categories.length > 0" bordered separator>
-            <q-item 
-              v-for="(cat, index) in categories" 
-              :key="index"
-              clickable
-              @click="processCategory(cat.category)"
-              class="cursor-pointer"
-            >
-              <q-item-section>
-                <q-item-label>
-                  {{ cat.category }}
-                  <q-icon 
-                    name="play_arrow" 
-                    size="sm" 
-                    class="q-ml-sm text-primary"
-                  />
-                </q-item-label>
-                <!-- Show processing status for all categories -->
-                <q-item-label 
-                  caption
-                  class="q-mt-xs"
-                >
-                  <div v-if="processingCategory === cat.category" class="text-primary">
-                    <q-spinner size="xs" /> Processing...
-                  </div>
-                  <div v-else-if="categoryProcessingStatus[cat.category]?.indexed > 0" class="text-positive">
-                    ✅ Indexed {{ categoryProcessingStatus[cat.category].indexed }} of {{ categoryProcessingStatus[cat.category].total }} items
-                  </div>
-                  <div v-else-if="categoryProcessingStatus[cat.category]?.total === 0" class="text-grey">
-                    Click to process
-                  </div>
-                  <div v-else-if="categoryProcessingStatus[cat.category]" class="text-warning">
-                    ⚠️ Failed to process
-                  </div>
-                  <div v-else class="text-grey">
-                    Click to process
-                  </div>
-                  <div 
-                    v-if="categoryProcessingStatus[cat.category]?.errors && categoryProcessingStatus[cat.category].errors.length > 0"
-                    class="text-negative q-mt-xs"
-                  >
-                    Errors: {{ categoryProcessingStatus[cat.category].errors.join(', ') }}
-                  </div>
-                </q-item-label>
-              </q-item-section>
-              <q-item-section side>
-                <q-item-label>
-                  <q-badge color="primary">{{ cat.count }}</q-badge>
-                </q-item-label>
-              </q-item-section>
-            </q-item>
-          </q-list>
-        </q-card-section>
-      </q-card>
-
       <!-- Category Items List (dynamic - shows currently selected category) -->
       <q-card v-if="currentCategoryDisplay" class="q-mb-md">
         <q-card-section>
@@ -439,7 +377,7 @@
           </div>
           
           <div v-else-if="categoryItems.length === 0" class="text-center q-pa-md text-grey">
-            No items found. Click "{{ currentCategoryDisplay }}" in the Markdown Categories list to process.
+            No items found.
           </div>
           
           <q-list v-else bordered separator>
@@ -546,6 +484,7 @@ const activePageTab = ref<number>(1);
 const clinicalNotes = ref<ClinicalNote[]>([]);
 const isLoadingClinicalNotes = ref(false);
 const hasSavedResults = ref(false);
+const hasAppleHealthFile = ref(false);
 const savedPdfBucketKey = ref<string | null>(null);
 const savedResultsBucketKey = ref<string | null>(null);
 const processingCategory = ref<string | null>(null);
@@ -698,8 +637,24 @@ const checkInitialFile = async () => {
   }
 };
 
+const loadAppleHealthStatus = async () => {
+  if (!props.userId) return;
+  try {
+    const response = await fetch(`/api/user-files?userId=${encodeURIComponent(props.userId)}&source=saved`, {
+      credentials: 'include'
+    });
+    if (!response.ok) return;
+    const result = await response.json();
+    const files = Array.isArray(result?.files) ? result.files : [];
+    hasAppleHealthFile.value = files.some((file: { isAppleHealth?: boolean }) => !!file?.isAppleHealth);
+  } catch (error) {
+    // ignore errors
+  }
+};
+
 const loadSavedResults = async () => {
   try {
+    await loadAppleHealthStatus();
     // Check if Lists folder exists and has files
     const markdownResponse = await fetch('/api/files/lists/markdown', {
       credentials: 'include'
@@ -2032,52 +1987,7 @@ const countObservationsByPageRange = (markedMarkdown: string): void => {
     }
   }
   
-  // Save all categories to files if they don't already exist
-  for (const category of categoriesList.value) {
-    if (category.observations && category.observations.length > 0) {
-      saveCategoryIfNeeded(category);
-    }
-  }
-};
-
-// Save category file if it doesn't already exist (generic function for all categories)
-const saveCategoryIfNeeded = async (category: { name: string; observations?: Array<{ date: string; display: string; page?: number; lineCount?: number; outOfRangeLines?: string[] }> }) => {
-  try {
-    // Sanitize category name to match backend format (same as lists-processor.js)
-    const sanitizedCategoryName = category.name
-      .replace(/[^a-zA-Z0-9\s-]/g, '')
-      .replace(/\s+/g, '_')
-      .toLowerCase();
-    
-    // Check if category file already exists (using sanitized name)
-    const checkResponse = await fetch(`/api/files/lists/category/${encodeURIComponent(sanitizedCategoryName)}`, {
-      credentials: 'include'
-    });
-    
-    if (checkResponse.ok) {
-      // File already exists - don't save
-      return;
-    }
-    
-    // File doesn't exist - save it
-    const saveResponse = await fetch('/api/files/lists/save-category', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json'
-      },
-      credentials: 'include',
-      body: JSON.stringify({
-        categoryName: category.name,
-        observations: category.observations || []
-      })
-    });
-    
-    if (saveResponse.ok) {
-      // Successfully saved
-    }
-  } catch (err) {
-    // Failed to save - silently continue (non-critical)
-  }
+  // Category files are built once during Apple Health processing (server-side)
 };
 
 

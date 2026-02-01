@@ -1822,6 +1822,7 @@ export default function setupFileRoutes(app, cloudant, doClient) {
       
       let initialFileBucketKey;
       let initialFileName;
+      let userDoc = null;
 
       // If bucketKey is provided in request, use it directly (for file replacement)
       if (providedBucketKey) {
@@ -1829,7 +1830,7 @@ export default function setupFileRoutes(app, cloudant, doClient) {
         initialFileName = providedFileName || 'Replaced File';
       } else {
         // Otherwise, get from user document (original flow)
-        const userDoc = await cloudant.getDocument('maia_users', userId);
+        userDoc = await cloudant.getDocument('maia_users', userId);
         if (!userDoc) {
           return res.status(404).json({ error: 'User not found' });
         }
@@ -1850,6 +1851,10 @@ export default function setupFileRoutes(app, cloudant, doClient) {
         initialFileBucketKey,
         initialFileName
       });
+
+      if (!userDoc) {
+        userDoc = await cloudant.getDocument('maia_users', userId);
+      }
 
       const { client: s3Client, bucketName } = getS3Client();
 
@@ -2108,14 +2113,27 @@ export default function setupFileRoutes(app, cloudant, doClient) {
         throw new Error(`Failed to save markdown file: ${saveErr.message}`);
       }
 
-      // Extract categories and observations, then save category files
-      const categoryFiles = await extractAndSaveCategoryFiles(
-        fullMarkdown,
-        userId,
-        listsFolder,
-        s3Client,
-        bucketName
-      );
+      // Extract categories and observations once, only for Apple Health imports
+      let categoryFiles = [];
+      const appleHealthSource = Array.isArray(userDoc?.files)
+        ? userDoc.files.find(file => file?.bucketKey === initialFileBucketKey && !!file?.isAppleHealth)
+        : null;
+      const alreadyBuilt = !!userDoc?.appleHealthCategoriesBuiltAt;
+      if (appleHealthSource && !alreadyBuilt) {
+        categoryFiles = await extractAndSaveCategoryFiles(
+          fullMarkdown,
+          userId,
+          listsFolder,
+          s3Client,
+          bucketName
+        );
+        if (userDoc) {
+          userDoc.appleHealthCategoriesBuiltAt = new Date().toISOString();
+          userDoc.appleHealthCategoriesSourceKey = initialFileBucketKey;
+          await cloudant.saveDocument('maia_users', userDoc);
+        }
+        console.log(`[VIZ] Categories built for Apple Health file: ${initialFileName}`);
+      }
 
       res.json({
         success: true,
@@ -2253,75 +2271,7 @@ export default function setupFileRoutes(app, cloudant, doClient) {
           Key: categoryBucketKey
         }));
       } catch (headErr) {
-        console.log('[SAVE-RESTORE] Category file missing, attempting rebuild', {
-          userId,
-          categoryBucketKey
-        });
-        try {
-          const userDoc = await cloudant.getDocument('maia_users', userId);
-          const cleanFileName = userDoc?.initialFile?.fileName
-            ? userDoc.initialFile.fileName.replace(/[^a-zA-Z0-9.-]/g, '_')
-            : null;
-          const markdownFileName = cleanFileName ? cleanFileName.replace(/\.pdf$/i, '.md') : null;
-          const markdownBucketKey = markdownFileName ? `${listsFolder}${markdownFileName}` : null;
-          let markdownKeyToUse = null;
-
-          if (markdownBucketKey) {
-            try {
-              await s3Client.send(new HeadObjectCommand({
-                Bucket: bucketName,
-                Key: markdownBucketKey
-              }));
-              markdownKeyToUse = markdownBucketKey;
-            } catch (mdHeadErr) {
-              markdownKeyToUse = null;
-            }
-          }
-
-          if (!markdownKeyToUse) {
-            const { ListObjectsV2Command } = await import('@aws-sdk/client-s3');
-            const listCommand = new ListObjectsV2Command({
-              Bucket: bucketName,
-              Prefix: listsFolder
-            });
-            const listResponse = await s3Client.send(listCommand);
-            const mdCandidate = (listResponse.Contents || [])
-              .map(obj => obj.Key)
-              .find(key => key && key.endsWith('.md'));
-            markdownKeyToUse = mdCandidate || null;
-          }
-
-          if (markdownKeyToUse) {
-            const mdResponse = await s3Client.send(new GetObjectCommand({
-              Bucket: bucketName,
-              Key: markdownKeyToUse
-            }));
-            const mdChunks = [];
-            for await (const chunk of mdResponse.Body) {
-              mdChunks.push(chunk);
-            }
-            const fullMarkdown = Buffer.concat(mdChunks).toString('utf-8');
-            await extractAndSaveCategoryFiles(fullMarkdown, userId, listsFolder, s3Client, bucketName);
-            console.log('[SAVE-RESTORE] Category files rebuilt', {
-              userId,
-              source: markdownKeyToUse
-            });
-          }
-        } catch (rebuildErr) {
-          console.warn('[SAVE-RESTORE] Category rebuild failed', {
-            userId,
-            error: rebuildErr?.message || String(rebuildErr)
-          });
-        }
-
-        try {
-          await s3Client.send(new HeadObjectCommand({
-            Bucket: bucketName,
-            Key: categoryBucketKey
-          }));
-        } catch (verifyErr) {
-          return res.status(404).json({ error: `Category file not found: ${categoryBucketKey}` });
-        }
+        return res.status(404).json({ error: `Category file not found: ${categoryBucketKey}` });
       }
 
       // Get file content
