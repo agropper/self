@@ -1721,17 +1721,6 @@ const getFileNameFromEntry = (file: { fileName?: string; bucketKey?: string }) =
   return parts[parts.length - 1] || '';
 };
 
-const isAppleHealthExport = (fileName: string) => {
-  const lower = fileName.toLowerCase();
-  if (!lower.endsWith('.pdf')) return false;
-  return (
-    (lower.includes('apple') && lower.includes('health')) ||
-    (lower.includes('health') && lower.includes('export')) ||
-    lower.includes('apple_health') ||
-    lower.includes('apple-health')
-  );
-};
-
 const refreshWizardState = async () => {
   const userId = props.user?.userId;
   if (!userId) return;
