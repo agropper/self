@@ -430,11 +430,15 @@
             </div>
           </div>
 
-          <div v-if="!wizardStage1Complete" class="text-caption text-grey-7 q-mt-md">
+          <div v-if="!wizardStage1Complete" class="text-caption q-mt-md" :class="wizardStage1TimerActive ? 'text-green-7' : 'text-grey-7'">
             Private AI agent deployment status: {{ wizardStage1StatusLine }}
           </div>
 
-          <div v-if="stage2StatusDisplay.show" class="text-caption text-grey-7 q-mt-sm">
+          <div
+            v-if="stage2StatusDisplay.show"
+            class="text-caption q-mt-sm"
+            :class="stage2StatusDisplay.active ? 'text-green-7' : 'text-grey-7'"
+          >
             <span>{{ stage2StatusDisplay.text }}</span>
             <span class="q-ml-xs">
               Files: {{ stage2StatusDisplay.files }} • Tokens: {{ stage2StatusDisplay.tokens }}
@@ -444,28 +448,28 @@
             Current Medications are {{ wizardCurrentMedications ? 'verified' : 'not verified' }}.
             <q-btn
               v-if="!wizardCurrentMedications"
-              flat
+              unelevated
               dense
               size="sm"
               color="orange-8"
               label="Verify"
-              :disable="!wizardStage1Complete || indexingStatus?.phase !== 'complete'"
+              :disable="!wizardStage1Complete || !stage2StatusDisplay.completed"
               @click="handleWizardMedsAction"
-              class="q-ml-xs"
+              class="q-ml-xs wizard-verify-btn"
             />
           </div>
           <div v-if="stage2StatusDisplay.show" class="text-caption q-mt-xs wizard-status-row" :class="wizardPatientSummary ? 'text-grey-7' : 'text-orange-8'">
             Patient Summary is {{ wizardPatientSummary ? 'verified' : 'not verified' }}.
             <q-btn
               v-if="!wizardPatientSummary"
-              flat
+              unelevated
               dense
               size="sm"
               color="orange-8"
               label="Verify"
-              :disable="!wizardStage1Complete || indexingStatus?.phase !== 'complete' || (wizardHasAppleHealthFile && !wizardCurrentMedications)"
+              :disable="!wizardStage1Complete || !stage2StatusDisplay.completed || (wizardHasAppleHealthFile && !wizardCurrentMedications)"
               @click="handleWizardSummaryAction"
-              class="q-ml-xs"
+              class="q-ml-xs wizard-verify-btn"
             />
           </div>
 
@@ -834,16 +838,16 @@ const stage2StatusDisplay = computed(() => {
   const tokens = indexingStatus.value?.tokens ?? wizardKbTotalTokens.value ?? '0';
   const hasCompleted = indexingStatus.value?.phase === 'complete' || (!!wizardKbTotalTokens.value && !isIndexing && stage3HasFiles.value);
   if (!stage3HasFiles.value && !isIndexing && !hasCompleted) {
-    return { show: false, text: '', files: 0, tokens: '0' };
+    return { show: false, text: '', files: 0, tokens: '0', active: false, completed: false };
   }
   if (isIndexing) {
     const elapsed = stage3IndexingStartedAt.value ? ` (${formatElapsed(stage3IndexingStartedAt.value)})` : '';
-    return { show: true, text: `Indexing in-progress. Could take 5 to 60 minutes.${elapsed}`, files, tokens };
+    return { show: true, text: `Indexing in-progress. Could take 5 to 60 minutes.${elapsed}`, files, tokens, active: true, completed: false };
   }
   if (hasCompleted) {
-    return { show: true, text: 'Indexing complete.', files, tokens };
+    return { show: true, text: 'Indexing complete.', files, tokens, active: false, completed: true };
   }
-  return { show: true, text: 'Indexing status pending.', files, tokens };
+  return { show: true, text: 'Indexing status pending.', files, tokens, active: false, completed: false };
 });
 const stage3PendingUploadName = ref<string | null>(null);
 const wizardKbName = ref<string | null>(null);
@@ -2116,6 +2120,7 @@ const toggleWizardKbCheckbox = async (file: { bucketKey?: string | null; inKnowl
 
 const handleWizardMedsAction = () => {
   if (!props.user?.userId) return;
+  const appleFile = stage3DisplayFiles.value.find(file => file.isAppleHealth && file.bucketKey);
   try {
     sessionStorage.setItem('autoProcessInitialFile', 'true');
     sessionStorage.setItem('wizardMyListsAuto', 'true');
@@ -2124,6 +2129,19 @@ const handleWizardMedsAction = () => {
   }
   myStuffInitialTab.value = 'lists';
   showMyStuffDialog.value = true;
+  if (appleFile?.bucketKey) {
+    void fetch('/api/files/lists/process-initial-file', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      credentials: 'include',
+      body: JSON.stringify({
+        bucketKey: appleFile.bucketKey,
+        fileName: appleFile.name
+      })
+    });
+  }
 };
 
 const handleWizardSummaryAction = async () => {
@@ -2139,6 +2157,8 @@ const handleWizardSummaryAction = async () => {
       credentials: 'include',
       body: JSON.stringify({ userId: props.user.userId })
     });
+    // Keep verified flag false until user confirms
+    wizardPatientSummary.value = false;
   } catch (error) {
     console.error('Failed to generate patient summary:', error);
   }
@@ -4648,8 +4668,8 @@ const handleCurrentMedicationsSaved = async () => {
 };
 
 const handlePatientSummarySaved = async () => {
-  wizardPatientSummary.value = true;
-  persistWizardCompletion();
+  // Saving a new summary does not mean it was verified
+  wizardPatientSummary.value = false;
   showAgentSetupDialog.value = false;
   wizardDismissed.value = true;
   await refreshWizardState();
@@ -4982,6 +5002,10 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
+}
+
+.wizard-verify-btn.q-btn--disabled {
+  opacity: 0.3;
 }
 
 .chat-messages {
