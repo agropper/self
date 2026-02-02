@@ -25,36 +25,12 @@ Always start your response with the patient's name, age and sex. Do not show you
 
 ## Private AI Setup Wizard
 
-The Wizard steps through the essentials to set up your MAIA.
-
-Step 1 is automatic but takes about three minutes. 
-
-Step 2 uses an Apple Health export file to create a Current Medications list and an index to help navigate your helth records. Skip Step 2 if you don't have this file. 
-
-Step 3 adds other health records files and then indexes them into a private knowledge base accessible only via your private AI agent. Indexing can take up to 60 minutes. 
-
-In Step 4, the Private AI uses your records to create a Patient Summary. Once you correct and verify the summary the Wizard is done.
-
-
-
-[ ] 1 - Creating your Private AI agent
-        Pending <elapsed time> or Ready to chat
-
-[ ] 2 - Add your Apple Health "Export PDF" file           [ADD FILE] or [VERIFY] or [RESTORE]
-        <filename> and Current Medications verified or Skipped
-
-[ ] 3 - Add any health records you want included          [ADD FILE] or [INDEX]
-        <filename> and [RESTORE]
-        <filename> and [RESTORE]
-        ...
-        Indexing or Complete <elapsed time>, # files, # bytes, # tokens
-
-[ ] 4 - Review and verify your Patient Summary            [VERIFY]
-
-
-                                                          [NOT YET]
-
----
+**I’m the setup wizard**
+* Import your health record files while I provision your private AI agent.
+* An Apple Health "PDF Export" file is particularly useful but not mandatory.
+* Once your files are indexed into your private knowledge base, I will help you create
+and verify your Current Medications and a Patient Summary.
+* Feel free to browse the other pages in this wizard for details on how to get an Apple Health Export PDF file and what to expect as you are using MAIA.
 
 ## Workflow Stages and tips
 

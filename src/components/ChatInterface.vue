@@ -303,7 +303,11 @@
     <q-dialog v-model="showAgentSetupDialog" persistent>
       <q-card style="min-width: 760px; max-width: 980px; width: 80vw">
         <q-card-section class="row items-center">
-          <div v-if="wizardSlideIndex === 0" class="text-h6 wizard-heading">I’m the setup wizard.</div>
+          <div
+            v-if="wizardSlideIndex === 0 && wizardIntroHeaderHtml"
+            class="text-h6 wizard-heading"
+            v-html="wizardIntroHeaderHtml"
+          />
           <q-space />
           <q-btn
             flat
@@ -316,13 +320,22 @@
         </q-card-section>
         <q-card-section class="q-pt-none wizard-slide-scroll">
           <div v-if="wizardSlideIndex === 0">
-            <div class="text-body2 wizard-intro wizard-heading wizard-slide-intro">
-              <div>Import your health record files while I provision your private AI agent.</div>
-              <div>An Apple Health “PDF Export” file is particularly useful but not mandatory.</div>
-              <div>
-                Once your files are indexed into your private knowledge base, I will help you create
-                and verify your Current Medications and a Patient Summary.
-              </div>
+            <div
+              v-if="wizardIntroBodyHtml"
+              class="text-body2 wizard-intro wizard-slide-intro"
+              ref="wizardIntroContainer"
+              v-html="wizardIntroBodyHtml"
+            />
+            <div v-if="wizardIntroBodyHtml" ref="wizardInlineDots" class="wizard-page-dots wizard-page-dots--inline">
+              <button
+                v-for="(_, idx) in wizardSlides"
+                :key="`wizard-page-inline-${idx}`"
+                type="button"
+                class="wizard-page-dot"
+                :class="{ 'wizard-page-dot--active': idx === wizardSlideIndex }"
+                :aria-label="`Go to page ${idx + 1}`"
+                @click="wizardSlideIndex = idx"
+              />
             </div>
             <div v-if="agentSetupPollingActive || agentSetupTimedOut" class="q-mt-sm">
             <p class="text-caption text-negative q-mt-sm" v-if="agentSetupTimedOut">
@@ -803,6 +816,9 @@ const wizardAgentReady = ref(false);
 const wizardStage1Complete = ref(false);
 const wizardUploadIntent = ref<'other' | 'restore' | null>(null);
 const wizardMessages = ref<Record<number, string>>({});
+const wizardIntroLines = ref<string[]>([]);
+const wizardIntroContainer = ref<HTMLElement | null>(null);
+const wizardInlineDots = ref<HTMLElement | null>(null);
 const wizardDismissed = ref(false);
 const appleExportFooterSnippet = 'This summary displays certain health information made available to you by your healthcare provider and may not completely';
 const appleExportFooterNormalized = appleExportFooterSnippet.toLowerCase().replace(/\s+/g, ' ').trim();
@@ -817,6 +833,40 @@ const stage3LastImportedName = ref<string | null>(null);
 const wizardStage1TimerActive = computed(() =>
   agentSetupElapsed.value > 0 && !wizardStage1Complete.value && !agentSetupTimedOut.value
 );
+const wizardIntroHeaderHtml = computed(() => {
+  const firstLine = wizardIntroLines.value.find(line => line.trim().length > 0);
+  if (!firstLine) return '';
+  return markdownParser.renderInline(firstLine);
+});
+const wizardIntroBodyHtml = computed(() => {
+  if (wizardIntroLines.value.length === 0) {
+    return '';
+  }
+  let firstFound = false;
+  const lines: string[] = [];
+  for (const line of wizardIntroLines.value) {
+    if (!firstFound && line.trim().length > 0) {
+      firstFound = true;
+      continue;
+    }
+    lines.push(line);
+  }
+  const body = lines.join('\n');
+  return body.trim().length > 0 ? markdownParser.render(body) : '';
+});
+const positionWizardInlineDots = async () => {
+  if (wizardSlideIndex.value !== 0) return;
+  await nextTick();
+  const container = wizardIntroContainer.value;
+  const dots = wizardInlineDots.value;
+  if (!container || !dots) return;
+  const lastListItem = container.querySelector('li:last-of-type');
+  if (lastListItem) {
+    lastListItem.appendChild(dots);
+    return;
+  }
+  container.appendChild(dots);
+};
 const wizardUserStorageKey = computed(() => props.user?.userId ? `wizard-completion-${props.user.userId}` : null);
 const wizardStage2NoDeviceKey = computed(() => props.user?.userId ? `wizardStage2NoDevice-${props.user.userId}` : null);
 const wizardRestoreActive = computed(() => !!props.rehydrationActive && (Array.isArray(props.rehydrationFiles) ? props.rehydrationFiles.length > 0 : false));
@@ -1005,7 +1055,7 @@ watch(
   { immediate: true }
 );
 
-    watch(
+watch(
   () => props.suppressWizard,
   async (suppressed, wasSuppressed) => {
     if (suppressed) {
@@ -1014,7 +1064,7 @@ watch(
     }
     if (wasSuppressed && !suppressed) {
       wizardDismissed.value = false;
-          wizardSlideIndex.value = 0;
+      wizardSlideIndex.value = 0;
       await refreshWizardState();
       if (!shouldHideSetupWizard.value && !showAgentSetupDialog.value && !wizardDismissed.value) {
         showAgentSetupDialog.value = true;
@@ -1023,14 +1073,22 @@ watch(
   },
   { immediate: true }
 );
-    watch(
-      () => showAgentSetupDialog.value,
-      (isOpen) => {
-        if (isOpen) {
-          wizardSlideIndex.value = 0;
-        }
-      }
-    );
+watch(
+  () => showAgentSetupDialog.value,
+  (isOpen) => {
+    if (isOpen) {
+      wizardSlideIndex.value = 0;
+      void loadWizardMessages();
+      void positionWizardInlineDots();
+    }
+  }
+);
+watch(
+  () => [wizardIntroBodyHtml.value, wizardSlideIndex.value],
+  () => {
+    void positionWizardInlineDots();
+  }
+);
 
 const startRestoreIndexing = async () => {
   if (!props.user?.userId) {
@@ -1721,7 +1779,30 @@ const getFileNameFromEntry = (file: { fileName?: string; bucketKey?: string }) =
   return parts[parts.length - 1] || '';
 };
 
+const loadWizardMessages = async () => {
+  try {
+    const messagesResponse = await fetch('/api/setup-wizard-messages', {
+      credentials: 'include'
+    });
+    if (messagesResponse.ok) {
+      const messagesResult = await messagesResponse.json();
+      const payload = messagesResult?.messages;
+      if (payload?.messages && typeof payload.messages === 'object') {
+        wizardMessages.value = payload.messages;
+      }
+      wizardIntroLines.value = typeof payload?.intro === 'string'
+        ? payload.intro.split('\n')
+        : [];
+      return;
+    }
+  } catch (error) {
+    // ignore message loading errors
+  }
+  wizardIntroLines.value = [];
+};
+
 const refreshWizardState = async () => {
+  await loadWizardMessages();
   const userId = props.user?.userId;
   if (!userId) return;
   let stage3CompleteFromFiles: boolean | null = null;
@@ -1730,7 +1811,7 @@ const refreshWizardState = async () => {
   let indexingJobIdFromFiles: string | null = null;
   let tokensFromFiles: string | null = null;
   try {
-    const [statusResponse, filesResponse, summaryResponse, messagesResponse] = await Promise.all([
+    const [statusResponse, filesResponse, summaryResponse] = await Promise.all([
       fetch(`/api/user-status?userId=${encodeURIComponent(props.user.userId)}`, {
         credentials: 'include'
       }),
@@ -1738,9 +1819,6 @@ const refreshWizardState = async () => {
         credentials: 'include'
       }),
       fetch(`/api/patient-summary?userId=${encodeURIComponent(props.user.userId)}`, {
-        credentials: 'include'
-      }),
-      fetch('/api/setup-wizard-messages', {
         credentials: 'include'
       })
     ]);
@@ -1871,13 +1949,6 @@ const refreshWizardState = async () => {
         } catch (error) {
           // ignore
         }
-      }
-    }
-
-    if (messagesResponse.ok) {
-      const messagesResult = await messagesResponse.json();
-      if (messagesResult?.messages && typeof messagesResult.messages === 'object') {
-        wizardMessages.value = messagesResult.messages;
       }
     }
 
@@ -4736,6 +4807,7 @@ const updateContextualTip = async () => {
 
 onMounted(async () => {
   // no-op
+  void loadWizardMessages();
 
   // Load owner's deep link setting first, then providers
   await loadOwnerDeepLinkSetting();
@@ -4894,21 +4966,39 @@ onUnmounted(() => {
 
 .wizard-slide-box {
   border: 1px solid #e0e0e0;
+  border-top: none !important;
   border-radius: 8px;
   padding: 16px;
   background: #fafafa;
   width: 100%;
   max-width: 720px;
+  margin-top: 10px;
 }
 
 .wizard-slide-intro {
   max-width: 720px;
   margin-left: 0;
+  padding-left: 0;
+  border: 0;
+  border-bottom: 0 !important;
+  box-shadow: none;
 }
 
 .wizard-slide-intro {
   text-align: left;
   align-self: flex-start;
+}
+
+.wizard-slide-intro hr {
+  display: none;
+}
+
+.wizard-slide-intro ul,
+.wizard-slide-intro li,
+.wizard-slide-intro p {
+  border: 0 !important;
+  box-shadow: none !important;
+  background: transparent;
 }
 
 .wizard-slide-list {
@@ -4964,6 +5054,14 @@ onUnmounted(() => {
   justify-content: center;
   gap: 8px;
   width: 100%;
+}
+
+.wizard-page-dots--inline {
+  justify-content: flex-start;
+  margin-left: 30px;
+  width: auto;
+  display: inline-flex;
+  vertical-align: middle;
 }
 
 .wizard-page-dot {
@@ -5095,7 +5193,7 @@ onUnmounted(() => {
 }
 
 .wizard-heading {
-  padding-left: 44px;
+  padding-left: 0;
 }
 
 .page-link {
