@@ -1011,6 +1011,19 @@ async function validateUserResources(userId) {
         // This is informational, not an error, so no need to spam logs
       } else {
         kbStatus = 'not_attached';
+        // If agent is ready and indexing completed, attach now
+        console.log(`[WIZ] Attach check (validate): agentEndpoint=${!!userDoc.agentEndpoint} indexed=${!!userDoc.kbIndexingStatus?.backendCompleted} kbId=${kbIdFound || 'none'} agentId=${userDoc.assignedAgentId || 'none'}`);
+        if (userDoc.agentEndpoint && userDoc.kbIndexingStatus?.backendCompleted) {
+          try {
+            await doClient.agent.attachKB(userDoc.assignedAgentId, kbIdFound);
+            kbStatus = 'attached';
+            console.log(`[WIZ] ✅ Attached KB ${kbIdFound} to agent ${userDoc.assignedAgentId} after indexing completion (validate).`);
+          } catch (attachError) {
+            if (!attachError.message || !attachError.message.includes('already')) {
+              console.error(`[WIZ] ❌ Attach failed (validate):`, attachError.message);
+            }
+          }
+        }
         // Don't log this - it's a normal state and validateUserResources is called frequently
         // The status is already reflected in the API response
       }
@@ -3829,6 +3842,20 @@ async function provisionUserAsync(userId, token) {
       agentName: agentName
     });
 
+    // If indexing already completed, attach KB now that agent is ready
+    console.log(`[WIZ] Attach check (provision): kbId=${userDoc?.kbId || 'none'} indexed=${!!userDoc?.kbIndexingStatus?.backendCompleted} agentId=${newAgent.uuid}`);
+    if (userDoc?.kbId && userDoc?.kbIndexingStatus?.backendCompleted) {
+      try {
+        await doClient.agent.attachKB(newAgent.uuid, userDoc.kbId);
+        invalidateResourceCache(userId);
+        console.log(`[WIZ] ✅ Attached KB ${userDoc.kbId} to agent ${newAgent.uuid} after provisioning.`);
+      } catch (attachError) {
+        if (!attachError.message || !attachError.message.includes('already')) {
+          console.error(`[WIZ] ❌ Attach failed (provision):`, attachError.message);
+        }
+      }
+    }
+
     // Step 7.4: Generate Current Medications Token (UNCONDITIONAL - always generate token after agent is ready)
     // This ensures users can always edit Current Medications, even if AI generation fails or no markdown exists
     console.log(`[CUR MEDS] Step 7.4: Generating Current Medications token (unconditional)`);
@@ -5262,7 +5289,7 @@ app.get('/api/user-files', async (req, res) => {
         const bucketKey = file.bucketKey || '';
         if (!bucketKey.startsWith(rootPrefix)) return false;
         if (archivedPrefix && bucketKey.startsWith(archivedPrefix)) return false;
-        if (kbPrefix && bucketKey.startsWith(kbPrefix)) return false;
+        if (kbPrefix && bucketKey.startsWith(kbPrefix)) return true;
         return bucketKey.split('/').filter(Boolean).length === 2;
       });
     }
@@ -6814,8 +6841,10 @@ app.post('/api/update-knowledge-base', async (req, res) => {
 
         // Attach KB to agent if needed
         try {
-          if (finalUserDoc && finalUserDoc.assignedAgentId) {
+          if (finalUserDoc && finalUserDoc.assignedAgentId && finalUserDoc.agentEndpoint) {
             await doClient.agent.attachKB(finalUserDoc.assignedAgentId, kbId);
+          } else {
+            console.log(`[KB AUTO] ⏳ Agent not ready, skipping KB attach for job ${activeJobId}`);
           }
         } catch (attachError) {
           if (!attachError.message || !attachError.message.includes('already')) {
@@ -7995,6 +8024,20 @@ app.get('/api/user-status', async (req, res) => {
     }
     
     const agentReady = !!(userDoc.assignedAgentId && userDoc.agentEndpoint);
+    console.log(`[WIZ] Attach check (user-status): agentReady=${agentReady} kbStatus=${kbStatus} kbId=${userDoc.kbId || 'none'} indexed=${!!userDoc.kbIndexingStatus?.backendCompleted}`);
+    let resolvedKbStatus = kbStatus;
+    if (agentReady && kbStatus === 'not_attached' && userDoc?.kbId && userDoc?.kbIndexingStatus?.backendCompleted) {
+      try {
+        await doClient.agent.attachKB(userDoc.assignedAgentId, userDoc.kbId);
+        resolvedKbStatus = 'attached';
+        invalidateResourceCache(userId);
+        console.log(`[WIZ] ✅ Attached KB ${userDoc.kbId} to agent ${userDoc.assignedAgentId} after indexing completion (user-status).`);
+      } catch (attachError) {
+        if (!attachError.message || !attachError.message.includes('already')) {
+          console.error(`[WIZ] ❌ Attach failed (user-status):`, attachError.message);
+        }
+      }
+    }
     res.json({
       success: true,
       workflowStage,
@@ -8003,7 +8046,7 @@ app.get('/api/user-status', async (req, res) => {
       fileCount,
       hasKB,
       hasFilesInKB,
-      kbStatus, // 'none' | 'not_attached' | 'attached'
+      kbStatus: resolvedKbStatus, // 'none' | 'not_attached' | 'attached'
       kbName, // KB folder name (e.g., 'userId-agent-YYYYMMDD-HHMMSS')
       hasAppleFile: typeof userDoc.hasAppleFile === 'boolean' ? userDoc.hasAppleFile : null,
       initialFile,

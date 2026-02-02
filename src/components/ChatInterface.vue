@@ -278,6 +278,18 @@
               -->
             </div>
             <div class="col-auto" style="display: flex; align-items: center; justify-content: flex-end; gap: 8px;">
+              <q-btn
+                v-if="!showAgentSetupDialog"
+                flat
+                dense
+                round
+                size="sm"
+                icon="auto_fix_high"
+                color="grey-7"
+                @click="() => { wizardDismissed = false; showAgentSetupDialog = true; }"
+              >
+                <q-tooltip>Show wizard</q-tooltip>
+              </q-btn>
               <span class="text-body2 text-grey-7">
                 {{ props.user?.isTemporary ? 'Local only user:' : 'User:' }} {{ props.user?.userId || 'Guest' }}
               </span>
@@ -290,11 +302,27 @@
 
     <q-dialog v-model="showAgentSetupDialog" persistent>
       <q-card style="min-width: 760px; max-width: 980px; width: 80vw">
-        <q-card-section>
-          <div class="text-h6 wizard-heading">Private AI Setup Wizard</div>
+        <q-card-section class="row items-center">
+          <div class="text-h6 wizard-heading">I’m the setup wizard.</div>
+          <q-space />
+          <q-btn
+            flat
+            round
+            dense
+            icon="close"
+            color="grey-7"
+            @click="dismissWizard"
+          />
         </q-card-section>
-        <q-card-section class="q-pt-none">
-          <div class="text-body2 wizard-intro wizard-heading" v-html="wizardIntroHtml" />
+        <q-card-section class="q-pt-none wizard-slide-scroll">
+          <div class="text-body2 wizard-intro wizard-heading wizard-slide-intro">
+            <div>Import your health record files while I provision your private AI agent.</div>
+            <div>An Apple Health “PDF Export” file is particularly useful but not mandatory.</div>
+            <div>
+              Once your files are indexed into your private knowledge base, I will help you create
+              and verify your Current Medications and a Patient Summary.
+            </div>
+          </div>
           <div v-if="agentSetupPollingActive || agentSetupTimedOut" class="q-mt-sm">
             <p class="text-caption text-negative q-mt-sm" v-if="agentSetupTimedOut">
               Agent setup did not complete in 15 minutes. Please try again later.
@@ -327,145 +355,121 @@
           </q-dialog>
 
 
-          <div class="q-mt-md">
-            <div class="wizard-stage-row">
-              <div class="wizard-stage-col1">
-                <q-checkbox :model-value="wizardStage1Complete" disable />
-              </div>
-              <div class="wizard-stage-text">
-                <div class="wizard-stage-label">1 - Creating your Private AI agent</div>
-                <div class="text-caption wizard-status-line" :class="wizardStage1TimerActive ? 'text-green-7' : 'text-grey-7'">
-                  {{ wizardStage1StatusLine }}
+          <div class="q-mt-lg">
+            <div class="wizard-slide-box">
+              <div class="text-subtitle1 text-weight-bold q-mb-sm">Files to be indexed</div>
+              <div v-if="!stage3IndexingActive" class="wizard-slide-list">
+                <div v-for="file in stage3DisplayFiles" :key="file.name" class="wizard-slide-item">
+                  <q-checkbox
+                    :model-value="file.inKnowledgeBase"
+                    :disable="wizardKbTogglePending.has(file.bucketKey || file.name) || stage3IndexingActive || stage3PendingUploadActive || !file.bucketKey"
+                    :color="file.pendingKbAdd ? 'grey-6' : 'primary'"
+                    @click.stop="toggleWizardKbCheckbox(file)"
+                  />
+                  <q-spinner
+                    v-if="wizardKbTogglePending.has(file.bucketKey || file.name)"
+                    size="18px"
+                    color="primary"
+                    class="q-ml-xs"
+                  />
+                  <span class="q-ml-sm">{{ file.name }}</span>
+                  <q-chip
+                    v-if="file.isAppleHealth"
+                    color="blue-6"
+                    text-color="white"
+                    size="sm"
+                    dense
+                    class="q-ml-xs"
+                  >
+                    Apple Health
+                  </q-chip>
                 </div>
-              </div>
-              <div class="wizard-stage-actions"></div>
-            </div>
-            <div class="wizard-stage-row" :class="{ 'text-grey-6': !step2Enabled }">
-              <div class="wizard-stage-col1">
-                <q-checkbox :model-value="stage2Checked" disable />
-              </div>
-              <div class="wizard-stage-text">
-                <div class="wizard-stage-label">2 - Build and index your Private AI knowledge base</div>
-                <div v-if="stage3HasFiles" class="text-caption text-grey-7 wizard-status-line">
-                  <div v-for="file in stage3DisplayFiles" :key="file.name" class="wizard-status-file">
-                    <q-chip
-                      v-if="file.needsRestore"
-                      color="red-5"
-                      text-color="white"
-                      size="sm"
-                      dense
-                      clickable
-                      class="wizard-restore-chip"
-                      @click="handleStage3Restore(file.name)"
-                    >
-                      RESTORE
-                    </q-chip>
-                    <q-chip
-                      v-else-if="file.isAppleHealth"
-                      color="blue-6"
-                      text-color="white"
-                      size="sm"
-                      dense
-                      class="q-ml-xs"
-                    >
-                      Apple Health
-                    </q-chip>
-                    <span>{{ file.name }}</span>
-                  </div>
-                </div>
-                <div v-if="stage3ShowStatusLine" class="text-caption wizard-status-line wizard-stage3-status" :class="stage3TimerActive ? 'text-green-7' : 'text-grey-7'">
-                  <span>{{ wizardStage3StatusLine }}</span>
-                  <q-spinner v-if="stage3PendingUploadActive" size="12px" class="q-ml-xs" />
-                </div>
-              </div>
-              <div class="wizard-stage-actions">
-                <q-btn
-                  v-if="!wizardRestoreActive && !stage3HasFiles"
-                  unelevated
-                  dense
-                  size="sm"
-                  :color="step2Active ? 'primary' : 'grey-4'"
-                  :label="stage3ActionLabel"
-                  :disable="!step2Enabled || !stage1Complete || stage3IndexingActive || stage3PendingUploadActive"
-                  @click="handleStage3Action"
-                />
-                <div v-else-if="!wizardRestoreActive && stage3HasFiles" class="wizard-stage-actions-group">
+                <div class="wizard-slide-item q-mt-sm">
                   <q-btn
                     unelevated
                     dense
                     size="sm"
                     color="primary"
-                    label="ADD ANOTHER FILE"
-                    :disable="!step2Enabled || !stage1Complete || stage3IndexingActive || stage3PendingUploadActive"
+                    label="Add a file"
+                    :disable="stage3IndexingActive || stage3PendingUploadActive"
                     @click="handleStage3Action"
                   />
+                </div>
+                <div class="wizard-slide-box-actions">
                   <q-btn
                     unelevated
                     dense
                     size="sm"
                     color="primary"
-                    text-color="white"
-                    class="wizard-index-btn"
-                    label="INDEX"
-                    :disable="!step2Enabled || !stage1Complete || stage3IndexingActive || stage3PendingUploadActive"
+                    label="No more files to add - Index now"
+                    :disable="!wizardNeedsIndexing || stage3IndexingActive || stage3PendingUploadActive"
                     @click="() => handleStage3Index()"
                   />
                 </div>
               </div>
-            </div>
-            <div class="wizard-stage-row" :class="{ 'text-grey-6': !step3OkEnabled }">
-              <div class="wizard-stage-col1">
-                <q-checkbox :model-value="stage3Checked" disable />
-              </div>
-              <div class="wizard-stage-text">
-                <div class="wizard-stage-label">3 - Current Medications</div>
-                <div v-if="wizardStage2StatusLine" class="text-caption text-grey-7 wizard-status-line">
-                  <span>{{ wizardStage2StatusLine }}</span>
-                </div>
-              </div>
-              <div class="wizard-stage-actions">
+              <div v-else-if="indexingStatus?.phase === 'complete' && wizardKbAttached" class="wizard-slide-box-actions">
                 <q-btn
-                  v-if="!stage3Checked && !wizardStage2NoDevice"
+                  v-if="wizardHasAppleHealthFile"
                   unelevated
                   dense
                   size="sm"
-                  :color="step3OkActive ? 'primary' : 'grey-4'"
-                  :label="stage3MedsActionLabel"
-                  :disable="!step3OkEnabled || !stage1Complete || wizardStage2Pending"
-                  @click="handleStage3MedsAction"
+                  color="primary"
+                  label="Create and Verify your Current Medications"
+                  @click="handleWizardMedsAction"
                 />
-              </div>
-            </div>
-            <div class="wizard-stage-row">
-              <div class="wizard-stage-col1">
-                <q-checkbox :model-value="wizardPatientSummary" disable />
-              </div>
-              <div class="wizard-stage-text">
-                <div class="wizard-stage-label">4 - Review and verify your Patient Summary</div>
-              </div>
-              <div class="wizard-stage-actions">
                 <q-btn
+                  v-else
                   unelevated
                   dense
                   size="sm"
-                  :color="step4Active ? 'primary' : 'grey-4'"
-                  label="VERIFY SUMMARY"
-                  :disable="!step4Enabled || !stage1Complete || !stage2Checked || !stage3Checked"
-                  @click="openMyStuffTab('summary')"
+                  color="primary"
+                  label="Create and Verify your Patient Summary"
+                  @click="handleWizardSummaryAction"
                 />
               </div>
             </div>
           </div>
 
+          <div v-if="!wizardStage1Complete" class="text-caption text-grey-7 q-mt-md">
+            Private AI agent deployment status: {{ wizardStage1StatusLine }}
+          </div>
+
+          <div v-if="stage2StatusDisplay.show" class="text-caption text-grey-7 q-mt-sm">
+            <span>{{ stage2StatusDisplay.text }}</span>
+            <span class="q-ml-xs">
+              Files: {{ stage2StatusDisplay.files }} • Tokens: {{ stage2StatusDisplay.tokens }}
+            </span>
+          </div>
+          <div v-if="stage2StatusDisplay.show" class="text-caption q-mt-xs wizard-status-row" :class="wizardCurrentMedications ? 'text-grey-7' : 'text-orange-8'">
+            Current Medications are {{ wizardCurrentMedications ? 'verified' : 'not verified' }}.
+            <q-btn
+              v-if="!wizardCurrentMedications"
+              flat
+              dense
+              size="sm"
+              color="orange-8"
+              label="Verify"
+              :disable="!wizardStage1Complete || indexingStatus?.phase !== 'complete'"
+              @click="handleWizardMedsAction"
+              class="q-ml-xs"
+            />
+          </div>
+          <div v-if="stage2StatusDisplay.show" class="text-caption q-mt-xs wizard-status-row" :class="wizardPatientSummary ? 'text-grey-7' : 'text-orange-8'">
+            Patient Summary is {{ wizardPatientSummary ? 'verified' : 'not verified' }}.
+            <q-btn
+              v-if="!wizardPatientSummary"
+              flat
+              dense
+              size="sm"
+              color="orange-8"
+              label="Verify"
+              :disable="!wizardStage1Complete || indexingStatus?.phase !== 'complete' || (wizardHasAppleHealthFile && !wizardCurrentMedications)"
+              @click="handleWizardSummaryAction"
+              class="q-ml-xs"
+            />
+          </div>
+
         </q-card-section>
-        <q-card-actions align="right">
-          <q-btn
-            flat
-            label="NOT YET"
-            color="grey-7"
-            @click="dismissWizard"
-          />
-        </q-card-actions>
       </q-card>
     </q-dialog>
 
@@ -760,7 +764,6 @@ const wizardAgentReady = ref(false);
 const wizardStage1Complete = ref(false);
 const wizardUploadIntent = ref<'other' | 'restore' | null>(null);
 const wizardMessages = ref<Record<number, string>>({});
-const wizardIntroMessage = ref('');
 const wizardDismissed = ref(false);
 const appleExportFooterSnippet = 'This summary displays certain health information made available to you by your healthcare provider and may not completely';
 const appleExportFooterNormalized = appleExportFooterSnippet.toLowerCase().replace(/\s+/g, ' ').trim();
@@ -810,23 +813,38 @@ const stage3MedsActionLabel = computed(() => {
   return 'START';
 });
 const stage3ActionLabel = computed(() => wizardRestoreActive.value ? 'RESTORE FILES' : 'ADD FILES');
-const wizardIntroMessageFallback = 'The Wizard steps through the essentials to set up your MAIA.\n\nStep 1 is automatic but takes about three minutes.\n\nStep 2 adds your available records to a private knowledge base and indexes them for your Private AI agent. Indexing can take up to 60 minutes.\n\nStep 3 guides you through Current Medications using an Apple Health export file if you have one.\n\nIn Step 4, the Private AI uses your records to create a Patient Summary. Once you correct and verify the summary the Wizard is done.';
-const wizardIntroHtml = computed(() => {
-  const raw = (wizardIntroMessage.value || wizardIntroMessageFallback).trim();
-  if (!raw) return '';
-  const paragraphs = raw.split(/\n\s*\n/).map(text => text.trim()).filter(Boolean);
-  return paragraphs.map(text => `<p class="q-ma-none q-mb-sm">${text}</p>`).join('');
-});
 const wizardStage1StatusLine = computed(() => {
   if (wizardStage1Complete.value) return 'Ready to chat';
   const statusSuffix = agentSetupStatus.value ? ` • ${agentSetupStatus.value}` : '';
   if (agentSetupElapsed.value) {
-    return `Pending ${Math.floor(agentSetupElapsed.value / 60)}m ${agentSetupElapsed.value % 60}s${statusSuffix}`;
+    return `${Math.floor(agentSetupElapsed.value / 60)}m ${agentSetupElapsed.value % 60}s${statusSuffix}`;
   }
-  return `Pending <elapsed time>${statusSuffix}`;
+  return `<elapsed time>${statusSuffix}`;
 });
 const wizardStage2FileName = ref<string | null>(null);
-const wizardStage3Files = ref<Array<{ name: string; isAppleHealth?: boolean }>>([]);
+const wizardStage3Files = ref<Array<{ name: string; isAppleHealth?: boolean; inKnowledgeBase?: boolean; bucketKey?: string; pendingKbAdd?: boolean }>>([]);
+const wizardKbIndexedKeys = ref<string[]>([]);
+const wizardKbTogglePending = ref<Set<string>>(new Set());
+const wizardAutoCheckedKeys = ref<Set<string>>(new Set());
+const wizardHasAppleHealthFile = computed(() => stage3DisplayFiles.value.some(file => !!file.isAppleHealth));
+const wizardKbAttached = computed(() => !!(userResourceStatus.value?.hasKB && userResourceStatus.value?.hasAgent));
+const stage2StatusDisplay = computed(() => {
+  const isIndexing = indexingStatus.value?.phase === 'indexing' || indexingStatus.value?.phase === 'indexing_started';
+  const files = indexingStatus.value?.filesIndexed ?? stage3DisplayFiles.value.length;
+  const tokens = indexingStatus.value?.tokens ?? wizardKbTotalTokens.value ?? '0';
+  const hasCompleted = indexingStatus.value?.phase === 'complete' || (!!wizardKbTotalTokens.value && !isIndexing && stage3HasFiles.value);
+  if (!stage3HasFiles.value && !isIndexing && !hasCompleted) {
+    return { show: false, text: '', files: 0, tokens: '0' };
+  }
+  if (isIndexing) {
+    const elapsed = stage3IndexingStartedAt.value ? ` (${formatElapsed(stage3IndexingStartedAt.value)})` : '';
+    return { show: true, text: `Indexing in-progress. Could take 5 to 60 minutes.${elapsed}`, files, tokens };
+  }
+  if (hasCompleted) {
+    return { show: true, text: 'Indexing complete.', files, tokens };
+  }
+  return { show: true, text: 'Indexing status pending.', files, tokens };
+});
 const stage3PendingUploadName = ref<string | null>(null);
 const wizardKbName = ref<string | null>(null);
 const wizardKbTotalTokens = ref<string | null>(null);
@@ -858,7 +876,10 @@ const stage3DisplayFiles = computed(() => {
       .map((file: { fileName?: string; bucketKey?: string }) => ({
         name: getFileNameFromEntry(file),
         needsRestore: true,
-        isAppleHealth: false
+        isAppleHealth: false,
+        inKnowledgeBase: false,
+        bucketKey: file.bucketKey || null,
+        pendingKbAdd: false
       }))
       .filter((entry: { name: string }) => !!entry.name);
   }
@@ -870,9 +891,20 @@ const stage3DisplayFiles = computed(() => {
       seen.add(entry.name);
       return true;
     })
-    .map(entry => ({ name: entry.name, needsRestore: false, isAppleHealth: entry.isAppleHealth }));
+    .map(entry => ({
+      name: entry.name,
+      needsRestore: false,
+      isAppleHealth: entry.isAppleHealth,
+      inKnowledgeBase: !!entry.inKnowledgeBase,
+      bucketKey: entry.bucketKey || null,
+      pendingKbAdd: !!entry.pendingKbAdd
+    }));
 });
 const stage3HasFiles = computed(() => stage3DisplayFiles.value.length > 0);
+const wizardNeedsIndexing = computed(() => {
+  const indexedKeys = new Set(wizardKbIndexedKeys.value || []);
+  return stage3DisplayFiles.value.some(file => !!file.inKnowledgeBase && !!file.bucketKey && !indexedKeys.has(file.bucketKey));
+});
 const stage3PendingUploadActive = computed(() => {
   const name = stage3PendingUploadName.value;
   if (!name) return false;
@@ -1817,9 +1849,12 @@ const refreshWizardState = async () => {
       wizardKbTotalTokens.value = tokensFromFiles || wizardKbTotalTokens.value;
       wizardKbIndexedCount.value = kbIndexedCount !== null ? kbIndexedCount : wizardKbIndexedCount.value;
       const fileEntries = files
-        .map((file: { fileName?: string; bucketKey?: string; isAppleHealth?: boolean }) => ({
-          name: getFileNameFromEntry(file),
-          isAppleHealth: !!file?.isAppleHealth
+        .map((file: { fileName?: string; name?: string; bucketKey?: string; isAppleHealth?: boolean; inKnowledgeBase?: boolean; pendingKbAdd?: boolean }) => ({
+          name: getFileNameFromEntry(file) || file.fileName || file.name || (file.bucketKey ? String(file.bucketKey).split('/').pop() : ''),
+          isAppleHealth: !!file?.isAppleHealth,
+          inKnowledgeBase: !!file?.inKnowledgeBase,
+          bucketKey: file?.bucketKey,
+          pendingKbAdd: !!file?.pendingKbAdd
         }))
         .filter((entry: { name: string }) => !!entry.name);
       const hasAppleHealth = fileEntries.some((entry: { isAppleHealth?: boolean }) => entry.isAppleHealth);
@@ -1830,9 +1865,38 @@ const refreshWizardState = async () => {
       }
       if (fileEntries.length > 0) {
         wizardStage3Files.value = fileEntries;
-        if (stage3PendingUploadName.value && wizardStage3Files.value.some(entry => entry.name === stage3PendingUploadName.value)) {
-          stage3PendingUploadName.value = null;
+      }
+      const storedStatus = filesResult?.kbIndexingStatus || null;
+      wizardKbIndexedKeys.value = Array.isArray(filesResult?.kbIndexedBucketKeys) ? filesResult.kbIndexedBucketKeys : [];
+      if (fileEntries.length > 0) {
+        const pendingName = stage3PendingUploadName.value;
+        const pendingEntry = pendingName
+          ? fileEntries.find(entry => entry.name === pendingName)
+          : null;
+        if (pendingEntry?.bucketKey && !pendingEntry.inKnowledgeBase && !wizardAutoCheckedKeys.value.has(pendingEntry.bucketKey)) {
+          wizardAutoCheckedKeys.value.add(pendingEntry.bucketKey);
+          void toggleWizardKbCheckbox(pendingEntry);
         }
+        if (pendingEntry) {
+          stage3PendingUploadName.value = null;
+          try {
+            const pendingKey = props.user?.userId ? `wizardKbPendingFileName-${props.user.userId}` : 'wizardKbPendingFileName';
+            localStorage.removeItem(pendingKey);
+          } catch (error) {
+            // ignore storage errors
+          }
+        }
+      }
+      // Persist indexing status when job already completed
+      if (stage3CompleteFromFiles !== null && storedStatus) {
+        const storedComplete = storedStatus?.backendCompleted === true || storedStatus?.phase === 'complete';
+        indexingStatus.value = {
+          active: false,
+          phase: storedComplete ? 'complete' : (storedStatus.phase || 'complete'),
+          tokens: storedStatus.tokens || tokensFromFiles || '0',
+          filesIndexed: storedStatus.filesIndexed || indexedCountFromFiles || 0,
+          progress: storedStatus.progress || 1
+        };
       }
     }
 
@@ -1855,9 +1919,6 @@ const refreshWizardState = async () => {
       const messagesResult = await messagesResponse.json();
       if (messagesResult?.messages && typeof messagesResult.messages === 'object') {
         wizardMessages.value = messagesResult.messages;
-      }
-      if (messagesResult?.intro) {
-        wizardIntroMessage.value = messagesResult.intro;
       }
     }
 
@@ -1919,8 +1980,16 @@ const refreshWizardState = async () => {
         }
       } else if (stage3CompleteFromFiles !== null) {
         wizardStage3Complete.value = stage3CompleteFromFiles;
-        if (indexingStatus.value?.phase === 'indexing') {
-          indexingStatus.value = null;
+        if (stage3CompleteFromFiles && !indexingStatus.value) {
+          indexingStatus.value = {
+            active: false,
+            phase: 'complete',
+            tokens: tokensFromFiles || '0',
+            filesIndexed: indexedCountFromFiles || 0,
+            progress: 1
+          };
+        }
+        if (indexingStatus.value?.phase !== 'indexing') {
           stopStage3ElapsedTimer();
         }
       }
@@ -2008,6 +2077,71 @@ const handleWizardFileSelect = () => {
   logWizardEvent('stage2_file_selected', { tab: 'wizard' });
   wizardUploadIntent.value = null;
   refreshWizardState();
+};
+
+const toggleWizardKbCheckbox = async (file: { bucketKey?: string | null; inKnowledgeBase?: boolean }) => {
+  const userId = props.user?.userId;
+  if (!userId || !file?.bucketKey) return;
+  const bucketKey = file.bucketKey;
+  if (wizardKbTogglePending.value.has(bucketKey)) return;
+  wizardKbTogglePending.value.add(bucketKey);
+  const nextValue = !file.inKnowledgeBase;
+  try {
+    const response = await fetch('/api/toggle-file-knowledge-base', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      credentials: 'include',
+      body: JSON.stringify({
+        userId,
+        bucketKey,
+        inKnowledgeBase: nextValue
+      })
+    });
+    if (!response.ok) {
+      throw new Error(`Failed to update KB selection (${response.status})`);
+    }
+    file.inKnowledgeBase = nextValue;
+    wizardStage3Files.value = wizardStage3Files.value.map(entry =>
+      entry.bucketKey === bucketKey ? { ...entry, inKnowledgeBase: nextValue } : entry
+    );
+    await refreshWizardState();
+  } catch (error) {
+    console.error('Failed to toggle KB selection:', error);
+  } finally {
+    wizardKbTogglePending.value.delete(bucketKey);
+  }
+};
+
+const handleWizardMedsAction = () => {
+  if (!props.user?.userId) return;
+  try {
+    sessionStorage.setItem('autoProcessInitialFile', 'true');
+    sessionStorage.setItem('wizardMyListsAuto', 'true');
+  } catch (error) {
+    // ignore storage errors
+  }
+  myStuffInitialTab.value = 'lists';
+  showMyStuffDialog.value = true;
+};
+
+const handleWizardSummaryAction = async () => {
+  if (!props.user?.userId) return;
+  myStuffInitialTab.value = 'summary';
+  showMyStuffDialog.value = true;
+  try {
+    await fetch('/api/generate-patient-summary', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      credentials: 'include',
+      body: JSON.stringify({ userId: props.user.userId })
+    });
+  } catch (error) {
+    console.error('Failed to generate patient summary:', error);
+  }
 };
 
 const dismissWizard = () => {
@@ -4798,6 +4932,56 @@ onUnmounted(() => {
 
 .chat-interface .q-card {
   height: 100%;
+}
+
+.wizard-slide-scroll {
+  max-height: 70vh;
+  overflow-y: auto;
+}
+
+.wizard-slide-box {
+  border: 1px solid #e0e0e0;
+  border-radius: 8px;
+  padding: 16px;
+  background: #fafafa;
+  width: 100%;
+  max-width: 720px;
+}
+
+.wizard-slide-intro {
+  max-width: 720px;
+  margin-left: 0;
+}
+
+.wizard-slide-intro {
+  text-align: left;
+  align-self: flex-start;
+}
+
+.wizard-slide-list {
+  margin: 0;
+}
+
+.wizard-slide-intro {
+  text-align: left;
+}
+
+.wizard-slide-item {
+  display: flex;
+  align-items: center;
+  margin-bottom: 6px;
+}
+
+.wizard-slide-box-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 8px;
+}
+
+.wizard-status-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
 }
 
 .chat-messages {
