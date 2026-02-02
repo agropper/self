@@ -45,6 +45,7 @@ const shouldSuppressLog = (args) =>
 const originalConsoleLog = console.log.bind(console);
 const originalConsoleWarn = console.warn.bind(console);
 const originalConsoleError = console.error.bind(console);
+const wizAttachLogState = new Map();
 console.log = (...args) => {
   if (shouldSuppressLog(args)) return;
   originalConsoleLog(...args);
@@ -56,6 +57,13 @@ console.warn = (...args) => {
 console.error = (...args) => {
   if (shouldSuppressLog(args)) return;
   originalConsoleError(...args);
+};
+
+const logWizAttachCheck = (key, state, message) => {
+  const serialized = JSON.stringify(state);
+  if (wizAttachLogState.get(key) === serialized) return;
+  wizAttachLogState.set(key, serialized);
+  console.log(message);
 };
 
 const __filename = fileURLToPath(import.meta.url);
@@ -1012,7 +1020,16 @@ async function validateUserResources(userId) {
       } else {
         kbStatus = 'not_attached';
         // If agent is ready and indexing completed, attach now
-        console.log(`[WIZ] Attach check (validate): agentEndpoint=${!!userDoc.agentEndpoint} indexed=${!!userDoc.kbIndexingStatus?.backendCompleted} kbId=${kbIdFound || 'none'} agentId=${userDoc.assignedAgentId || 'none'}`);
+        logWizAttachCheck(
+          `validate:${userId}`,
+          {
+            agentEndpoint: !!userDoc.agentEndpoint,
+            indexed: !!userDoc.kbIndexingStatus?.backendCompleted,
+            kbId: kbIdFound || 'none',
+            agentId: userDoc.assignedAgentId || 'none'
+          },
+          `[WIZ] Attach check (validate): agentEndpoint=${!!userDoc.agentEndpoint} indexed=${!!userDoc.kbIndexingStatus?.backendCompleted} kbId=${kbIdFound || 'none'} agentId=${userDoc.assignedAgentId || 'none'}`
+        );
         if (userDoc.agentEndpoint && userDoc.kbIndexingStatus?.backendCompleted) {
           try {
             await doClient.agent.attachKB(userDoc.assignedAgentId, kbIdFound);
@@ -3843,7 +3860,15 @@ async function provisionUserAsync(userId, token) {
     });
 
     // If indexing already completed, attach KB now that agent is ready
-    console.log(`[WIZ] Attach check (provision): kbId=${userDoc?.kbId || 'none'} indexed=${!!userDoc?.kbIndexingStatus?.backendCompleted} agentId=${newAgent.uuid}`);
+    logWizAttachCheck(
+      `provision:${userId}`,
+      {
+        kbId: userDoc?.kbId || 'none',
+        indexed: !!userDoc?.kbIndexingStatus?.backendCompleted,
+        agentId: newAgent.uuid
+      },
+      `[WIZ] Attach check (provision): kbId=${userDoc?.kbId || 'none'} indexed=${!!userDoc?.kbIndexingStatus?.backendCompleted} agentId=${newAgent.uuid}`
+    );
     if (userDoc?.kbId && userDoc?.kbIndexingStatus?.backendCompleted) {
       try {
         await doClient.agent.attachKB(newAgent.uuid, userDoc.kbId);
@@ -8024,7 +8049,16 @@ app.get('/api/user-status', async (req, res) => {
     }
     
     const agentReady = !!(userDoc.assignedAgentId && userDoc.agentEndpoint);
-    console.log(`[WIZ] Attach check (user-status): agentReady=${agentReady} kbStatus=${kbStatus} kbId=${userDoc.kbId || 'none'} indexed=${!!userDoc.kbIndexingStatus?.backendCompleted}`);
+    logWizAttachCheck(
+      `user-status:${userId}`,
+      {
+        agentReady,
+        kbStatus,
+        kbId: userDoc.kbId || 'none',
+        indexed: !!userDoc.kbIndexingStatus?.backendCompleted
+      },
+      `[WIZ] Attach check (user-status): agentReady=${agentReady} kbStatus=${kbStatus} kbId=${userDoc.kbId || 'none'} indexed=${!!userDoc.kbIndexingStatus?.backendCompleted}`
+    );
     let resolvedKbStatus = kbStatus;
     if (agentReady && kbStatus === 'not_attached' && userDoc?.kbId && userDoc?.kbIndexingStatus?.backendCompleted) {
       try {
