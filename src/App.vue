@@ -596,7 +596,7 @@ const saveLocalSnapshot = async (snapshot?: SignOutSnapshot | null) => {
     const kbName = files?.kbName || null;
     const fileStatusSummary = filesList.map((file: any) => {
       const bucketKey = file.bucketKey || '';
-      const kbFolderPrefix = kbName ? `${currentUserId}/${kbName}/` : null;
+      const kbFolderPrefix = kbName ? `${user.value?.userId}/${kbName}/` : null;
       const inKnowledgeBase = kbFolderPrefix
         ? (file.bucketKey || '').startsWith(kbFolderPrefix)
         : false;

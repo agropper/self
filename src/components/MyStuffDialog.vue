@@ -1222,6 +1222,7 @@ const kbInfo = ref<{
   kbId: string;
   connected: boolean;
   indexedDataSourceCount?: number | null;
+  lastIndexedAt?: string | null;
 } | null>(null);
 const togglingKB = ref(false);
 

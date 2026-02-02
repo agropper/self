@@ -750,7 +750,6 @@ const agentSetupElapsed = ref(0);
 const agentSetupTimedOut = ref(false);
 const agentSetupPollingActive = ref(false);
 let agentSetupTimer: ReturnType<typeof setInterval> | null = null;
-const wizardHasAppleFileAnswer = ref<boolean | null>(null);
 const wizardOtherFilesCount = ref(0);
 const wizardHasFilesInKB = ref(false);
 const wizardCurrentMedications = ref(false);
@@ -1054,7 +1053,7 @@ const startRestoreIndexing = async () => {
       restoreIndexingQueued.value = false;
       return;
     }
-    wizardStage3Files.value = uniqueNames;
+    wizardStage3Files.value = uniqueNames.map(name => ({ name }));
     await handleStage3Index(uniqueNames, true);
   } finally {
     restoreIndexingQueued.value = false;
@@ -1730,7 +1729,8 @@ const isAppleHealthExport = (fileName: string) => {
 };
 
 const refreshWizardState = async () => {
-  if (!props.user?.userId) return;
+  const userId = props.user?.userId;
+  if (!userId) return;
   let stage3CompleteFromFiles: boolean | null = null;
   let indexingActiveFromFiles: boolean | null = null;
   let indexedCountFromFiles: number | null = null;
@@ -1820,7 +1820,7 @@ const refreshWizardState = async () => {
           isAppleHealth: !!file?.isAppleHealth
         }))
         .filter((entry: { name: string }) => !!entry.name);
-      const hasAppleHealth = fileEntries.some(entry => entry.isAppleHealth);
+      const hasAppleHealth = fileEntries.some((entry: { isAppleHealth?: boolean }) => entry.isAppleHealth);
       if (!hasAppleHealth) {
         wizardStage2NoDevice.value = true;
       } else if (wizardStage2NoDevice.value) {
@@ -2055,7 +2055,7 @@ const handleStage3Index = async (overrideNames?: string[], fromRestore = false) 
       : Array.from(new Set(wizardStage3Files.value.map(file => file.name)));
     if (stage3Names.length > 0) {
       const fetchWizardFiles = async () => {
-        const filesResponse = await fetch(`/api/user-files?userId=${encodeURIComponent(props.user.userId)}&source=wizard`, {
+        const filesResponse = await fetch(`/api/user-files?userId=${encodeURIComponent(userId)}&source=wizard`, {
           credentials: 'include'
         });
         if (!filesResponse.ok) return [];
@@ -2175,7 +2175,6 @@ const handleStage3Index = async (overrideNames?: string[], fromRestore = false) 
       clearInterval(stage3IndexingPoll.value);
     }
     if (result?.jobId) {
-      const jobId = result.jobId;
       stage3IndexingPoll.value = setInterval(async () => {
         try {
           const statusResponse = await fetch(`/api/user-files?userId=${encodeURIComponent(props.user?.userId || '')}&source=wizard`, {
@@ -2347,43 +2346,6 @@ const detectAppleHealthFromBucket = async (bucketKey: string): Promise<boolean> 
     return false;
   }
 };
-
-const triggerStage2Processing = (fileInfo: { bucketKey?: string; fileName?: string }) => {
-  if (!props.user?.userId) return;
-  const bucketKey = fileInfo.bucketKey;
-  const fileName = fileInfo.fileName;
-  if (!bucketKey) return;
-  wizardStage2Pending.value = true;
-  try {
-    sessionStorage.setItem('autoProcessInitialFile', 'true');
-    sessionStorage.setItem('wizardMyListsAuto', 'true');
-  } catch (error) {
-    // ignore storage errors
-  }
-  myStuffInitialTab.value = 'lists';
-  showMyStuffDialog.value = true;
-  void (async () => {
-    try {
-      await fetch('/api/files/lists/process-initial-file', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        credentials: 'include',
-        body: JSON.stringify({
-          bucketKey,
-          fileName
-        })
-      });
-    } catch (error) {
-      console.warn('Stage 2 auto-processing failed:', error);
-    } finally {
-      wizardStage2Pending.value = false;
-      refreshWizardState();
-    }
-  })();
-};
-
 
 const findRehydrationEntry = (fileName: string) => {
   if (!fileName) return null;

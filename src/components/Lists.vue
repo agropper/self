@@ -500,11 +500,6 @@ const currentMedicationsStatus = ref<'reviewing' | 'consulting' | 'waiting' | ''
 const wizardAutoFlow = ref(false);
 const wizardAutoFlowStorageKey = 'wizardMyListsAuto';
 const wizardAutoStartPending = ref(false);
-const showWizardAutoExtract = computed(() =>
-  wizardAutoFlow.value &&
-  hasInitialFile.value &&
-  !hasSavedResults.value
-);
 const wizardPreparingMeds = computed(() =>
   wizardAutoFlow.value &&
   !currentMedications.value &&
@@ -1041,79 +1036,6 @@ const attemptAutoProcessInitialFile = async () => {
 };
 
 // processPdfFile and processPdfFromBucket removed - replaced with processInitialFile
-
-const processCategory = async (categoryName: string) => {
-  if (!savedResultsBucketKey.value) {
-    error.value = 'No saved processing results found';
-    return;
-  }
-
-  processingCategory.value = categoryName;
-  
-  try {
-    const response = await fetch('/api/files/lists/process-category', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json'
-      },
-      credentials: 'include',
-      body: JSON.stringify({
-        categoryName,
-        resultsBucketKey: savedResultsBucketKey.value
-      })
-    });
-
-    if (!response.ok) {
-      const errorData = await response.json().catch(() => ({ error: `HTTP ${response.status}: ${response.statusText}` }));
-      throw new Error(errorData.error || 'Failed to process category');
-    }
-
-    const result = await response.json();
-    
-    // Update processing status
-    categoryProcessingStatus.value[categoryName] = {
-      total: result.indexed.total,
-      indexed: result.indexed.indexed,
-      errors: result.indexed.errors || []
-    };
-
-    // Update current category display and items
-    currentCategoryDisplay.value = categoryName;
-    categoryItems.value = result.list || [];
-
-    // If it's Clinical Notes, also reload the clinical notes list for the existing component
-    if (categoryName.toLowerCase().includes('clinical notes')) {
-      loadClinicalNotes();
-      // Also update categoryItems with clinical notes format
-      categoryItems.value = result.list.map((note: any) => ({
-        id: note.id || `${note.fileName}-${note.page}-${note.noteIndex || 0}`,
-        ...note
-      }));
-    }
-
-    if ($q && typeof $q.notify === 'function') {
-      $q.notify({
-        type: result.fromCache ? 'info' : 'positive',
-        message: result.fromCache 
-          ? `Loaded cached ${categoryName} list`
-          : `Processed ${categoryName}: ${result.indexed.indexed} items indexed`,
-        timeout: 3000
-      });
-    }
-  } catch (err) {
-    const errorMessage = err instanceof Error ? err.message : 'Failed to process category';
-    error.value = errorMessage;
-    if ($q && typeof $q.notify === 'function') {
-      $q.notify({
-        type: 'negative',
-        message: errorMessage,
-        timeout: 5000
-      });
-    }
-  } finally {
-    processingCategory.value = null;
-  }
-};
 
 // cleanupMarkdown function removed - not used
 
