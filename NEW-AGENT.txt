@@ -200,7 +200,7 @@ With MAIA, public AIs like ChatGPT will not have access to your records except a
 
 ---
 ![CC-BY](by.png)
-Adrian Gropper, MD
+ MAIA by Adrian Gropper, MD
 
 ---
 
