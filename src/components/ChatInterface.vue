@@ -4537,55 +4537,10 @@ const handleRehydrationFileRemoved = (payload: { bucketKey?: string; fileName?: 
   emit('rehydration-file-removed', payload);
 };
 
-// Parse contextual tip to extract clickable links
-const parsedContextualTip = computed(() => {
-  const tip = contextualTip.value;
-  if (!tip) return [{ type: 'text', text: '' }];
-  
-  const parts: Array<{ type: 'text' | 'link'; text: string; tab?: string }> = [];
-  const linkPattern = /\[(Stored Files|Saved Chats)\]/g;
-  let lastIndex = 0;
-  let match;
-  
-  while ((match = linkPattern.exec(tip)) !== null) {
-    // Add text before the link
-    if (match.index > lastIndex) {
-      parts.push({ type: 'text', text: tip.substring(lastIndex, match.index) });
-    }
-    
-    // Add the link
-    const linkText = match[1];
-    const tab = linkText === 'Stored Files' ? 'files' : 'chats';
-    parts.push({ type: 'link', text: match[0], tab });
-    
-    lastIndex = match.index + match[0].length;
-  }
-  
-  // Add remaining text after the last link
-  if (lastIndex < tip.length) {
-    parts.push({ type: 'text', text: tip.substring(lastIndex) });
-  }
-  
-  // If no links found, return the whole text as a single part
-  if (parts.length === 0) {
-    return [{ type: 'text', text: tip }];
-  }
-  
-  return parts;
-});
-
-
 // Open My Stuff dialog with a specific tab
 const openMyStuffTab = (tab: string) => {
   myStuffInitialTab.value = tab;
   showMyStuffDialog.value = true;
-};
-
-// Helper function to handle link clicks with proper type narrowing
-const handleLinkClick = (part: { type: 'text' | 'link'; text: string; tab?: string } | { type: string; text: string }) => {
-  if (part.type === 'link' && 'tab' in part && part.tab) {
-    openMyStuffTab(part.tab);
-  }
 };
 
 // Map workflow stages to user-friendly tips
