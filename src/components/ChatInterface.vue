@@ -806,9 +806,6 @@ const wizardMessages = ref<Record<number, string>>({});
 const wizardDismissed = ref(false);
 const appleExportFooterSnippet = 'This summary displays certain health information made available to you by your healthcare provider and may not completely';
 const appleExportFooterNormalized = appleExportFooterSnippet.toLowerCase().replace(/\s+/g, ' ').trim();
-const stage2Checked = computed(() =>
-  !wizardRestoreActive.value && wizardStage3Complete.value && !stage3IndexingActive.value
-);
 const stage3Checked = computed(() =>
   !wizardRestoreActive.value && (wizardStage2Complete.value || wizardCurrentMedications.value || wizardStage2NoDevice.value)
 );
@@ -828,16 +825,6 @@ const restoreIndexingActive = ref(false);
 const restoreIndexingQueued = ref(false);
 const wizardRestoreTargetName = ref<string | null>(null);
 const wizardStage2NoDevice = ref(false);
-const stage2RestoreFileName = computed(() => {
-  if (!wizardRestoreActive.value) return null;
-  const files = Array.isArray(props.rehydrationFiles) ? props.rehydrationFiles : [];
-  const initial = files.find((file: { isInitial?: boolean }) => file?.isInitial);
-  const apple = files.find((file: { fileName?: string; bucketKey?: string }) =>
-    isAppleHealthExport(getFileNameFromEntry(file))
-  );
-  const entry = initial || apple || files[0];
-  return entry ? getFileNameFromEntry(entry) : null;
-});
 const wizardStage1StatusLine = computed(() => {
   if (wizardStage1Complete.value) return 'Ready to chat';
   const statusSuffix = agentSetupStatus.value ? ` • ${agentSetupStatus.value}` : '';
