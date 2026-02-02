@@ -430,7 +430,7 @@
                   <div class="col">
                     <div class="text-weight-medium">{{ kbInfo.name }}</div>
                     <div class="text-caption text-grey-7 q-mt-xs">
-                      Last indexed: {{ formatRelativeTime(kbInfo.lastIndexedAt) }}
+                      Last indexed: {{ formatRelativeTime(kbInfo.lastIndexedAt || null) }}
                     </div>
                   </div>
                   <div class="col-auto">

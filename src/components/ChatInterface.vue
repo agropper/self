@@ -251,17 +251,18 @@
               />
             </div>
             <div class="col" style="display: flex; align-items: center; justify-content: center;">
-              <q-btn 
-                flat 
-                dense 
-                round 
-                icon="settings" 
-                class="text-grey-6 q-mr-xs" 
+              <q-btn
                 v-if="canAccessMyStuff"
+                outline
+                dense
+                icon="settings"
+                label="My Stuff"
+                color="grey-7"
                 @click="() => { myStuffInitialTab = 'files'; showMyStuffDialog = true; }"
               >
                 <q-tooltip>My Stuff: Manage files, knowledge base, agent settings, and patient summary</q-tooltip>
               </q-btn>
+              <!-- Status box hidden for now
               <span class="text-body2 text-grey-7" :title="contextualTip">
                 <template v-for="(part, index) in parsedContextualTip" :key="index">
                   <span v-if="part.type === 'text'">{{ part.text }}</span>
@@ -274,6 +275,7 @@
                   >{{ part.text }}</a>
                 </template>
               </span>
+              -->
             </div>
             <div class="col-auto" style="display: flex; align-items: center; justify-content: flex-end; gap: 8px;">
               <span class="text-body2 text-grey-7">
@@ -2043,7 +2045,8 @@ const stopStage3ElapsedTimer = () => {
 };
 
 const handleStage3Index = async (overrideNames?: string[], fromRestore = false) => {
-  if (!props.user?.userId) return;
+  const userId = props.user?.userId;
+  if (!userId) return;
   if (stage3IndexingActive.value) return;
   stage3IndexingPending.value = true;
   if (fromRestore) {

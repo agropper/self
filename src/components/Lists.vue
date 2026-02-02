@@ -467,7 +467,6 @@ const hasAppleHealthFile = ref(false);
 const appleHealthFileInfo = ref<{ bucketKey: string; fileName: string } | null>(null);
 const savedPdfBucketKey = ref<string | null>(null);
 const savedResultsBucketKey = ref<string | null>(null);
-const processingCategory = ref<string | null>(null);
 const categoryProcessingStatus = ref<Record<string, { total: number; indexed: number; errors: string[] }>>({});
 const currentCategoryDisplay = ref<string | null>(null);
 const categoryItems = ref<any[]>([]);
