@@ -867,12 +867,12 @@
               </div>
                 <div class="row q-gutter-sm">
                   <q-btn
-                    v-if="showWizardSummaryActions && !isEditingSummaryTab"
+                    v-if="showSummaryAttention && !isEditingSummaryTab"
                     outline
                     label="Verify"
                     color="primary"
                     icon="verified"
-                    class="verify-highlight"
+                    :class="{ 'verify-highlight': showSummaryAttention }"
                     @click="handleVerifySummaryTab"
                   />
                   <q-btn
@@ -881,7 +881,7 @@
                     label="Edit"
                     color="primary"
                     icon="edit"
-                    :class="{ 'verify-highlight': showWizardSummaryActions }"
+                    :class="{ 'verify-highlight': showSummaryAttention }"
                     @click="startSummaryEdit"
                   />
                   <q-btn
@@ -1036,12 +1036,12 @@
 
         <q-card-actions align="right" class="q-pa-md">
           <q-btn
-            v-if="showWizardSummaryActions && !editingSummary"
+            v-if="showSummaryAttention && !editingSummary"
             outline
             label="VERIFY"
             color="primary"
             icon="verified"
-            class="verify-highlight"
+            :class="{ 'verify-highlight': showSummaryAttention }"
             @click="handleVerifySummaryTab"
           />
           <q-btn 
@@ -1061,7 +1061,7 @@
             label="EDIT" 
             color="primary" 
             @click="handleEditSummary"
-            :class="{ 'verify-highlight': showWizardSummaryActions }"
+            :class="{ 'verify-highlight': showSummaryAttention }"
           />
         </q-card-actions>
       </q-card>
@@ -1274,6 +1274,8 @@ const kbNeedsUpdate = ref(false); // Track if KB needs to be updated (files move
 const kbSummaryTokens = ref<string | number | null>(null);
 const kbSummaryFiles = ref<number | null>(null);
 const showWizardSummaryActions = computed(() => !!props.wizardActive && currentTab.value === 'summary');
+const summaryNeedsVerify = ref(false);
+const showSummaryAttention = computed(() => showWizardSummaryActions.value || summaryNeedsVerify.value);
 const kbDataSourceCount = ref<number | null>(null);
 const kbIndexedDataSourceCount = ref<number | null>(null);
 
@@ -2594,11 +2596,11 @@ const pollIndexingProgress = async (jobId: string) => {
         indexingStatus.value.phase = 'complete';
         indexingStatus.value.message = 'Knowledge base indexed successfully!';
         
-        if (result.tokens !== undefined) {
-          kbSummaryTokens.value = result.tokens;
+        if (statusResult.tokens !== undefined) {
+          kbSummaryTokens.value = statusResult.tokens;
         }
-        if (result.filesIndexed !== undefined) {
-          kbSummaryFiles.value = result.filesIndexed;
+        if (statusResult.filesIndexed !== undefined) {
+          kbSummaryFiles.value = statusResult.filesIndexed;
         }
         
         // Reload files to refresh the file list
@@ -2627,9 +2629,9 @@ const pollIndexingProgress = async (jobId: string) => {
         setTimeout(() => {
           indexingKB.value = false;
         }, 5000);
-      } else if (result.phase === 'error') {
+      } else if (statusResult.phase === 'error') {
         indexingStatus.value.phase = 'error';
-        indexingStatus.value.error = result.error || 'Indexing failed';
+        indexingStatus.value.error = statusResult.error || 'Indexing failed';
         emit('indexing-finished', { jobId, phase: 'error', error: indexingStatus.value.error });
         
         // Clean up elapsed time interval
@@ -2878,6 +2880,7 @@ const handleReplaceSummaryByIndex = async (indexToReplace: number) => {
     
     // Reload summaries to get updated list
     await loadPatientSummary();
+    summaryNeedsVerify.value = true;
     emit('patient-summary-saved', { userId: props.userId });
     
     if ($q && typeof $q.notify === 'function') {
@@ -2930,6 +2933,7 @@ const handleReplaceSummary = async (replaceStrategy: 'keep' | 'oldest' | 'newest
     
     // Reload summaries to get updated list
     await loadPatientSummary();
+    summaryNeedsVerify.value = true;
     emit('patient-summary-saved', { userId: props.userId });
     
     if ($q && typeof $q.notify === 'function') {
@@ -2989,6 +2993,7 @@ const handleSaveSummary = async () => {
     patientSummary.value = newPatientSummary.value;
     summaryEditText.value = newPatientSummary.value;
     isEditingSummaryTab.value = false;
+    summaryNeedsVerify.value = true;
 
     emit('patient-summary-saved', { userId: props.userId });
     
@@ -5091,6 +5096,7 @@ const saveSummaryFromTab = async () => {
 
 const handleVerifySummaryTab = () => {
   if (!props.userId || !patientSummary.value) return;
+  summaryNeedsVerify.value = false;
   emit('patient-summary-verified', { userId: props.userId });
   if ($q && typeof $q.notify === 'function') {
     $q.notify({

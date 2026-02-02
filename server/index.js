@@ -6730,6 +6730,7 @@ app.post('/api/update-knowledge-base', async (req, res) => {
       let activeJobId = jobId; // Track the specific job we started
     let finished = false;
     let pollTimer = null;
+    let notFoundLogged = false;
 
     const clearPollTimer = () => {
       if (pollTimer) {
@@ -6738,12 +6739,32 @@ app.post('/api/update-knowledge-base', async (req, res) => {
       }
     };
 
+    const logFinalIndexingStatus = async (reason) => {
+      try {
+        const finalDoc = await cloudant.getDocument('maia_users', userId);
+        const status = finalDoc?.kbIndexingStatus || null;
+        if (status) {
+          const job = status.jobId || activeJobId;
+          const phase = status.phase || 'unknown';
+          const state = status.status || 'unknown';
+          const tokens = status.tokens || '0';
+          const files = status.filesIndexed || 0;
+          const completed = status.backendCompleted === true;
+          console.log(`[KB AUTO] ℹ️ Final status for job ${job} (reason=${reason}) phase=${phase} status=${state} files=${files} tokens=${tokens} completed=${completed}`);
+        } else {
+          console.log(`[KB AUTO] ℹ️ Final status for job ${activeJobId} (reason=${reason}) status=unknown`);
+        }
+      } catch (error) {
+        console.log(`[KB AUTO] ℹ️ Final status for job ${activeJobId} (reason=${reason}) status=unavailable`);
+      }
+    };
+
     const scheduleNextPoll = () => {
       if (finished) return;
       pollTimer = setTimeout(runPoll, pollDelayMs);
     };
 
-    const completeIndexing = async (job, fileCount, tokenValue, indexedFiles) => {
+    const completeIndexing = async (job, fileCount, tokenValue, indexedFiles, completionReason = 'status_completed') => {
       if (finished) return;
       finished = true;
       clearPollTimer();
@@ -6779,7 +6800,7 @@ app.post('/api/update-knowledge-base', async (req, res) => {
           await cloudant.saveDocument('maia_users', finalUserDoc);
         }
 
-        console.log(`[KB INDEXING] ✅ Indexing completed successfully: ${finalFileCount} files, ${finalTokens} tokens, ${elapsedMinutes}m ${elapsedSeconds}s`);
+        console.log(`[KB INDEXING] ✅ Indexing completed successfully (reason=${completionReason}): ${finalFileCount} files, ${finalTokens} tokens, ${elapsedMinutes}m ${elapsedSeconds}s`);
         await persistKbIndexingStatus(userId, {
           jobId: activeJobId,
           status: 'INDEX_JOB_STATUS_COMPLETED',
@@ -6819,6 +6840,8 @@ const runPoll = async () => {
         const currentUserDoc = await cloudant.getDocument('maia_users', userId);
         if (!currentUserDoc) {
           console.log(`[KB AUTO] ⚠️ User doc not found while polling. Stopping polling for job ${activeJobId}.`);
+          console.log(`[KB AUTO] ⚠️ Polling stopped for job ${activeJobId} (reason=user_doc_missing)`);
+          await logFinalIndexingStatus('user_doc_missing');
           finished = true;
           clearPollTimer();
           return;
@@ -6876,7 +6899,14 @@ const runPoll = async () => {
            const kbDetails = await getCachedKB(kbId);
            const tokens = String(kbDetails?.total_tokens || kbDetails?.token_count || kbDetails?.tokens || job.tokens || job.total_tokens || 0);
 
-           const fileCount = job.data_source_jobs?.[0]?.indexed_file_count || 0;
+           const kbNameForFiles = getKBNameFromUserDoc(currentUserDoc, userId);
+           const kbFolderPrefix = kbNameForFiles ? `${userId}/${kbNameForFiles}/` : null;
+           const indexedFiles = kbFolderPrefix && Array.isArray(currentUserDoc.files)
+             ? currentUserDoc.files
+               .map(file => file?.bucketKey)
+               .filter(key => typeof key === 'string' && key.startsWith(kbFolderPrefix))
+             : [];
+           const fileCount = job.data_source_jobs?.[0]?.indexed_file_count || indexedFiles.length;
 
           // Only mark as complete if this is the job we're tracking AND it's actually completed
           const isCompleted = (status === 'INDEX_JOB_STATUS_COMPLETED' || 
@@ -6903,12 +6933,41 @@ const runPoll = async () => {
            });
 
            if (isCompleted) {
+            console.log(`[KB AUTO] ✅ Completion detected for job ${activeJobId} (status=${status})`);
              console.log(`[KB AUTO] ✅ Detected completion for job ${activeJobId} (poll ${pollCount})`);
-             await completeIndexing(job, fileCount, tokens, indexedFiles);
+            await completeIndexing(job, fileCount, tokens, indexedFiles, 'status_completed');
+            await logFinalIndexingStatus('completed_status');
              return;
            }
           console.log(`[KB Status] job=${activeJobId} poll=${pollCount}/${maxPolls} status=${status} files=${fileCount} tokens=${tokens}`);
-         } else {
+        } else {
+          if (!notFoundLogged) {
+            console.log(`[KB AUTO] ⚠️ Job ${activeJobId} not found in list (reason=not_found jobs=${jobsArray.length})`);
+            notFoundLogged = true;
+          }
+          try {
+            const kbDetails = await doClient.kb.get(kbId);
+            const lastIndexedAt = kbDetails?.last_indexed_at || kbDetails?.lastIndexedAt || kbDetails?.updated_at || kbDetails?.updatedAt || null;
+            const lastIndexedMs = lastIndexedAt ? Date.parse(lastIndexedAt) : NaN;
+            if (!Number.isNaN(lastIndexedMs) && lastIndexedMs >= startTime) {
+              const kbName = getKBNameFromUserDoc(currentUserDoc, userId);
+              const kbFolderPrefix = kbName ? `${userId}/${kbName}/` : null;
+              const kbFileCount = kbFolderPrefix && Array.isArray(currentUserDoc.files)
+                ? currentUserDoc.files.filter(file => typeof file?.bucketKey === 'string' && file.bucketKey.startsWith(kbFolderPrefix)).length
+                : 0;
+              const tokens = String(kbDetails?.total_tokens || kbDetails?.token_count || kbDetails?.tokens || 0);
+              const completionReason = 'kb_last_indexed_at_advanced';
+              console.log(`[KB AUTO] ✅ Completion inferred for job ${activeJobId} (reason=${completionReason})`);
+              await completeIndexing({
+                tokens,
+                total_tokens: tokens,
+                data_source_jobs: [{ indexed_file_count: kbFileCount }]
+              }, kbFileCount, tokens, completionReason);
+              return;
+            }
+          } catch (fallbackError) {
+            console.warn('[KB AUTO] ⚠️ Failed fallback completion check:', fallbackError.message);
+          }
            // No job found - check if it failed or if we should continue
            const failedJob = jobsArray.find(j => {
              const currentJobId = j.uuid || j.id || j.indexing_job_id;
@@ -6930,13 +6989,16 @@ const runPoll = async () => {
              finished = true;
              clearPollTimer();
              const failedJobId = failedJob.uuid || failedJob.id || failedJob.indexing_job_id;
-             console.error(`[KB AUTO] ❌ Indexing job ${failedJobId} failed:`, failedJob.error || failedJob.message || 'Unknown error');
+            const failReason = failedJob.error || failedJob.message || 'Unknown error';
+            console.error(`[KB AUTO] ❌ Indexing job ${failedJobId} failed:`, failReason);
+            console.log(`[KB AUTO] ❌ Polling stopped for job ${activeJobId} (reason=job_failed)`);
+            await logFinalIndexingStatus('job_failed');
             await cleanupEphemeralIndexing('failed');
              return;
            }
-           console.log(`[KB Status] job=${activeJobId} poll=${pollCount}/${maxPolls} status=not_found jobs=${jobsArray.length}`);
          }
        } catch (error) {
+        console.log(`[KB Status] job=${activeJobId} poll=${pollCount}/${maxPolls} status=error files=? tokens=? error=${error.message}`);
          console.error(`[KB AUTO] ❌ Error polling indexing status (poll ${pollCount}):`, error.message);
          if (isRateLimitError(error) && pollCount > 0) {
            pollCount -= 1; // do not count this attempt when rate limited
@@ -6947,7 +7009,9 @@ const runPoll = async () => {
          if (pollCount >= maxPolls) {
            finished = true;
            clearPollTimer();
-           console.error(`[KB AUTO] ⚠️ Polling timeout: No indexing job found after ${maxPolls} polls (${Math.round((maxPolls * pollDelayMs) / 60000)} minutes)`);
+          console.error(`[KB AUTO] ⚠️ Polling timeout: No indexing job found after ${maxPolls} polls (${Math.round((maxPolls * pollDelayMs) / 60000)} minutes)`);
+          console.log(`[KB AUTO] ⚠️ Polling stopped for job ${activeJobId} (reason=timeout)`);
+          await logFinalIndexingStatus('timeout');
           await cleanupEphemeralIndexing('timeout');
          } else {
            scheduleNextPoll();

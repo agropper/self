@@ -60,6 +60,15 @@
           <div v-else>
             No medication records found. Upload a health record file to extract medication information.
           </div>
+          <div v-if="appleHealthFileInfo" class="q-mt-md">
+            <q-btn
+              color="primary"
+              icon="create"
+              :label="`Create categories list and current medications from ${appleHealthFileInfo.fileName}`"
+              @click="processInitialFile(appleHealthFileInfo)"
+              :loading="isProcessing"
+            />
+          </div>
         </div>
         
         <!-- Edit Mode -->
@@ -190,36 +199,6 @@
       </q-card-actions>
     </q-card>
   </q-dialog>
-
-    <!-- Update Lists from Initial File -->
-    <q-card v-if="!hasSavedResults" class="q-mb-md">
-      <q-card-section>
-        <div class="text-h6 q-mb-md">Extract Lists from Initial File</div>
-        <div class="text-body2 text-grey q-mb-md">
-          Process your initial health record file to extract structured lists (Clinical Notes, Medications, etc.)
-        </div>
-        <div v-if="showWizardAutoExtract" class="q-pa-sm">
-          <q-spinner size="2em" color="primary" />
-          <div class="q-mt-sm">Analyzing for categories in the file...</div>
-        </div>
-        <div v-else-if="isProcessing" class="q-pa-sm">
-          <q-spinner size="2em" color="primary" />
-          <div class="q-mt-sm">{{ processingMessage || 'Processing initial file...' }}</div>
-          <div class="text-caption text-grey q-mt-xs">Parsing and extracting lists from your file.</div>
-        </div>
-        <q-btn
-          v-else
-          color="primary"
-          label="Create Lists from Initial File"
-          icon="create"
-          @click="processInitialFile"
-          :disable="!hasInitialFile"
-        />
-        <div v-if="!hasInitialFile" class="text-caption text-grey q-mt-sm">
-          No initial file found. Please upload a file during registration.
-        </div>
-      </q-card-section>
-    </q-card>
 
     <!-- Error State -->
     <q-banner v-if="error" rounded class="bg-negative text-white q-mb-md">
@@ -485,6 +464,7 @@ const clinicalNotes = ref<ClinicalNote[]>([]);
 const isLoadingClinicalNotes = ref(false);
 const hasSavedResults = ref(false);
 const hasAppleHealthFile = ref(false);
+const appleHealthFileInfo = ref<{ bucketKey: string; fileName: string } | null>(null);
 const savedPdfBucketKey = ref<string | null>(null);
 const savedResultsBucketKey = ref<string | null>(null);
 const processingCategory = ref<string | null>(null);
@@ -646,7 +626,14 @@ const loadAppleHealthStatus = async () => {
     if (!response.ok) return;
     const result = await response.json();
     const files = Array.isArray(result?.files) ? result.files : [];
-    hasAppleHealthFile.value = files.some((file: { isAppleHealth?: boolean }) => !!file?.isAppleHealth);
+    const appleFile = files.find((file: { isAppleHealth?: boolean }) => !!file?.isAppleHealth);
+    hasAppleHealthFile.value = !!appleFile;
+    appleHealthFileInfo.value = appleFile
+      ? {
+        bucketKey: appleFile.bucketKey,
+        fileName: appleFile.fileName || appleFile.name || 'Apple Health Export'
+      }
+      : null;
   } catch (error) {
     // ignore errors
   }
@@ -844,7 +831,7 @@ const copyItemToClipboard = async (item: any, categoryName: string) => {
   }
 };
 
-const processInitialFile = async () => {
+const processInitialFile = async (overrideFile?: { bucketKey: string; fileName?: string }) => {
   logWizardEvent('lists_processing_start');
   wizardAutoStartPending.value = false;
   isProcessing.value = true;
@@ -856,7 +843,10 @@ const processInitialFile = async () => {
 
   try {
     const payload: { bucketKey?: string; fileName?: string } = {};
-    if (initialFileInfo.value?.bucketKey) {
+    if (overrideFile?.bucketKey) {
+      payload.bucketKey = overrideFile.bucketKey;
+      payload.fileName = overrideFile.fileName || 'Apple Health Export';
+    } else if (initialFileInfo.value?.bucketKey) {
       payload.bucketKey = initialFileInfo.value.bucketKey;
       payload.fileName = initialFileInfo.value.fileName || 'Initial File';
     }
@@ -890,8 +880,8 @@ const processInitialFile = async () => {
     selectedFileName.value = data.fileName || 'Initial File';
     hasSavedResults.value = true;
     
-    // Store initial file info if available
-    if (data.fileName) {
+    // Store initial file info if available (only for default flow)
+    if (!overrideFile?.bucketKey && data.fileName) {
       // Get bucketKey from user-status if not in response
       if (!initialFileInfo.value) {
         const statusResponse = await fetch(`/api/user-status?userId=${encodeURIComponent(props.userId)}`, {
