@@ -806,13 +806,9 @@ const wizardMessages = ref<Record<number, string>>({});
 const wizardDismissed = ref(false);
 const appleExportFooterSnippet = 'This summary displays certain health information made available to you by your healthcare provider and may not completely';
 const appleExportFooterNormalized = appleExportFooterSnippet.toLowerCase().replace(/\s+/g, ' ').trim();
-const step2Enabled = computed(() => wizardStage1Complete.value);
-const step4Enabled = computed(() => wizardHasFilesInKB.value);
-const stage1Complete = computed(() => wizardStage1Complete.value);
 const stage2Checked = computed(() =>
   !wizardRestoreActive.value && wizardStage3Complete.value && !stage3IndexingActive.value
 );
-const step3OkEnabled = computed(() => stage2Checked.value);
 const stage3Checked = computed(() =>
   !wizardRestoreActive.value && (wizardStage2Complete.value || wizardCurrentMedications.value || wizardStage2NoDevice.value)
 );
@@ -878,9 +874,6 @@ const stage3PendingUploadName = ref<string | null>(null);
 const wizardKbName = ref<string | null>(null);
 const wizardKbTotalTokens = ref<string | null>(null);
 const wizardKbIndexedCount = ref<number | null>(null);
-const stage2DisplayFileName = computed(() => {
-  return wizardStage2FileName.value || stage2RestoreFileName.value || '';
-});
 const stage3DisplayFiles = computed(() => {
   if (wizardRestoreActive.value) {
     const files = Array.isArray(props.rehydrationFiles) ? props.rehydrationFiles : [];
@@ -923,12 +916,6 @@ const stage3PendingUploadActive = computed(() => {
   if (!name) return false;
   return !wizardStage3Files.value.some(file => file.name === name);
 });
-const stage3ShowStatusLine = computed(() =>
-  stage3HasFiles.value ||
-  stage3PendingUploadActive.value ||
-  indexingStatus.value?.phase === 'indexing' ||
-  indexingStatus.value?.phase === 'complete'
-);
 
 
 
