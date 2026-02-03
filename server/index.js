@@ -1138,7 +1138,10 @@ async function validateUserResources(userId) {
 
 const passkeyService = new PasskeyService({
   rpID: process.env.PASSKEY_RPID || 'user.agropper.xyz',
-  origin: process.env.PASSKEY_ORIGIN || `http://localhost:${PORT}`
+  origin: process.env.PASSKEY_ORIGIN || `http://localhost:${PORT}`,
+  allowedOrigins: process.env.PASSKEY_ORIGINS
+    ? process.env.PASSKEY_ORIGINS.split(',').map(entry => entry.trim()).filter(Boolean)
+    : undefined
 });
 
 const chatClient = new ChatClient({

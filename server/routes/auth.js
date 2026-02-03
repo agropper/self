@@ -451,11 +451,19 @@ export default function setupAuthRoutes(app, passkeyService, cloudant, doClient,
         return res.status(400).json({ error: 'No registration challenge found' });
       }
 
+      let expectedOrigin = null;
+      try {
+        expectedOrigin = passkeyService.resolveExpectedOrigin(req.get('origin'));
+      } catch (error) {
+        return res.status(403).json({ error: 'Origin not allowed' });
+      }
+
       // Verify registration
       const result = await passkeyService.verifyRegistration({
         response,
         expectedChallenge: userDoc.challenge,
-        userDoc
+        userDoc,
+        expectedOrigin
       });
 
       if (!result.verified) {
@@ -598,11 +606,19 @@ export default function setupAuthRoutes(app, passkeyService, cloudant, doClient,
         return res.status(400).json({ error: 'No authentication challenge found' });
       }
 
+      let expectedOrigin = null;
+      try {
+        expectedOrigin = passkeyService.resolveExpectedOrigin(req.get('origin'));
+      } catch (error) {
+        return res.status(403).json({ error: 'Origin not allowed' });
+      }
+
       // Verify authentication
       const result = await passkeyService.verifyAuthentication({
         response,
         expectedChallenge: userDoc.challenge,
-        userDoc
+        userDoc,
+        expectedOrigin
       });
 
       const clientInfo = getClientInfo(req);
