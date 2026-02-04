@@ -372,6 +372,53 @@ export default function setupChatRoutes(app, chatClient, cloudant, doClient) {
     }
   });
 
+  // Get shared group chats
+  app.get('/api/shared-group-chats', async (req, res) => {
+    try {
+      const { userId } = req.query;
+      const sessionUserId = req.session?.userId || null;
+
+      if (!userId) {
+        return res.status(400).json({
+          success: false,
+          message: 'User ID is required',
+          error: 'MISSING_USER_ID'
+        });
+      }
+
+      if (sessionUserId && sessionUserId !== userId) {
+        return res.status(403).json({
+          success: false,
+          message: 'User ID mismatch',
+          error: 'USER_ID_MISMATCH'
+        });
+      }
+
+      // Get all chats for this user from maia_chats
+      const allChats = await cloudant.getAllDocuments('maia_chats');
+
+      // Filter to only shared group chats owned by this user
+      const sharedChats = allChats.filter(chat =>
+        chat._id.startsWith(`${userId}-`) &&
+        chat.type === 'group_chat' &&
+        chat.isShared === true
+      );
+
+      res.json({
+        success: true,
+        chats: sharedChats,
+        count: sharedChats.length
+      });
+    } catch (error) {
+      console.error('❌ Error fetching shared group chats:', error);
+      res.status(500).json({
+        success: false,
+        message: `Failed to fetch chats: ${error.message}`,
+        error: 'FETCH_FAILED'
+      });
+    }
+  });
+
   /**
    * List available chat providers
    * GET /api/chat/providers
