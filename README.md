@@ -4,6 +4,14 @@ Nowadays, patients get medical advice from public AI as well as physicians. The 
 
 MAIA introduces a patient-controlled Priavte AI agent as gatekeeper between the patient's complete health records and public AIs. The patient can see and edit the chats, share chats with their clinicians, and manage core aspects of their care including current medications, a patient summary, a diary of their symptoms and observations, relevant references, and a privacy filter to pseudonimize all of the names in a chat before sending it to the public AIs for consultation.
 
+MAIA is designed to reduce the number of parties a patient or physician must trust with private and sensitive information. The MAIA host (Digital Ocean in this implementation) obviously has to be trusted to run the MAIA code without adulteration. The entity publishing the open source code (me) or verifying the code (TBD) also has to be trusted. 
+
+This is where the software design gets interesting because I, as the author, do not want to see anyone's private information. A verifier, even a decent coding AI, can check that the code has no back doors but they can't be expected to comment on anyone that is involved in provisioning a patient's account. This is why MAIA supports the user in provisioning their own account without any other's assistance. 
+
+When running the MAIA code, use your own credit card to pay for the hosting. If you are running MAIA on a service paid by someone else, keep in mind that access to your data is likely to be controlled by their credit card even if the MAIA code is verified as having no back doors or privacy gotchas.
+
+---
+
 ## Top 20 User Features
 
 1. **Get Started** simple, passwordless entry for new users with self-provisioning wizard.
