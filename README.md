@@ -1,14 +1,16 @@
 # MAIA (Medical AI Assistant)
 
-Nowadays, patients get medical advice from public AI as well as physicians. The advice is better when backed by access to the complete health records gathered from all of a patient's providers. But patients are reluctant to share hundreds or thousands of pages of highly sensitive records with public AI and their doctors are rushed and hardly expected to consult the complete record and records from other providers. In some cases, physician advice and prescriptions are not based on anything more that the chat with the patient.
+Patients increasingly receive medical advice from both public AI and clinicians. That advice improves when it can reference the complete record across providers, but patients are understandably reluctant to upload hundreds of pages of sensitive records to public AI, and clinicians rarely have the time to review everything. In practice, many decisions end up based on a brief chat rather than the full record.
 
-MAIA introduces a patient-controlled Priavte AI agent as gatekeeper between the patient's complete health records and public AIs. The patient can see and edit the chats, share chats with their clinicians, and manage core aspects of their care including current medications, a patient summary, a diary of their symptoms and observations, relevant references, and a privacy filter to pseudonimize all of the names in a chat before sending it to the public AIs for consultation.
+MAIA introduces a patient-controlled Private AI agent that sits between a patient's complete health record and public AIs. Patients can see and edit chats, share them with clinicians, and manage current medications, a patient summary, a diary of symptoms and observations, relevant references, and a privacy filter that pseudonymizes names before sending anything to public AI.
 
-MAIA is designed to reduce the number of parties a patient or physician must trust with private and sensitive information. The MAIA host (Digital Ocean in this implementation) obviously has to be trusted to run the MAIA code without adulteration. The entity publishing the open source code (me) or verifying the code (TBD) also has to be trusted. 
+### Trust Model
 
-This is where the software design gets interesting because I, as the author, do not want to see anyone's private information. A verifier, even a decent coding AI, can check that the code has no back doors but they can't be expected to comment on anyone that is involved in provisioning a patient's account. This is why MAIA supports the user in provisioning their own account without any other's assistance. 
+MAIA reduces the number of parties that must be trusted with private information. The host running the service (DigitalOcean in this implementation) must be trusted to run the code without modification. The publisher of the open source code and any verifier also need to be trusted for the integrity of the code they release or audit.
 
-When running the MAIA code, use your own credit card to pay for the hosting. If you are running MAIA on a service paid by someone else, keep in mind that access to your data is likely to be controlled by their credit card even if the MAIA code is verified as having no back doors or privacy gotchas.
+The design goal is that the author does not need access to anyone's private data. A verifier, even an excellent coding AI, can help confirm the code has no back doors, but they cannot attest to the operational access of whoever provisions a patient's account. This is why MAIA supports user-driven provisioning without third-party assistance.
+
+When running MAIA, use your own credit card to pay for hosting. If someone else pays for the service, they control the billing account and can likely control access to your data even if the code has been verified.
 
 ---
 
@@ -30,9 +32,9 @@ When running the MAIA code, use your own credit card to pay for the hosting. If 
 14. **AI-assisted Current Medications** patient-reconciled and verified.
 15. **Generate Patient Summary** with editing and verification.
 16. **Switch AI provider** dropdown (Private AI + public models).
-17. **Saved Chats** to local computer and as ddep links.
+17. **Saved Chats** to local computer and as deep links.
 18. **Open deep link** as guest (isolated view).
-19. **Privacy Filtering** substitutes all names in a chat for pseudonimity.
+19. **Privacy Filtering** substitutes all names in a chat for pseudonymity.
 20. **Admin Account** and user management page.
 ---
 
