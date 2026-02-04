@@ -1,176 +1,100 @@
-## Wizard: End-to-End Behavior
+## Wizard: End-to-End Behavior (Current)
 
-This document describes the Setup Wizard flow, what each stage does, and how
-wizard state is stored, persisted on sign-out, and restored on return.
+This document describes the current Setup Wizard behavior as implemented in
+`src/components/ChatInterface.vue` and backed by `NEW-AGENT.txt`.
 
 ---
 
 ## Entry Points and Visibility Rules
 
 - The Wizard is shown inside the Chat UI when:
-  - the user is authenticated, and
+  - the user is authenticated,
   - the account is not an admin account, and
-  - a restore/rehydration flow is not actively suppressing the wizard.
-- Admin users are routed to `/admin` and never see the Wizard or chat UI.
-- During file rehydration (restore flow), the Wizard is suppressed until files
-  are re-uploaded and rehydration completes.
+  - rehydration is not actively suppressing the wizard.
+- Admin users are routed to `/admin` and never see the Wizard.
 
 ---
 
-## Stages and UI Actions
+## Wizard Pages (Slides)
 
-### Stage 1 — Create Private AI Agent
-**Purpose:** ensure the user has a private agent in DO.
-
-**When complete:**
-- Stage 1 checks off after agent provisioning + polling finishes.
-- The agent availability is verified via `/api/user-status` and related polling.
-
-**UI behavior:**
-- Buttons are disabled while Stage 1 is incomplete.
-- If provisioning times out, the Wizard remains visible with an error state.
+- **Page 1**: live wizard UI with files box and status lines.
+  - Header and intro copy are read from `NEW-AGENT.txt` (section `## Private AI Setup Wizard`).
+- **Pages 2–4**: static PNGs served from `public/wizard-slides/slide-2.png`, `slide-3.png`, `slide-4.png`.
+- Page navigation:
+  - dots at the footer, plus inline dots attached to the last bullet on Page 1.
 
 ---
 
-### Stage 2 — Add Apple Health “Export PDF”
-**Purpose:** establish the initial file used for Lists and Current Medications.
+## Page 1: Core Flow
 
-**Actions:**
-- **OK** → opens file chooser and sets:
-  - `sessionStorage.autoProcessInitialFile = "true"`
-  - `sessionStorage.wizardMyListsAuto = "true"`
-  - opens **My Lists** tab after selection.
+### Stage 1 — Agent Deployment
+**Purpose:** ensure a private agent is provisioned.
 
-**When complete:**
-- Stage 2 checks off only after Current Medications are **verified/edited** and
-  saved to the user doc.
+**Signals:**
+- `GET /api/user-status` → `agentReady`
+- status line shown until the agent is ready.
 
-**Key state sources:**
-- `userDoc.initialFile` (bucketKey, fileName)
-- `userDoc.currentMedications`
-- `sessionStorage.verify-meds-<userId>` (verification prompt state)
+### Stage 2 — Files to be indexed (KB build)
+**Purpose:** choose files, move into KB folder, and index.
 
----
+**Flow:**
+- Files are listed from `/api/user-files?source=wizard` (server-canonical).
+- “Add a file” uploads to root → persisted in user doc.
+- Checking a file toggles KB membership via `/api/toggle-file-knowledge-base`.
+- “No more files to add – Index now” starts indexing via `/api/update-knowledge-base`.
 
-### Stage 3 — Add Other Health Records
-**Purpose:** add additional files to the KB.
+**Indexing status:**
+- Derived from server-canonical `kbIndexingStatus` persisted in the user doc.
+- Status line shows elapsed time + files/tokens; remains after completion.
 
-**Actions:**
-- **OK** → file chooser for non-Apple files; these go to Saved Files and can be
-  checked for KB indexing.
-- **Not yet** → dismisses Wizard for the session, but does not mark complete.
+### Stage 3 — Current Medications
+**Purpose:** extract and verify current medications when an Apple Health export exists.
 
-**When complete:**
-- Stage 3 checks off automatically after indexing completes and DO reports the
-  files are in the KB.
+**Signals and actions:**
+- If no Apple Health file is present, the stage is skipped.
+- If present, “Create and Verify your Current Medications” launches Lists processing.
+- Verification state is tracked in the user doc and reflected in the wizard status lines.
 
-**Key state sources:**
-- DO KB API (source of truth for indexed data sources)
-- `localStorage.wizard-completion-<userId>.stage3Complete` (sticky UI state)
+### Stage 4 — Patient Summary
+**Purpose:** generate and verify the patient summary after KB indexing.
 
----
-
-### Stage 4 — Review and Verify Patient Summary
-**Purpose:** confirm the Patient Summary generated from the KB.
-
-**Actions:**
-- **VERIFY** → marks Stage 4 complete and hides the Wizard.
-- **EDIT** → save edits; marks Stage 4 complete and hides the Wizard.
-
-**Important:** Summary generation **does not** dismiss the Wizard. Only explicit
-verify/edit actions complete Stage 4.
-
-**Key state sources:**
-- `/api/patient-summary`
-- In‑session verified state via `patient-summary-verified` event
+**Signals and actions:**
+- “Create and Verify your Patient Summary” generates and opens the summary.
+- Verification is explicit; generation alone does not mark verified.
 
 ---
 
 ## Local State and Storage Keys
 
 ### LocalStorage
-- `maia_last_snapshot_user`
-  - userId of the most recent local snapshot.
 - `wizard-completion-<userId>`
-  - JSON: `{ stage3Complete: boolean }`
+  - JSON: `{ stage3Complete: boolean }` (legacy guard)
 - `wizardKbPendingFileName-<userId>`
-  - tracks a pending file name for Stage 3 KB add.
+  - pending KB file name for auto-check in Stage 2
 
 ### SessionStorage
-- `autoProcessInitialFile`
-  - triggers automatic Lists processing after initial file selection.
-- `wizardMyListsAuto`
-  - flags that the Wizard is controlling the Lists tab.
-- `verify-meds-<userId>`
-  - JSON: `{ needsVerifyAction: boolean }` for Current Medications verification.
+- `wizardStage2NoDevice-<userId>`
+  - flags Apple Health not present (skip Stage 3)
 
 ### IndexedDB (PouchDB)
-- Database name: `maia-user-<userId>`
-- Document `_id: "user_snapshot"` stores:
-  - user profile
-  - Saved Files metadata + chip state
-  - saved chats
-  - current chat draft/state
-  - current medications
-  - patient summary
-  - initial file metadata
+Local snapshot behavior remains the same; see `Documents/POUCHDB.md`.
 
 ---
 
-## Sign‑Out and Local Snapshot
+## API Endpoints Used
 
-### On Sign‑Out (Temporary User)
-- Save local snapshot to IndexedDB (PouchDB).
-- Store `maia_last_snapshot_user` in localStorage.
-- Delete KB and user docs on the server (privacy).
-- Clear temp user cookie.
-
-### Shared Computer Mode
-- If the user chooses **Shared** on Get Started:
-  - Local snapshot is **not** saved.
-  - User is prompted to set a Passkey.
-
----
-
-## Restore Flow
-
-### Get Started (no snapshot)
-- New temporary user created.
-- Wizard runs normally from Stage 1.
-- Private/Shared device prompt appears (no local DB found).
-
-### Get Started (snapshot exists)
-- Check for matching agent:
-  - If found: restore user, suppress Wizard.
-  - If missing: show modal to clear local backup or start Wizard again.
-
-### Rehydration
-- Saved Files list shows a restore queue with chip status.
-- User re‑uploads each file.
-- When rehydration finishes:
-  - Wizard re-evaluates.
-  - Lists auto‑processing is triggered if an initial file exists.
-
----
-
-## Summary of API Endpoints Used
-
-- `POST /api/temporary/start`
-- `POST /api/temporary/restore`
-- `GET /api/agent-exists`
 - `GET /api/user-status`
 - `GET /api/user-files`
 - `POST /api/user-file-metadata`
-- `POST /api/files/lists/process-initial-file`
+- `POST /api/toggle-file-knowledge-base`
+- `POST /api/update-knowledge-base`
 - `GET /api/patient-summary`
-- `POST /api/patient-summary`
+- `POST /api/generate-patient-summary`
+- `POST /api/files/lists/process-initial-file`
 
 ---
 
-## Known Fragility Points
+## Notes
 
-- Stale `initialFile.bucketKey` after re‑uploads can block Lists processing.
-- Wizard Stage 2 depends on current meds save and verify state.
-- Stage 3 and 4 depend on DO KB API state and explicit user actions.
-
-This document should be kept up-to-date as wizard behavior changes.
+- KB attachment is automatic once both agent readiness and indexing completion are true.
+- KB indexing status is server-canonical (`userDoc.kbIndexingStatus`).

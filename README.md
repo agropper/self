@@ -1,51 +1,107 @@
-# maia-cloud-user-app
+# MAIA User Portal
 
-Authenticated user portal for MAIA (Medical AI Assistant). Available at **https://maia.agropper.xyz**.
+## Top 20 User Features
 
-## What’s Included Today
+1. **Get Started** simple, passwordless entry for new users with self-provisioning wizard.
+2. **Passkey registration** optional to create web-accessible account.
+3. **Local only/no‑passkey or password mode** for private devices.
+4. **Sign Out** with optional local snapshot for deleted account restoration.
+5. **Setup Wizard** with multi‑page guidance and feature review.
+6. **My Stuff** dialog for private AI agent instruction, document and privacy management.
+7. **Saved Files** list with KB inclusion checkboxes.
+8. **Saved Files** indexing status and KB summary.
+9. **Upload file** from paperclip / file picker.
+10. **PDF Viewer** modal with paging.
+11. **Text/Markdown Viewer** with page links for source confirmation.
+12. **My Lists** linked to PDF source pages.
+13. **Create Categorized Lists** from Apple Health file.
+14. **AI-assisted Current Medications** patient-reconciled and verified.
+15. **Generate Patient Summary** with editing and verification.
+16. **Switch AI provider** dropdown (Private AI + public models).
+17. **Saved Chats** to local computer and as ddep links.
+18. **Open deep link** as guest (isolated view).
+19. **Privacy Filtering** substitutes all names in a chat for pseudonimity.
+20. **Admin Account** and user management page.
+---
 
-### One-click provisioning
-- Passkey registration notifies the admin automatically.
-- The admin receives a provisioning link; clicking it provisioned new users end‑to‑end:
-  - DigitalOcean agent creation, deployment and health check.
-  - Spaces folder structure (root, archived, KB).
-  - Agent API key generation and storage.
-  - Workflow stages updated (`request_sent → approved → agent_named → agent_deployed`).
+## Key User Account Provisioning Steps
 
-### Knowledge Base automation
-- Users import PDFs directly into their account; text is extracted automatically.
-- “Update and Index KB”:
-  - Creates or syncs the DO Knowledge Base.
-  - Registers the correct Spaces prefix as the data source.
-  - Starts indexing and polls DO every 30 s until tokens/files are reported or timeout.
-  - Auto-attaches the KB to the user’s agent.
-  - Generates a fresh patient summary once indexing completes and stores it in Cloudant.
-- Indexing state and file lists stay consistent through conflict-safe Cloudant updates.
+1. **Passkey registration** creates the user document and session.
+2. **Agent provisioning** (admin-triggered or auto in some flows):
+   - Creates agent, waits for deployment, stores endpoint + API key.
+3. **File import**:
+   - Uploads land in root, metadata stored in Cloudant.
+4. **KB build and indexing**:
+   - Files are moved into `userId/<kbName>/`.
+   - Indexing starts on the folder datasource.
+   - Polling persists status to `userDoc.kbIndexingStatus`.
+5. **KB attachment**:
+   - Automatically attaches when agent is ready and indexing is complete.
+6. **Current Medications / Patient Summary**:
+   - Generated and verified through My Lists and Patient Summary flows.
 
-### Deep-link guest access
-- Share any saved chat via deep links.
-- Guests join with a lightweight name/email form; sessions persist in Cloudant without affecting the owner’s passkey session.
-- Deep-link users see the shared chat only, can request context actions (e.g., patient summary once allowed), and stay isolated from owner settings.
+---
 
-### Chat + File interface
-- Streaming chat with multiple providers (DigitalOcean Private AI, Anthropic, OpenAI, Gemini, DeepSeek).
-- PDFs can be viewed, paged, and parsed (selectable text layer preserved).
-- “Save Locally” PDF exports retain chat formatting and markdown.
+## Hosting Configuration Notes (Key Env Vars)
 
-### Observability & Safety
-- Sessions stored in Cloudant with `userId` or `deeplink_*` IDs for auditability.
-- Authentication events logged to `maia_audit_log`.
-- Environment-driven configuration (Cloudant, DO GenAI/Spaces, Resend email, etc.).
+### Passkeys / WebAuthn
+- `PASSKEY_RPID`  
+  Domain scope for credentials (use apex domain to cover subdomains).
+- `PASSKEY_ORIGIN`  
+  Single allowed origin for WebAuthn verification.
+- `PASSKEY_ORIGINS`  
+  Optional comma-separated allowlist for multiple origins.
 
-## Quick Start (local)
+### Cloudant (users, sessions, audit log)
+- `CLOUDANT_URL`, `CLOUDANT_USERNAME`, `CLOUDANT_PASSWORD`  
+  Required for user docs, sessions, and audit logs.
+
+### DigitalOcean GenAI (agents, KBs, indexing)
+- `DIGITALOCEAN_TOKEN`  
+  Auth for DO GenAI REST API.
+- `DO_REGION`, `DO_PROJECT_ID`  
+  Required to create agents and KBs.
+- `DO_DATABASE_ID`  
+  DO database ID used when creating KBs.
+- `DO_EMBEDDING_MODEL_ID` (optional)  
+  Overrides default embedding model.
+
+### DigitalOcean Spaces (file storage)
+- `DIGITALOCEAN_BUCKET`  
+  Bucket name or URL for user files.
+- `DIGITALOCEAN_AWS_ACCESS_KEY_ID`, `DIGITALOCEAN_AWS_SECRET_ACCESS_KEY`, `DIGITALOCEAN_ENDPOINT_URL`  
+  S3-compatible access to Spaces.
+
+### OpenSearch (optional, clinical notes)
+- `OPENSEARCH_ENDPOINT`, `OPENSEARCH_USERNAME`, `OPENSEARCH_PASSWORD`  
+  Enables clinical notes indexing/search.
+
+### App + Email
+- `PUBLIC_APP_URL`  
+  Canonical app URL for links.
+- `PORT`  
+  Server listen port.
+
+---
+
+## Hosting Environment
+
+- **App Platform**: Runs the frontend + Node server.
+- **Droplet with Dockerized CouchDB**: Cloudant-compatible data store for users, chats, sessions, and audit log.
+- **GenAI Agent**: DigitalOcean Private AI agent per user.
+- **Knowledge Base**: DigitalOcean KB per user, indexed from the Spaces folder datasource.
+- **OpenSearch 2 Database**: Clinical notes indexing/search store.
+- **Spaces File Store**: S3-compatible storage for all user files and lists.
+
+---
+
+## Local Development
 
 ```bash
-git clone https://github.com/agropper/maia-cloud-user-app.git
-cd maia-cloud-user-app
 npm install
-cp .env.example .env   # fill in Cloudant, DO, Resend, etc.
-npm run dev            # starts Vite on http://localhost:5173
-npm run start          # (in another terminal) backend on http://localhost:3001
+cp .env.example .env
+npm run dev       # Vite (frontend)
+npm run start     # Node (backend)
 ```
 
 Health check:
@@ -53,68 +109,3 @@ Health check:
 ```bash
 curl http://localhost:3001/health
 ```
-
-## Key Environment Variables
-
-```
-# Passkeys
-PASSKEY_RPID=maia.agropper.xyz
-PASSKEY_ORIGIN=https://maia.agropper.xyz
-
-# Cloudant
-CLOUDANT_URL=...
-CLOUDANT_USERNAME=...
-CLOUDANT_PASSWORD=...
-
-# DigitalOcean GenAI & Spaces
-DIGITALOCEAN_TOKEN=...
-DO_REGION=tor1
-DIGITALOCEAN_BUCKET=https://maia.tor1.digitaloceanspaces.com
-DIGITALOCEAN_AWS_ACCESS*=
-DO_DATABASE_ID=...  # OpenSearch database ID for knowledge bases
-
-# OpenSearch for Clinical Notes (optional)
-OPENSEARCH_ENDPOINT=https://your-cluster.region.opensearch.digitalocean.com
-OPENSEARCH_USERNAME=...
-OPENSEARCH_PASSWORD=...
-
-# App + email
-PORT=3001
-PUBLIC_APP_URL=https://maia.agropper.xyz
-RESEND_API_KEY=...
-RESEND_FROM_EMAIL=...
-RESEND_ADMIN_EMAIL=...
-
-# Optional provider keys
-ANTHROPIC_API_KEY=...
-OPENAI_API_KEY=...
-```
-
-The server will create `maia_sessions`, `maia_users`, and `maia_audit_log` automatically on startup.
-
-## Architecture Notes
-
-- **Cloudant session store** keeps both owner and deep-link guest sessions with rehydrate support.
-- **DigitalOcean integrations**:
-  - `lib-maia-do-client` for agents/KB/indexing APIs.
-  - Agent provisioning waits for deployment endpoints before declaring success.
-  - KB automation handles creation, data-source linkage, indexing poll, auto-attach, and summary.
-- **Spaces file flow**:
-  - Upload → root (`userId/`).
-  - “Saved Files” dialog archives to `userId/archived/`.
-  - KB selections move into `userId/<kbName>/`.
-- **Background workers**:
-  - Indexing poller with timeout.
-  - Auto summary generation after indexing.
-  - Conflict-safe KB state persistence (retries on 409s).
-
-## Development Checklist
-
-- [ ] Additional provider templates (OpenAI, Gemini, DeepSeek) with default configs.
-- [ ] Expanded deep-link permissions (read-only summary preview, attachments).
-- [ ] UI indicators for indexing progress per user.
-- [ ] Publish shared libraries (`lib-maia-*`) to npm once stable.
-
----
-
-MAIA user portal is actively deployed to DigitalOcean App Platform. Open issues and feature requests are welcome. 👍

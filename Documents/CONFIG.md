@@ -314,6 +314,45 @@ This document lists the APIs related to each environment variable used in the MA
 
 ---
 
+## Passkey / WebAuthn Environment Variables
+
+### PASSKEY_RPID
+**Purpose:** Relying party ID (domain scope for passkeys).
+
+**Usage:**
+- Set to the apex domain to cover subdomains (e.g., `agropper.xyz`).
+
+**Related Files:**
+- `lib/passkey/passkey-service.js`
+- `server/index.js`
+
+---
+
+### PASSKEY_ORIGIN
+**Purpose:** Default expected origin for WebAuthn verification.
+
+**Usage:**
+- Must be a single origin, e.g. `https://self.agropper.xyz`.
+- Do **not** provide a comma‑separated list here.
+
+**Related Files:**
+- `lib/passkey/passkey-service.js`
+- `server/index.js`
+
+---
+
+### PASSKEY_ORIGINS
+**Purpose:** Allowlist of multiple origins for WebAuthn verification.
+
+**Usage:**
+- Comma‑separated origins:
+  `https://self.agropper.xyz,https://maia.agropper.xyz`
+- If set, the server validates `Origin` against this list.
+
+**Related Files:**
+- `lib/passkey/passkey-service.js`
+- `server/routes/auth.js`
+
 ### DATABASE_URL
 **Status:** Not used in codebase
 
