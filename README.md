@@ -1,4 +1,8 @@
-# MAIA User Portal
+# MAIA (Medical AI Assistant)
+
+Nowadays, patients get medical advice from public AI as well as physicians. The advice is better when backed by access to the complete health records gathered from all of a patient's providers. But patients are reluctant to share hundreds or thousands of pages of highly sensitive records with public AI and their doctors are rushed and hardly expected to consult the complete record and records from other providers. In some cases, physician advice and prescriptions are not based on anything more that the chat with the patient.
+
+MAIA introduces a patient-controlled Priavte AI agent as gatekeeper between the patient's complete health records and public AIs. The patient can see and edit the chats, share chats with their clinicians, and manage core aspects of their care including current medications, a patient summary, a diary of their symptoms and observations, relevant references, and a privacy filter to pseudonimize all of the names in a chat before sending it to the public AIs for consultation.
 
 ## Top 20 User Features
 
