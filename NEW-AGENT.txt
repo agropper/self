@@ -159,6 +159,16 @@ Nathaniel Douglas
 
 ---
 
+## CouchDB DROPLET
+
+- Set `USE_COUCHDB_DROPLET=true` to enable. At startup, check if the droplet exists and create it as ubuntu-s-1vcpu-1gb-tor1-01 with the default VPC.
+- Put a message in the terminal when the CouchDB is created or found.
+- **URL**: From the droplet API, get the public IP once the droplet is running. Construct `CLOUDANT_URL` as `http://<droplet-ip>:5984`.
+- **Username**: Use a fixed value (e.g. `admin`) for `CLOUDANT_USERNAME` and pass it to CouchDB via `COUCHDB_USER` when starting the container.
+- **Password**: Generate a random password (e.g. `openssl rand -base64 24`) and pass it to CouchDB via `COUCHDB_PASSWORD` when starting the container. Store the same value as `CLOUDANT_PASSWORD` for the app.
+
+---
+
 ## More
 
 # NEW AGENT SPECIFICATIONS

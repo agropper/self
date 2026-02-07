@@ -555,6 +555,12 @@ function getMaiaInstructionText() {
 const app = express();
 const PORT = process.env.PORT || 3001;
 
+// Ensure CouchDB droplet if requested (sets CLOUDANT_URL, CLOUDANT_USERNAME, CLOUDANT_PASSWORD)
+if (process.env.USE_COUCHDB_DROPLET === 'true') {
+  const { ensureCouchDBDroplet } = await import('./utils/couchdb-droplet.js');
+  await ensureCouchDBDroplet();
+}
+
 // Initialize clients
 const cloudant = new CloudantClient({
   url: process.env.CLOUDANT_URL,
