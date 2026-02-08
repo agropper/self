@@ -139,8 +139,9 @@ function getMaiaInstructionText() {
 }
 
 function requireAdminSecretForUser(userId, adminSecret) {
-  const adminUsername = process.env.ADMIN_USERNAME;
-  if (!adminUsername || userId !== adminUsername) {
+  const adminUsername = process.env.ADMIN_USERNAME?.trim();
+  const uid = (userId && typeof userId === 'string') ? userId.trim().toLowerCase() : '';
+  if (!adminUsername || uid !== adminUsername.toLowerCase()) {
     return { required: false, ok: true };
   }
   const configuredSecret = process.env.ADMIN_SECRET;
@@ -348,8 +349,9 @@ export default function setupAuthRoutes(app, passkeyService, cloudant, doClient,
         return res.status(400).json({ error: 'User ID required' });
       }
 
-      const adminUsername = process.env.ADMIN_USERNAME;
-      const isAdminUser = !!adminUsername && userId === adminUsername;
+      const adminUsername = process.env.ADMIN_USERNAME?.trim();
+      const uid = (userId && typeof userId === 'string') ? userId.trim().toLowerCase() : '';
+      const isAdminUser = !!adminUsername && uid === adminUsername.toLowerCase();
 
       try {
         const userDoc = await cloudant.getDocument('maia_users', userId);

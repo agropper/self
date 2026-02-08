@@ -210,7 +210,9 @@ const applyPrefill = async (prefill: string | null | undefined) => {
   currentStep.value = 'userId';
   await nextTick();
   userIdInputRef.value?.focus();
-  if (props.prefillAction === 'register') {
+  // Do not auto-call continueAction for register: user must click Continue so we can run
+  // check-user and show the admin secret field first if needed.
+  if (props.prefillAction === 'signin') {
     continueAction();
   }
 };
