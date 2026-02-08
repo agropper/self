@@ -261,8 +261,13 @@ const continueAction = async () => {
       }
       if (checkData.isAdminUser) {
         adminSecretRequired.value = true;
+        // If admin secret not entered yet, stay on step so user can fill it and click Continue again
+        if (!adminSecret.value?.trim()) {
+          loading.value = false;
+          return;
+        }
       }
-      
+
       await handleRegistration();
     } else {
       await handleSignIn();
