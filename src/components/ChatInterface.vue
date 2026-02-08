@@ -1416,14 +1416,10 @@ const loadOwnerDeepLinkSetting = async () => {
       ownerAllowDeepLinkPrivateAI.value = true;
     }
   } else {
-    // For deep link users, load the owner's setting
-    // We need to get the owner ID from the chat or session
-    // For now, we'll try to get it from the deep link info or chat
-    // This will be set when a chat is loaded
-    if (ownerAllowDeepLinkPrivateAI.value === null) {
-      // Default to false for deep link users until we know the owner's setting
-      ownerAllowDeepLinkPrivateAI.value = false;
-    }
+    // For deep link users, leave ownerAllowDeepLinkPrivateAI as null until we load the chat
+    // and fetch the owner's setting in handleChatSelected. Do not default to false here,
+    // or we would filter out Private AI and show "Private AI Unavailable" before we know
+    // the owner's preference.
   }
 };
 
@@ -4265,26 +4261,27 @@ const handleChatSelected = async (chat: any) => {
     emit('update:deepLinkInfo', deepLinkInfoLocal.value);
   }
 
-  // For deep link users, load the owner's deep link Private AI setting
-  if (isDeepLink.value && chat.patientOwner) {
-    try {
-      const response = await fetch(`/api/user-settings?userId=${encodeURIComponent(chat.patientOwner)}`, {
-        credentials: 'include'
-      });
-      if (response.ok) {
-        const result = await response.json();
-        ownerAllowDeepLinkPrivateAI.value = result.allowDeepLinkPrivateAI !== undefined ? result.allowDeepLinkPrivateAI : true;
-        // Reload providers to apply the filter
-        await loadProviders();
-      } else {
-        ownerAllowDeepLinkPrivateAI.value = true; // Default to enabled
-        await loadProviders();
+  // For deep link users, load the owner's deep link Private AI setting (then reload providers)
+  if (isDeepLink.value) {
+    if (chat.patientOwner) {
+      try {
+        const response = await fetch(`/api/user-settings?userId=${encodeURIComponent(chat.patientOwner)}`, {
+          credentials: 'include'
+        });
+        if (response.ok) {
+          const result = await response.json();
+          ownerAllowDeepLinkPrivateAI.value = result.allowDeepLinkPrivateAI !== undefined ? result.allowDeepLinkPrivateAI : true;
+        } else {
+          ownerAllowDeepLinkPrivateAI.value = true;
+        }
+      } catch (error) {
+        console.warn('Failed to load owner deep link setting, defaulting to enabled:', error);
+        ownerAllowDeepLinkPrivateAI.value = true;
       }
-    } catch (error) {
-      console.warn('Failed to load owner deep link setting, defaulting to enabled:', error);
-      ownerAllowDeepLinkPrivateAI.value = true;
-      await loadProviders();
+    } else {
+      ownerAllowDeepLinkPrivateAI.value = true; // No owner id (e.g. old chat) – allow Private AI
     }
+    await loadProviders();
   }
 
   // Load the chat history
