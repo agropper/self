@@ -8706,7 +8706,17 @@ app.get('/api/patient-summary', async (req, res) => {
       });
     }
 
+    // Detect legacy format before mutating (migration never persisted can cause "get new when one exists" to fail)
+    const hadLegacyFormat = userDoc.patientSummary &&
+      (!userDoc.patientSummaries || !Array.isArray(userDoc.patientSummaries) || userDoc.patientSummaries.length === 0);
     const summaries = initializeSummariesArray(userDoc);
+    if (hadLegacyFormat) {
+      try {
+        await cloudant.saveDocument('maia_users', userDoc);
+      } catch (saveErr) {
+        console.warn('Failed to persist patient summary migration:', saveErr.message);
+      }
+    }
     const currentSummary = getCurrentSummary(userDoc);
     
     res.json({ 
@@ -8760,30 +8770,60 @@ app.post('/api/patient-summary', async (req, res) => {
       });
     }
 
+    const saveWithRetry = async (doc) => {
+      try {
+        await cloudant.saveDocument('maia_users', doc);
+        return null;
+      } catch (err) {
+        return err;
+      }
+    };
+
     // Add new summary (or update current if replaceStrategy is 'keep')
     if (replaceStrategy === 'keep') {
-      // Just update the current summary's text and updatedAt
       const summaries = initializeSummariesArray(userDoc);
       if (summaries.length > 0) {
         summaries[summaries.length - 1].text = summary;
         summaries[summaries.length - 1].updatedAt = new Date().toISOString();
-    userDoc.patientSummary = summary;
+        userDoc.patientSummary = summary;
       } else {
-        // No summaries exist, add first one
         addNewSummary(userDoc, summary, 'newest');
       }
     } else {
-      // Add new summary with replace strategy or specific index
       addNewSummary(userDoc, summary, replaceStrategy || 'newest', replaceIndex);
     }
     
     userDoc.updatedAt = new Date().toISOString();
-    // Set workflowStage to patient_summary when summary is saved
     userDoc.workflowStage = 'patient_summary';
     
-    await cloudant.saveDocument('maia_users', userDoc);
+    let docToReturn = userDoc;
+    let saveErr = await saveWithRetry(userDoc);
+    if (saveErr && (saveErr.statusCode === 409 || saveErr.error === 'conflict')) {
+      const freshDoc = await cloudant.getDocument('maia_users', userId);
+      if (freshDoc) {
+        if (replaceStrategy === 'keep') {
+          const summaries = initializeSummariesArray(freshDoc);
+          if (summaries.length > 0) {
+            summaries[summaries.length - 1].text = summary;
+            summaries[summaries.length - 1].updatedAt = new Date().toISOString();
+            freshDoc.patientSummary = summary;
+          } else {
+            addNewSummary(freshDoc, summary, 'newest');
+          }
+        } else {
+          addNewSummary(freshDoc, summary, replaceStrategy || 'newest', replaceIndex);
+        }
+        freshDoc.updatedAt = new Date().toISOString();
+        freshDoc.workflowStage = 'patient_summary';
+        saveErr = await saveWithRetry(freshDoc);
+        if (!saveErr) docToReturn = freshDoc;
+      }
+    }
+    if (saveErr) {
+      throw saveErr;
+    }
     
-    const summaries = initializeSummariesArray(userDoc);
+    const summaries = initializeSummariesArray(docToReturn);
     res.json({ 
       success: true, 
       message: 'Patient summary saved successfully',

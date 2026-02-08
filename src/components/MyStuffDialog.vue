@@ -3777,23 +3777,10 @@ const filterCurrentChat = () => {
         const hasMarkdownAfter = /^\s*(\*\*|\*|,)/.test(after);
         
         if (hasMarkdownBefore || hasMarkdownAfter) {
-          // Preserve markdown formatting
-          let result = mapping.pseudonym;
-          if (hasMarkdownBefore) {
-            // Extract markdown prefix
-            const mdMatch = before.match(/(\*\*|\*|##)\s*$/);
-            if (mdMatch) {
-              result = mdMatch[1] + result;
-            }
-          }
-          if (hasMarkdownAfter) {
-            // Extract markdown suffix and any trailing info (like ", 73 M")
-            const mdMatch = after.match(/^\s*(\*\*|\*|,.*?)/);
-            if (mdMatch) {
-              result = result + mdMatch[1];
-            }
-          }
-          return result;
+          // Name is already inside markdown (e.g. **Name**). We only replace the
+          // matched name; the ** before/after are outside the match and stay.
+          // Return just the pseudonym so we get "... **" + pseudonym + "** ...".
+          return mapping.pseudonym;
         }
         return mapping.pseudonym;
       });
@@ -3807,20 +3794,7 @@ const filterCurrentChat = () => {
           const hasMarkdownAfter = /^\s*(\*\*|\*|,)/.test(after);
           
           if (hasMarkdownBefore || hasMarkdownAfter) {
-            let result = mapping.pseudonym;
-            if (hasMarkdownBefore) {
-              const mdMatch = before.match(/(\*\*|\*|##)\s*$/);
-              if (mdMatch) {
-                result = mdMatch[1] + result;
-              }
-            }
-            if (hasMarkdownAfter) {
-              const mdMatch = after.match(/^\s*(\*\*|\*|,.*?)/);
-              if (mdMatch) {
-                result = result + mdMatch[1];
-              }
-            }
-            return result;
+            return mapping.pseudonym;
           }
           return mapping.pseudonym;
         });
@@ -3846,20 +3820,8 @@ const filterCurrentChat = () => {
           const hasMarkdownAfter = /^\s*(\*\*|\*|,)/.test(after);
           
           if (hasMarkdownBefore || hasMarkdownAfter) {
-            let result = replacement;
-            if (hasMarkdownBefore) {
-              const mdMatch = before.match(/(\*\*|\*|##)\s*$/);
-              if (mdMatch) {
-                result = mdMatch[1] + result;
-              }
-            }
-            if (hasMarkdownAfter) {
-              const mdMatch = after.match(/^\s*(\*\*|\*|,.*?)/);
-              if (mdMatch) {
-                result = result + mdMatch[1];
-              }
-            }
-            return result;
+            // Title+name is already inside markdown; only replace the matched span.
+            return replacement;
           }
           return replacement;
         });
@@ -3876,20 +3838,7 @@ const filterCurrentChat = () => {
             const hasMarkdownAfter = /^\s*(\*\*|\*|,)/.test(after);
             
             if (hasMarkdownBefore || hasMarkdownAfter) {
-              let result = replacement;
-              if (hasMarkdownBefore) {
-                const mdMatch = before.match(/(\*\*|\*|##)\s*$/);
-                if (mdMatch) {
-                  result = mdMatch[1] + result;
-                }
-              }
-              if (hasMarkdownAfter) {
-                const mdMatch = after.match(/^\s*(\*\*|\*|,.*?)/);
-                if (mdMatch) {
-                  result = result + mdMatch[1];
-                }
-              }
-              return result;
+              return replacement;
             }
             return replacement;
           });
@@ -4004,20 +3953,7 @@ const filterCurrentChat = () => {
         const hasMarkdownAfter = /^\s*(\*\*|\*|,)/.test(afterFull);
         
         if (hasMarkdownBefore || hasMarkdownAfter) {
-          let result = lastNameMapping.lastNamePseudonym;
-          if (hasMarkdownBefore) {
-            const mdMatch = beforeFull.match(/(\*\*|\*|##)\s*$/);
-            if (mdMatch) {
-              result = mdMatch[1] + result;
-            }
-          }
-          if (hasMarkdownAfter) {
-            const mdMatch = afterFull.match(/^\s*(\*\*|\*|,.*?)/);
-            if (mdMatch) {
-              result = result + mdMatch[1];
-            }
-          }
-          return result;
+          return lastNameMapping.lastNamePseudonym;
         }
         
         return lastNameMapping.lastNamePseudonym;
@@ -4038,20 +3974,7 @@ const filterCurrentChat = () => {
           const hasMarkdownAfter = /^\s*(\*\*|\*|,)/.test(afterFull);
           
           if (hasMarkdownBefore || hasMarkdownAfter) {
-            let result = lastNameMapping.lastNamePseudonym;
-            if (hasMarkdownBefore) {
-              const mdMatch = beforeFull.match(/(\*\*|\*|##)\s*$/);
-              if (mdMatch) {
-                result = mdMatch[1] + result;
-              }
-            }
-            if (hasMarkdownAfter) {
-              const mdMatch = afterFull.match(/^\s*(\*\*|\*|,.*?)/);
-              if (mdMatch) {
-                result = result + mdMatch[1];
-              }
-            }
-            return result;
+            return lastNameMapping.lastNamePseudonym;
           }
           
           return lastNameMapping.lastNamePseudonym;
@@ -4075,20 +3998,7 @@ const filterCurrentChat = () => {
           const hasMarkdownAfter = /^\s*(\*\*|\*|,)/.test(after);
           
           if (hasMarkdownBefore || hasMarkdownAfter) {
-            let result = replacement;
-            if (hasMarkdownBefore) {
-              const mdMatch = before.match(/(\*\*|\*|##)\s*$/);
-              if (mdMatch) {
-                result = mdMatch[1] + result;
-              }
-            }
-            if (hasMarkdownAfter) {
-              const mdMatch = after.match(/^\s*(\*\*|\*|,.*?)/);
-              if (mdMatch) {
-                result = result + mdMatch[1];
-              }
-            }
-            return result;
+            return replacement;
           }
           return replacement;
         });
@@ -4105,20 +4015,7 @@ const filterCurrentChat = () => {
             const hasMarkdownAfter = /^\s*(\*\*|\*|,)/.test(after);
             
             if (hasMarkdownBefore || hasMarkdownAfter) {
-              let result = replacement;
-              if (hasMarkdownBefore) {
-                const mdMatch = before.match(/(\*\*|\*|##)\s*$/);
-                if (mdMatch) {
-                  result = mdMatch[1] + result;
-                }
-              }
-              if (hasMarkdownAfter) {
-                const mdMatch = after.match(/^\s*(\*\*|\*|,.*?)/);
-                if (mdMatch) {
-                  result = result + mdMatch[1];
-                }
-              }
-              return result;
+              return replacement;
             }
             return replacement;
           });
@@ -4141,20 +4038,7 @@ const filterCurrentChat = () => {
         const hasMarkdownAfter = /^\s*(\*\*|\*|,)/.test(after);
         
         if (hasMarkdownBefore || hasMarkdownAfter) {
-          let result = replacement;
-          if (hasMarkdownBefore) {
-            const mdMatch = before.match(/(\*\*|\*|##)\s*$/);
-            if (mdMatch) {
-              result = mdMatch[1] + result;
-            }
-          }
-          if (hasMarkdownAfter) {
-            const mdMatch = after.match(/^\s*(\*\*|\*|,.*?)/);
-            if (mdMatch) {
-              result = result + mdMatch[1];
-            }
-          }
-          return result;
+          return replacement;
         }
         return replacement;
       });
@@ -4171,20 +4055,7 @@ const filterCurrentChat = () => {
           const hasMarkdownAfter = /^\s*(\*\*|\*|,)/.test(after);
           
           if (hasMarkdownBefore || hasMarkdownAfter) {
-            let result = replacement;
-            if (hasMarkdownBefore) {
-              const mdMatch = before.match(/(\*\*|\*|##)\s*$/);
-              if (mdMatch) {
-                result = mdMatch[1] + result;
-              }
-            }
-            if (hasMarkdownAfter) {
-              const mdMatch = after.match(/^\s*(\*\*|\*|,.*?)/);
-              if (mdMatch) {
-                result = result + mdMatch[1];
-              }
-            }
-            return result;
+            return replacement;
           }
           return replacement;
         });
@@ -4972,8 +4843,9 @@ const requestNewSummary = async () => {
     const result = await response.json();
     console.log('[Summary] Patient summary generated:', result);
     
-    // Check if there are empty slots
-    const hasEmptySlots = patientSummaries.value.length < 3;
+    // Use server's summary count (from generate response) so we don't rely on stale client state
+    const summaryCount = result.summaries?.length ?? patientSummaries.value.length;
+    const hasEmptySlots = summaryCount < 3;
     
     if (hasEmptySlots) {
       // Automatically save with 'newest' strategy (just adds to array)
