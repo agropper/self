@@ -1,15 +1,17 @@
 /**
  * Ensure CouchDB droplet exists on DigitalOcean.
- * Creates ubuntu-s-1vcpu-1gb-tor1-01 if missing; writes credentials to .couchdb-droplet-credentials.
+ * Creates ubuntu-s-1vcpu-1gb-tor1-01 if missing; stores credentials in Spaces (couchdb/credentials.json) and local file.
  */
 
 import { randomBytes } from 'crypto';
 import { writeFileSync, readFileSync, existsSync } from 'fs';
 import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
+import { S3Client, GetObjectCommand, PutObjectCommand } from '@aws-sdk/client-s3';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const CREDENTIALS_FILE = join(__dirname, '../../.couchdb-droplet-credentials');
+const SPACES_CREDENTIALS_KEY = 'couchdb/credentials.json';
 const DROPLET_NAME = 'ubuntu-s-1vcpu-1gb-tor1-01';
 const REGION = 'tor1';
 const SIZE = 's-1vcpu-1gb';
@@ -20,6 +22,56 @@ function generatePassword() {
   return randomBytes(24).toString('base64').replace(/[+/=]/g, (c) =>
     ({ '+': '-', '/': '_', '=': '' }[c] || c)
   );
+}
+
+function getBucketName(bucketUrl) {
+  if (!bucketUrl) return null;
+  const withoutProtocol = bucketUrl.replace(/^https?:\/\//, '');
+  const hostOrName = withoutProtocol.split('/')[0];
+  return hostOrName.split('.')[0] || 'maia';
+}
+
+function getSpacesClient() {
+  const bucketUrl = process.env.DIGITALOCEAN_BUCKET;
+  const bucketName = getBucketName(bucketUrl);
+  const endpoint = process.env.DIGITALOCEAN_ENDPOINT_URL || 'https://tor1.digitaloceanspaces.com';
+  const accessKeyId = process.env.DIGITALOCEAN_AWS_ACCESS_KEY_ID || '';
+  const secretAccessKey = process.env.DIGITALOCEAN_AWS_SECRET_ACCESS_KEY || '';
+  if (!bucketName || !accessKeyId || !secretAccessKey) return null;
+  const client = new S3Client({
+    endpoint,
+    region: 'us-east-1',
+    credentials: { accessKeyId, secretAccessKey }
+  });
+  return { client, bucketName };
+}
+
+async function loadCredentialsFromSpaces() {
+  const spaces = getSpacesClient();
+  if (!spaces) return null;
+  try {
+    const res = await spaces.client.send(new GetObjectCommand({
+      Bucket: spaces.bucketName,
+      Key: SPACES_CREDENTIALS_KEY
+    }));
+    if (!res.Body) return null;
+    const raw = await res.Body.transformToString();
+    return JSON.parse(raw);
+  } catch (e) {
+    if (e?.name === 'NoSuchKey' || e?.$metadata?.httpStatusCode === 404) return null;
+    throw e;
+  }
+}
+
+async function saveCredentialsToSpaces(creds) {
+  const spaces = getSpacesClient();
+  if (!spaces) return;
+  await spaces.client.send(new PutObjectCommand({
+    Bucket: spaces.bucketName,
+    Key: SPACES_CREDENTIALS_KEY,
+    Body: JSON.stringify(creds, null, 2),
+    ContentType: 'application/json'
+  }));
 }
 
 async function doRequest(token, method, path, body = null) {
@@ -82,7 +134,9 @@ docker run -d --name couchdb --restart unless-stopped -p ${COUCHDB_PORT}:${COUCH
 `;
 }
 
-function loadCredentials() {
+async function loadCredentials() {
+  const fromSpaces = await loadCredentialsFromSpaces();
+  if (fromSpaces) return fromSpaces;
   if (!existsSync(CREDENTIALS_FILE)) return null;
   try {
     const raw = readFileSync(CREDENTIALS_FILE, 'utf8');
@@ -92,8 +146,11 @@ function loadCredentials() {
   }
 }
 
-function saveCredentials(creds) {
-  writeFileSync(CREDENTIALS_FILE, JSON.stringify(creds, null, 2), { mode: 0o600 });
+async function saveCredentials(creds) {
+  await saveCredentialsToSpaces(creds);
+  try {
+    writeFileSync(CREDENTIALS_FILE, JSON.stringify(creds, null, 2), { mode: 0o600 });
+  } catch {}
 }
 
 async function waitForIp(token, dropletId, maxWaitMs = 120000, intervalMs = 5000) {
@@ -129,10 +186,10 @@ export async function ensureCouchDBDroplet() {
   const droplet = existing.find(d => d.name === DROPLET_NAME);
 
   if (droplet) {
-    const creds = loadCredentials();
+    const creds = await loadCredentials();
     if (!creds) {
       throw new Error(
-        `CouchDB droplet "${DROPLET_NAME}" exists but credentials file not found at ${CREDENTIALS_FILE}. ` +
+        `CouchDB droplet "${DROPLET_NAME}" exists but credentials not found in Spaces (${SPACES_CREDENTIALS_KEY}) or local file. ` +
         'Set CLOUDANT_URL, CLOUDANT_USERNAME, CLOUDANT_PASSWORD manually or delete the droplet and restart.'
       );
     }
@@ -160,7 +217,7 @@ export async function ensureCouchDBDroplet() {
     username: 'admin',
     password
   };
-  saveCredentials(creds);
+  await saveCredentials(creds);
   process.env.CLOUDANT_URL = url;
   process.env.CLOUDANT_USERNAME = 'admin';
   process.env.CLOUDANT_PASSWORD = password;

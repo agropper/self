@@ -166,6 +166,7 @@ Nathaniel Douglas
 - **URL**: From the droplet API, get the public IP once the droplet is running. Construct `CLOUDANT_URL` as `http://<droplet-ip>:5984`.
 - **Username**: Use a fixed value (e.g. `admin`) for `CLOUDANT_USERNAME` and pass it to CouchDB via `COUCHDB_USER` when starting the container.
 - **Password**: Generate a random password (e.g. `openssl rand -base64 24`) and pass it to CouchDB via `COUCHDB_PASSWORD` when starting the container. Store the same value as `CLOUDANT_PASSWORD` for the app.
+- **Credentials storage**: Store credentials in Spaces at `couchdb/credentials.json` (and locally at `.couchdb-droplet-credentials`). Load from Spaces first, then local file. Requires DIGITALOCEAN_BUCKET, DIGITALOCEAN_AWS_ACCESS_KEY_ID, DIGITALOCEAN_AWS_SECRET_ACCESS_KEY.
 
 ---
 
