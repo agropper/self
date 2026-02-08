@@ -211,13 +211,13 @@ export async function ensureCouchDBDroplet() {
   console.log(`[CouchDB Droplet] Created droplet "${DROPLET_NAME}" (id: ${created.id}), waiting for IP...`);
   const ip = await waitForIp(token, created.id);
   const url = `http://${ip}:${COUCHDB_PORT}`;
-  await waitForCouchDBReady(url);
   const creds = {
     url,
     username: 'admin',
     password
   };
   await saveCredentials(creds);
+  await waitForCouchDBReady(url);
   process.env.CLOUDANT_URL = url;
   process.env.CLOUDANT_USERNAME = 'admin';
   process.env.CLOUDANT_PASSWORD = password;
