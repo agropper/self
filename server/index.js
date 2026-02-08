@@ -577,8 +577,13 @@ ensureBucketExists();
 
 // Initialize databases (retry Cloudant connection when CouchDB droplet is still warming)
 (async () => {
-  const maxAttempts = process.env.USE_COUCHDB_DROPLET === 'true' ? 10 : 1; // 5 min @ 30s (CouchDB can take 2.5+ min)
-  const intervalMs = process.env.USE_COUCHDB_DROPLET === 'true' ? 30000 : 0;
+  const useDroplet = process.env.USE_COUCHDB_DROPLET === 'true';
+  const cloudantUrl = process.env.CLOUDANT_URL || '';
+  const targetHost = cloudantUrl.replace(/^https?:\/\//, '').replace(/^[^@]+@/, '').split('/')[0] || 'not set';
+  console.log(`[Cloudant] Target: ${targetHost} (USE_COUCHDB_DROPLET=${useDroplet})`);
+
+  const maxAttempts = useDroplet ? 10 : 1; // 5 min @ 30s (CouchDB can take 2.5+ min)
+  const intervalMs = useDroplet ? 30000 : 0;
   let connected = false;
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     connected = await cloudant.testConnection();
@@ -589,7 +594,8 @@ ensureBucketExists();
     }
   }
   if (!connected) {
-    console.error('❌ Cloudant connection failed. Check CLOUDANT_URL, CLOUDANT_USERNAME, and CLOUDANT_PASSWORD.');
+    console.error(`❌ Cloudant connection failed after ${maxAttempts} attempt(s). Target: ${targetHost}`);
+    console.error('   Check CLOUDANT_URL, CLOUDANT_USERNAME, CLOUDANT_PASSWORD. If using CouchDB droplet: droplet running, port 5984 open, CouchDB bound to 0.0.0.0.');
     return;
   }
 
