@@ -1345,10 +1345,12 @@ const handleCategoryPageClick = async (page: number) => {
   }
   
   const fileName = initialFileInfo.value.fileName;
-  viewingPdfFile.value = {
+  const filePayload = {
     bucketKey: initialFileInfo.value.bucketKey,
     name: fileName.toLowerCase().endsWith('.pdf') ? fileName : `${fileName}.pdf`
   };
+  console.log('[PDF] Lists handleCategoryPageClick setting viewingPdfFile', filePayload);
+  viewingPdfFile.value = filePayload;
   pdfInitialPage.value = page;
   showPdfViewer.value = true;
 };

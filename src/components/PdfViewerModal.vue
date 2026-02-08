@@ -131,13 +131,30 @@ const fileName = computed(() => props.file?.name || 'PDF Viewer');
 
 // Helper to check if file is actually a PDF (by name or by bucketKey/URL, so display names without .pdf still work)
 const isPdfFile = computed(() => {
-  if (!props.file) return false;
-  const name = (props.file.name || '').toLowerCase();
-  if (name.endsWith('.pdf')) return true;
-  const bucketKey = (props.file.bucketKey || '').toLowerCase();
-  if (bucketKey && bucketKey.endsWith('.pdf')) return true;
-  const url = (props.file.fileUrl || '').toLowerCase();
-  if (url.endsWith('.pdf') || url.includes('/proxy-pdf/')) return true;
+  const file = props.file;
+  console.log('[PDF] isPdfFile check', {
+    hasFile: !!file,
+    name: file?.name,
+    bucketKey: file?.bucketKey,
+    fileUrl: file?.fileUrl
+  });
+  if (!file) return false;
+  const name = (file.name || '').toLowerCase();
+  if (name.endsWith('.pdf')) {
+    console.log('[PDF] isPdfFile true (name.endsWith .pdf)');
+    return true;
+  }
+  const bucketKey = (file.bucketKey || '').toLowerCase();
+  if (bucketKey && bucketKey.endsWith('.pdf')) {
+    console.log('[PDF] isPdfFile true (bucketKey.endsWith .pdf)');
+    return true;
+  }
+  const url = (file.fileUrl || '').toLowerCase();
+  if (url.endsWith('.pdf') || url.includes('/proxy-pdf/')) {
+    console.log('[PDF] isPdfFile true (fileUrl)');
+    return true;
+  }
+  console.log('[PDF] isPdfFile false');
   return false;
 });
 
@@ -174,8 +191,14 @@ const pdfUrl = computed(() => {
 
 // Methods
 const loadPdfDocument = async () => {
+  console.log('[PDF] loadPdfDocument', {
+    file: props.file,
+    isPdfFile: isPdfFile.value,
+    pdfUrl: pdfUrl.value
+  });
   // Validate that this is actually a PDF file
   if (!isPdfFile.value) {
+    console.log('[PDF] rejecting: not a PDF file');
     errorMessage.value = `This file (${props.file?.name || 'unknown'}) is not a PDF file. Please use the text viewer instead.`;
     pdfDocument.value = null;
     totalPages.value = 0;
@@ -184,6 +207,7 @@ const loadPdfDocument = async () => {
   }
 
   if (!pdfUrl.value) {
+    console.log('[PDF] rejecting: no pdfUrl');
     errorMessage.value = 'No file URL available';
     pdfDocument.value = null;
     totalPages.value = 0;
@@ -258,6 +282,7 @@ const goToPage = () => {
 
 // Watch for file changes
 watch(() => props.file, (newFile) => {
+  console.log('[PDF] file prop changed', newFile ? { name: newFile.name, bucketKey: newFile.bucketKey, fileUrl: newFile.fileUrl } : null);
   if (newFile && !isLoading.value) {
     currentPage.value = props.initialPage && props.initialPage > 0 ? props.initialPage : 1;
     totalPages.value = 0;
