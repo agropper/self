@@ -7287,15 +7287,21 @@ app.get('/api/admin/users', async (req, res) => {
     // Filter out design documents and non-user documents
     const users = allUsers.filter(doc => doc.userId && !doc._id.startsWith('_design'));
     
-    // Get all sessions to find last activity
+    // Get all sessions to find last activity (include deep link sessions keyed by deepLinkUserId)
     const allSessions = await cloudant.getAllDocuments('maia_sessions');
     const sessionsByUserId = new Map();
     allSessions.forEach(session => {
-      if (session.userId && !session._id.startsWith('_design')) {
-        const existing = sessionsByUserId.get(session.userId);
-        if (!existing || (session.lastActivity && (!existing.lastActivity || session.lastActivity > existing.lastActivity))) {
-          sessionsByUserId.set(session.userId, session);
-        }
+      if (session._id.startsWith('_design')) return;
+      // Skip mapping docs (session_xxx) – they have no lastActivity; use only actual session docs
+      if (session._id.startsWith('session_') || session.type === 'session_mapping') return;
+      const uid =
+        session.userId ||
+        session.deepLinkUserId ||
+        (session._id.startsWith('deeplink_') ? session._id.replace(/^deeplink_/, '') : null);
+      if (!uid) return;
+      const existing = sessionsByUserId.get(uid);
+      if (!existing || (session.lastActivity && (!existing.lastActivity || session.lastActivity > existing.lastActivity))) {
+        sessionsByUserId.set(uid, session);
       }
     });
     
