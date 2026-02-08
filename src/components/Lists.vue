@@ -1344,9 +1344,10 @@ const handleCategoryPageClick = async (page: number) => {
     return;
   }
   
+  const fileName = initialFileInfo.value.fileName;
   viewingPdfFile.value = {
     bucketKey: initialFileInfo.value.bucketKey,
-    name: initialFileInfo.value.fileName
+    name: fileName.toLowerCase().endsWith('.pdf') ? fileName : `${fileName}.pdf`
   };
   pdfInitialPage.value = page;
   showPdfViewer.value = true;
