@@ -609,20 +609,8 @@
               </div>
               
               <div v-else class="q-mt-md">
-                <div class="row items-center q-mb-sm">
-                  <div class="text-body2 text-grey">
-                    Showing {{ privacyFilterMapping.length }} name{{ privacyFilterMapping.length !== 1 ? 's' : '' }} in pseudonym mapping
-                  </div>
-                  <q-space />
-                  <q-btn
-                    label="Clean Duplicates"
-                    color="primary"
-                    outline
-                    size="sm"
-                    icon="cleaning_services"
-                    @click="cleanDuplicates"
-                    :loading="cleaningDuplicates"
-                  />
+                <div class="text-body2 text-grey q-mb-sm">
+                  Showing {{ privacyFilterMapping.length }} name{{ privacyFilterMapping.length !== 1 ? 's' : '' }} in pseudonym mapping
                 </div>
                 <q-table
                   :rows="privacyFilterMapping"
@@ -1239,7 +1227,6 @@ const loadingPrivacyFilter = ref(false);
 const privacyFilterError = ref('');
 const privacyFilterResponse = ref('');
 const privacyFilterMapping = ref<Array<{ original: string; pseudonym: string }>>([]);
-const cleaningDuplicates = ref(false);
 const loadingRandomNames = ref(false);
 const patientSummary = ref('');
 const patientSummaries = ref<Array<{ text: string; createdAt: string; updatedAt: string; isCurrent: boolean }>>([]);
@@ -3146,103 +3133,98 @@ const swapSummary = async (index: number) => {
   }
 };
 
-// Helper function to deduplicate mapping (used both on load and when adding new names)
-const deduplicateMapping = (mappings: Array<{ original: string; pseudonym: string }>): {
+// Strip leading titles (Dr, Dr., Mr, Mrs, Ms, Prof., RN, CNP, OD) for canonical name comparison
+const stripNameTitles = (name: string): string => {
+  const t = name
+    .replace(/\u00A0/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  const withoutTitle = t.replace(
+    /^(?:Dr\.?|Mr\.?|Mrs\.?|Ms\.?|Prof\.?|RN|CNP|OD)\s+/i,
+    ''
+  ).trim();
+  return withoutTitle || t;
+};
+
+// Map last name (lowercase) -> full name from a list of names we already have (mapping originals or extracted).
+// Used to resolve "Gropper" -> "Adrian Gropper" when we have "Adrian Gropper" in the mapping. First occurrence wins.
+const buildLastNameToFullNameFromFullNames = (originals: string[]): Map<string, string> => {
+  const m = new Map<string, string>();
+  for (const orig of originals) {
+    const full = stripNameTitles(orig);
+    const parts = full.split(/\s+/).filter(Boolean);
+    if (parts.length >= 2) {
+      const last = parts[parts.length - 1].toLowerCase();
+      if (!m.has(last)) {
+        m.set(last, full);
+      }
+    }
+  }
+  return m;
+};
+
+// Canonical form for one person: "First Last". Resolves "Last" / "Dr Last" to "First Last" when we have that full name in our map (from mapping or extracted names).
+const toCanonical = (
+  name: string,
+  lastNameToFullName?: Map<string, string>
+): string => {
+  const stripped = stripNameTitles(name);
+  const parts = stripped.split(/\s+/).filter(Boolean);
+  if (parts.length >= 2) {
+    return parts.join(' ');
+  }
+  if (parts.length === 1 && lastNameToFullName) {
+    const full = lastNameToFullName.get(parts[0].toLowerCase());
+    if (full) return full;
+  }
+  return stripped;
+};
+
+// Helper function to deduplicate mapping (used both on load and when adding new names).
+// If getCanonical is provided, two originals are treated as the same person when they share the same canonical name
+// (e.g. "First Last", "Dr First Last", "Dr. Last" -> one entry with original "First Last").
+const deduplicateMapping = (
+  mappings: Array<{ original: string; pseudonym: string }>,
+  getCanonical?: (original: string) => string
+): {
   deduplicated: Array<{ original: string; pseudonym: string }>;
   removed: string[];
 } => {
   const seen = new Set<string>();
-  const seenIndices = new Map<string, number>(); // Track which index we saw each name at
   const deduplicatedMapping: Array<{ original: string; pseudonym: string }> = [];
   const duplicatesRemoved: string[] = [];
-  
-  for (let i = 0; i < mappings.length; i++) {
-    const mapping = mappings[i];
-    // Normalize: trim whitespace, replace non-breaking spaces, and use lowercase for comparison
-    // Also replace any Unicode whitespace characters
-    const normalized = mapping.original
-      .replace(/\u00A0/g, ' ') // Replace non-breaking space with regular space
-      .replace(/\s+/g, ' ') // Replace multiple spaces with single space
-      .trim()
-      .toLowerCase();
-    
-    if (!seen.has(normalized)) {
-      seen.add(normalized);
-      seenIndices.set(normalized, i);
-      deduplicatedMapping.push(mapping);
+
+  // When using canonical form, process full names first so we keep "Adrian Gropper" over "Gropper" as the display original
+  const toProcess = getCanonical
+    ? [...mappings].sort((a, b) => {
+        const wordsA = getCanonical(a.original).split(/\s+/).filter(Boolean).length;
+        const wordsB = getCanonical(b.original).split(/\s+/).filter(Boolean).length;
+        return wordsB - wordsA;
+      })
+    : mappings;
+
+  for (const mapping of toProcess) {
+    const key = getCanonical
+      ? getCanonical(mapping.original).replace(/\s+/g, ' ').trim().toLowerCase()
+      : mapping.original
+          .replace(/\u00A0/g, ' ')
+          .replace(/\s+/g, ' ')
+          .trim()
+          .toLowerCase();
+
+    if (!seen.has(key)) {
+      seen.add(key);
+      const displayOriginal = getCanonical ? getCanonical(mapping.original) : mapping.original;
+      deduplicatedMapping.push({
+        original: displayOriginal,
+        pseudonym: mapping.pseudonym
+      });
     } else {
       duplicatesRemoved.push(mapping.original);
     }
   }
-  
-  return { deduplicated: deduplicatedMapping, removed: duplicatesRemoved };
-};
 
-// Manual function to clean duplicates (can be called by user)
-const cleanDuplicates = async () => {
-  cleaningDuplicates.value = true;
-  try {
-    const { deduplicated, removed } = deduplicateMapping(privacyFilterMapping.value);
-    
-    if (removed.length > 0) {
-      privacyFilterMapping.value = deduplicated;
-      
-      // Save the cleaned mapping back to storage
-      try {
-        const saveResponse = await fetch('/api/privacy-filter-mapping', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json'
-          },
-          credentials: 'include',
-          body: JSON.stringify({ mapping: deduplicated })
-        });
-        if (!saveResponse.ok) {
-          if ($q && typeof $q.notify === 'function') {
-            $q.notify({
-              type: 'negative',
-              message: 'Failed to save cleaned mapping',
-              timeout: 3000
-            });
-          }
-        } else {
-          if ($q && typeof $q.notify === 'function') {
-            $q.notify({
-              type: 'positive',
-              message: `Removed ${removed.length} duplicate(s). Mapping now has ${deduplicated.length} unique entries.`,
-              timeout: 4000
-            });
-          }
-        }
-      } catch (saveErr) {
-        if ($q && typeof $q.notify === 'function') {
-          $q.notify({
-            type: 'negative',
-            message: 'Error saving cleaned mapping',
-            timeout: 3000
-          });
-        }
-      }
-    } else {
-      if ($q && typeof $q.notify === 'function') {
-        $q.notify({
-          type: 'info',
-          message: 'No duplicates found',
-          timeout: 2000
-        });
-      }
-    }
-  } catch (err) {
-    if ($q && typeof $q.notify === 'function') {
-      $q.notify({
-        type: 'negative',
-        message: 'Error cleaning duplicates',
-        timeout: 3000
-      });
-    }
-  } finally {
-    cleaningDuplicates.value = false;
-  }
+  return { deduplicated: deduplicatedMapping, removed: duplicatesRemoved };
 };
 
 const loadPrivacyFilter = async () => {
@@ -3251,64 +3233,62 @@ const loadPrivacyFilter = async () => {
   privacyFilterResponse.value = '';
 
   try {
+    // Build last-name -> full-name from the mapping we load (so "Gropper" merges with "Adrian Gropper")
+    const getCanonicalFromMapping = (mapping: Array<{ original: string; pseudonym: string }>) => {
+      const lastNameToFullName = buildLastNameToFullNameFromFullNames(mapping.map(m => m.original));
+      return (orig: string) => toCanonical(orig, lastNameToFullName);
+    };
+
     // Always try to load existing mapping first (cumulative - never deleted)
     try {
       const loadResponse = await fetch('/api/privacy-filter-mapping', {
         credentials: 'include'
       });
-      
+
       if (!loadResponse.ok) {
         privacyFilterMapping.value = [];
       } else {
         const loadData = await loadResponse.json();
         if (loadData.mapping && loadData.mapping.length > 0) {
-          // Deduplicate the loaded mapping (case-insensitive, keep first occurrence)
-          const { deduplicated, removed } = deduplicateMapping(loadData.mapping);
-          
+          const { deduplicated, removed } = deduplicateMapping(loadData.mapping, getCanonicalFromMapping(loadData.mapping));
+
           if (removed.length > 0) {
-            // Save the deduplicated mapping back to storage
             try {
               await fetch('/api/privacy-filter-mapping', {
                 method: 'POST',
-                headers: {
-                  'Content-Type': 'application/json'
-                },
+                headers: { 'Content-Type': 'application/json' },
                 credentials: 'include',
                 body: JSON.stringify({ mapping: deduplicated })
               });
-              // Silently handle save errors - mapping is already deduplicated in memory
             } catch (saveErr) {
               // Silently handle save errors
             }
           }
-          
+
           privacyFilterMapping.value = deduplicated;
         } else {
-          // Even if no duplicates were found, still deduplicate to be safe
-          const { deduplicated } = deduplicateMapping(loadData.mapping || []);
+          const mapping = loadData.mapping || [];
+          const { deduplicated } = deduplicateMapping(mapping, getCanonicalFromMapping(mapping));
           privacyFilterMapping.value = deduplicated;
         }
       }
     } catch (loadErr) {
       privacyFilterMapping.value = [];
     }
-    
+
     // Always run deduplication on the current mapping value (in case it was set elsewhere)
     if (privacyFilterMapping.value.length > 0) {
-      const { deduplicated, removed } = deduplicateMapping(privacyFilterMapping.value);
+      const current = privacyFilterMapping.value;
+      const { deduplicated, removed } = deduplicateMapping(current, getCanonicalFromMapping(current));
       if (removed.length > 0 || deduplicated.length !== privacyFilterMapping.value.length) {
         privacyFilterMapping.value = deduplicated;
-        // Save cleaned version
         try {
           await fetch('/api/privacy-filter-mapping', {
             method: 'POST',
-            headers: {
-              'Content-Type': 'application/json'
-            },
+            headers: { 'Content-Type': 'application/json' },
             credentials: 'include',
             body: JSON.stringify({ mapping: deduplicated })
           });
-          // Silently handle save errors
         } catch (saveErr) {
           // Silently handle save errors
         }
@@ -3469,27 +3449,25 @@ const createPseudonymMapping = async (responseText: string) => {
       // Remove notes in parentheses
       const cleanLine = line.replace(/\s*\([^)]*\)/g, '').trim();
       
-      // Extract names with optional titles (Dr., Mr., Ms., Mrs., etc.)
-      // Pattern: (optional title) FirstName LastName
-      // Examples: "Adrian Gropper", "Dr. Harshal Patil", "Mr. Gropper"
+      // Extract names with optional titles (Dr, Dr., Mr., Ms., Mrs., etc.)
+      // All variants (First Last, Dr First Last, Dr. Last, Last) are later normalized to canonical "First Last" for one mapping per person
       const namePatterns = [
-        /^(?:Dr\.|Mr\.|Mrs\.|Ms\.|Prof\.|RN|CNP|OD)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)/, // With title
+        /^(?:Dr\.?|Mr\.?|Mrs\.?|Ms\.?|Prof\.?|RN|CNP|OD)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)/, // Title + full name
         /^([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)/, // Full name without title
-        /^(?:Dr\.|Mr\.|Mrs\.|Ms\.|Prof\.)\s+([A-Z][a-z]+)/, // Title + single name
+        /^(?:Dr\.?|Mr\.?|Mrs\.?|Ms\.?|Prof\.?)\s+([A-Z][a-z]+)/, // Title + single name (last name)
         /^([A-Z][a-z]+)$/ // Single capitalized word (last name)
       ];
-      
+
       for (const pattern of namePatterns) {
         const match = cleanLine.match(pattern);
         if (match) {
-          const name = match[1] || match[0]; // Use captured group or full match
+          const name = match[1] || match[0];
           if (name && name.length > 1) {
             extractedNames.push(name);
-            // Also extract full line if it has a title (e.g., "Dr. Harshal Patil")
             if (pattern === namePatterns[0] && match[0] !== name) {
-              extractedNames.push(match[0]); // Include "Dr. Harshal Patil" as well
+              extractedNames.push(match[0]);
             }
-            break; // Only match one pattern per line
+            break;
           }
         }
       }
@@ -3506,41 +3484,28 @@ const createPseudonymMapping = async (responseText: string) => {
       }
     }
     
+    // Resolve "Last" -> "First Last" using names we already have (mapping + extracted), not Random Names
+    const lastNameToFullName = buildLastNameToFullNameFromFullNames([
+      ...(privacyFilterMapping.value || []).map(m => m.original),
+      ...uniqueExtractedNames
+    ]);
+    const getCanonicalForMerge = (orig: string) => toCanonical(orig, lastNameToFullName);
+
     // Start with existing mapping (cumulative - never delete)
     const existingMapping = privacyFilterMapping.value || [];
-    const existingOriginals = new Set(existingMapping.map(m => m.original.toLowerCase()));
-    
-    // Find new names that aren't in existing mapping (case-insensitive comparison)
-    const newNamesSet = new Set<string>();
+    const existingCanonicals = new Set(
+      existingMapping.map(m => getCanonicalForMerge(m.original).toLowerCase())
+    );
+
+    // One mapping per person: convert each extracted name to canonical "First Last" (or "Last" -> resolved to "First Last" via Random Names)
+    const newNames: string[] = [];
     for (const name of uniqueExtractedNames) {
-      if (!existingOriginals.has(name.toLowerCase())) {
-        newNamesSet.add(name); // Use first occurrence (preserve original casing)
+      const canonical = toCanonical(name, lastNameToFullName);
+      const key = canonical.toLowerCase();
+      if (!existingCanonicals.has(key) && !newNames.some(n => n.toLowerCase() === key)) {
+        newNames.push(canonical);
       }
     }
-    const newNames = Array.from(newNamesSet);
-    
-    // Also extract last names from full names and add them if not already present
-    const lastNamesToAdd: string[] = [];
-    const seenLastNames = new Set<string>();
-    for (const fullName of newNames) {
-      const parts = fullName.split(/\s+/);
-      if (parts.length >= 2) {
-        const lastName = parts[parts.length - 1]; // Last part is last name
-        const lastNameKey = lastName.toLowerCase();
-        // Only add if it's not already in mapping, not in newNames, and not already in lastNamesToAdd
-        if (lastName.length > 1 && 
-            !existingOriginals.has(lastNameKey) &&
-            !newNames.some(n => n.toLowerCase() === lastNameKey) &&
-            !seenLastNames.has(lastNameKey)) {
-          seenLastNames.add(lastNameKey);
-          lastNamesToAdd.push(lastName);
-        }
-      }
-    }
-    
-    // Add last names to newNames (deduplicated)
-    newNames.push(...lastNamesToAdd);
-    
     if (newNames.length === 0) {
       return; // No new names, keep existing mapping
     }
@@ -3603,11 +3568,12 @@ const createPseudonymMapping = async (responseText: string) => {
       newMappings.push({ original: originalName, pseudonym });
     }
     
-    // Merge new mappings with existing ones (cumulative)
-    // Remove duplicates (case-insensitive) before merging
-    // Keep the FIRST occurrence of each name (preserve existing mappings over new duplicates)
+    // Merge new mappings with existing ones; deduplicate by canonical name so "Dr First Last" and "First Last" become one entry
     const allMappings = [...existingMapping, ...newMappings];
-    const { deduplicated: deduplicatedMapping, removed: duplicateRemoved } = deduplicateMapping(allMappings);
+    const { deduplicated: deduplicatedMapping, removed: duplicateRemoved } = deduplicateMapping(
+      allMappings,
+      getCanonicalForMerge
+    );
     
     privacyFilterMapping.value = deduplicatedMapping;
     
@@ -3726,7 +3692,8 @@ const filterCurrentChat = () => {
       lastNamePseudonym: string | null;
       isFullName: boolean;
     }> = [];
-    const titles = ['Dr\\.', 'Mr\\.', 'Mrs\\.', 'Ms\\.', 'Prof\\.', 'RN', 'CNP', 'OD'];
+    // Match with or without period: Dr, Dr., Mr, Mr., etc.
+    const titles = ['Dr\\.?', 'Mr\\.?', 'Mrs\\.?', 'Ms\\.?', 'Prof\\.?', 'RN', 'CNP', 'OD'];
     
     for (const mapping of privacyFilterMapping.value) {
       const original = mapping.original;
@@ -3769,24 +3736,34 @@ const filterCurrentChat = () => {
     
     // Apply replacements for each mapping (full names first)
     for (const mapping of enhancedMappings) {
-      // Normalize the original name: replace U+202f (narrow no-break space) and other Unicode spaces with regular space
+      // Normalize the original name: replace Unicode spaces with regular space
       const normalizedOriginal = mapping.original
-        .replace(/\u202F/g, ' ') // Replace narrow no-break space
-        .replace(/\u00A0/g, ' ') // Replace non-breaking space
-        .replace(/\s+/g, ' ') // Replace multiple spaces with single space
+        .replace(/\u202F/g, ' ')
+        .replace(/\u00A0/g, ' ')
+        .replace(/\s+/g, ' ')
         .trim();
-      
-      const escapedOriginal = normalizedOriginal.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      const escapedOriginalWithUnicode = mapping.original.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      
-      // Pattern 1: Exact match (case-insensitive, word boundaries)
-      // Match both the normalized version (regular spaces) and the original (with Unicode spaces)
-      // This handles: "Adrian Gropper", "Adrian Gropper" (with U+202f), etc.
-      // Also handles markdown formatting: **Name**, *Name*, ## Name, etc.
+
+      // Escape each word and join with \s+ so we match any whitespace (including U+202F, U+00A0) between first/last name.
+      // This fixes "Dr. Wei Lien" not matching when the source has a narrow no-break space, which would leave only last-name replacement (e.g. "Dr. Wei Edwards89").
+      const nameParts = normalizedOriginal.split(/\s+/).filter(Boolean);
+      const escapedOriginal = nameParts
+        .map((p) => p.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+        .join('\\s+');
+      const escapedOriginalWithUnicode =
+        nameParts.length === 0
+          ? escapedOriginal
+          : mapping.original
+              .split(/\s+/)
+              .filter(Boolean)
+              .map((p) => p.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+              .join('\\s+');
+
+      // Pattern 1: Exact match (case-insensitive, word boundaries, any whitespace between words)
       const exactPattern = new RegExp(`\\b${escapedOriginal}\\b`, 'gi');
-      const exactPatternUnicode = escapedOriginal !== escapedOriginalWithUnicode 
-        ? new RegExp(`\\b${escapedOriginalWithUnicode}\\b`, 'gi')
-        : null;
+      const exactPatternUnicode =
+        escapedOriginal !== escapedOriginalWithUnicode
+          ? new RegExp(`\\b${escapedOriginalWithUnicode}\\b`, 'gi')
+          : null;
       
       // Try both patterns (normalized and with Unicode spaces)
       filteredContent = filteredContent.replace(exactPattern, (match, offset) => {
@@ -3859,7 +3836,7 @@ const filterCurrentChat = () => {
           : null;
         
         filteredContent = filteredContent.replace(titlePattern, (match, offset) => {
-          const titleMatch = match.match(/^(Dr\.|Mr\.|Mrs\.|Ms\.|Prof\.|RN|CNP|OD)\s+/i);
+          const titleMatch = match.match(/^(Dr\.?|Mr\.?|Mrs\.?|Ms\.?|Prof\.?|RN|CNP|OD)\s+/i);
           const replacement = titleMatch ? `${titleMatch[1]} ${mapping.pseudonym}` : mapping.pseudonym;
           
           // Check for markdown formatting
@@ -3890,7 +3867,7 @@ const filterCurrentChat = () => {
         // Also try with Unicode spaces
         if (titlePatternUnicode) {
           filteredContent = filteredContent.replace(titlePatternUnicode, (match, offset) => {
-            const titleMatch = match.match(/^(Dr\.|Mr\.|Mrs\.|Ms\.|Prof\.|RN|CNP|OD)\s+/i);
+            const titleMatch = match.match(/^(Dr\.?|Mr\.?|Mrs\.?|Ms\.?|Prof\.?|RN|CNP|OD)\s+/i);
             const replacement = titleMatch ? `${titleMatch[1]} ${mapping.pseudonym}` : mapping.pseudonym;
             
             const before = filteredContent.substring(Math.max(0, offset - 5), offset);
@@ -4088,7 +4065,7 @@ const filterCurrentChat = () => {
           ? new RegExp(`\\b${title}\\s+${escapedLastNameUnicode}\\b`, 'gi')
           : null;
         filteredContent = filteredContent.replace(titleLastNamePattern, (match, offset) => {
-          const titleMatch = match.match(/^(Dr\.|Mr\.|Mrs\.|Ms\.|Prof\.|RN|CNP|OD)\s+/i);
+          const titleMatch = match.match(/^(Dr\.?|Mr\.?|Mrs\.?|Ms\.?|Prof\.?|RN|CNP|OD)\s+/i);
           const replacement = titleMatch ? `${titleMatch[1]} ${lastNameMapping.lastNamePseudonym}` : lastNameMapping.lastNamePseudonym;
           
           // Check for markdown formatting
@@ -4119,7 +4096,7 @@ const filterCurrentChat = () => {
         // Also try Unicode version
         if (titleLastNamePatternUnicode) {
           filteredContent = filteredContent.replace(titleLastNamePatternUnicode, (match, offset) => {
-            const titleMatch = match.match(/^(Dr\.|Mr\.|Mrs\.|Ms\.|Prof\.|RN|CNP|OD)\s+/i);
+            const titleMatch = match.match(/^(Dr\.?|Mr\.?|Mrs\.?|Ms\.?|Prof\.?|RN|CNP|OD)\s+/i);
             const replacement = titleMatch ? `${titleMatch[1]} ${lastNameMapping.lastNamePseudonym}` : lastNameMapping.lastNamePseudonym;
             
             const before = filteredContent.substring(Math.max(0, offset - 5), offset);
@@ -5276,31 +5253,27 @@ watch(isOpen, (newValue) => {
 const listsComponentRef = ref<InstanceType<typeof Lists> | null>(null);
 
 watch(currentTab, async (newTab) => {
-  // When Privacy Filter tab is opened, check for and remove duplicates
   if (newTab === 'privacy') {
-    // Always check for duplicates when opening the tab
     if (privacyFilterMapping.value.length > 0) {
-      const { deduplicated, removed } = deduplicateMapping(privacyFilterMapping.value);
+      const current = privacyFilterMapping.value;
+      const getCanonical = (orig: string) =>
+        toCanonical(orig, buildLastNameToFullNameFromFullNames(current.map(m => m.original)));
+      const { deduplicated, removed } = deduplicateMapping(current, getCanonical);
       if (removed.length > 0) {
         privacyFilterMapping.value = deduplicated;
-        // Save the cleaned mapping back to storage
         try {
           await fetch('/api/privacy-filter-mapping', {
             method: 'POST',
-            headers: {
-              'Content-Type': 'application/json'
-            },
+            headers: { 'Content-Type': 'application/json' },
             credentials: 'include',
             body: JSON.stringify({ mapping: deduplicated })
           });
-          // Silently handle save errors
         } catch (saveErr) {
           // Silently handle save errors
         }
       }
     }
-    
-    // Load privacy filter data
+
     loadPrivacyFilter();
   } else if (isOpen.value) {
     if (newTab === 'files') {
