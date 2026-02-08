@@ -217,9 +217,13 @@ export async function ensureCouchDBDroplet() {
     password
   };
   await saveCredentials(creds);
-  await waitForCouchDBReady(url);
   process.env.CLOUDANT_URL = url;
+  waitForCouchDBReady(url).then(() => {
+    console.log(`[CouchDB Droplet] CouchDB ready at ${url}`);
+  }).catch((err) => {
+    console.warn(`[CouchDB Droplet] CouchDB readiness wait failed:`, err.message);
+  });
   process.env.CLOUDANT_USERNAME = 'admin';
   process.env.CLOUDANT_PASSWORD = password;
-  console.log(`[CouchDB Droplet] CouchDB created and ready at ${url}`);
+  console.log(`[CouchDB Droplet] Credentials saved, server starting (CouchDB may take 1–2 min to become ready)`);
 }

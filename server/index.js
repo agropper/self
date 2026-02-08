@@ -555,6 +555,10 @@ function getMaiaInstructionText() {
 const app = express();
 const PORT = process.env.PORT || 3001;
 
+// Start listening immediately so readiness probes pass while CouchDB droplet setup runs
+app.get('/health', (req, res) => res.json({ status: 'ok', app: 'maia-cloud-user-app' }));
+app.listen(PORT, () => console.log(`User app server listening on port ${PORT} (startup in progress)`));
+
 // Ensure CouchDB droplet if requested (sets CLOUDANT_URL, CLOUDANT_USERNAME, CLOUDANT_PASSWORD)
 if (process.env.USE_COUCHDB_DROPLET === 'true') {
   const { ensureCouchDBDroplet } = await import('./utils/couchdb-droplet.js');
@@ -571,9 +575,19 @@ const cloudant = new CloudantClient({
 logStorageConfig(storageConfig);
 ensureBucketExists();
 
-// Initialize databases
+// Initialize databases (retry Cloudant connection when CouchDB droplet is still warming)
 (async () => {
-  const connected = await cloudant.testConnection();
+  const maxAttempts = process.env.USE_COUCHDB_DROPLET === 'true' ? 24 : 1;
+  const intervalMs = 5000;
+  let connected = false;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    connected = await cloudant.testConnection();
+    if (connected) break;
+    if (attempt < maxAttempts) {
+      console.warn(`[Cloudant] Connection attempt ${attempt}/${maxAttempts} failed, retrying in ${intervalMs / 1000}s...`);
+      await new Promise(r => setTimeout(r, intervalMs));
+    }
+  }
   if (!connected) {
     console.error('❌ Cloudant connection failed. Check CLOUDANT_URL, CLOUDANT_USERNAME, and CLOUDANT_PASSWORD.');
     return;
@@ -1234,11 +1248,6 @@ app.use(session({
     dbName: 'maia_sessions'
   })
 }));
-
-// Health check
-app.get('/health', (req, res) => {
-  res.json({ status: 'ok', app: 'maia-cloud-user-app' });
-});
 
 // Passkey routes
 setupAuthRoutes(app, passkeyService, cloudant, doClient, auditLog);
@@ -9436,14 +9445,12 @@ if (isProduction) {
   });
 }
 
-// Start server
-app.listen(PORT, () => {
-  console.log(`User app server running on port ${PORT}`);
-  console.log(`Passkey rpID: ${passkeyService.rpID}`);
-  console.log(`Passkey origin: ${passkeyService.origin}`);
-  const providers = chatClient.getAvailableProviders();
-  console.log(`📊 Available Chat Providers: ${providers.join(', ')}`);
-});
+// Startup complete (server already listening for readiness probes)
+console.log(`User app server ready on port ${PORT}`);
+console.log(`Passkey rpID: ${passkeyService.rpID}`);
+console.log(`Passkey origin: ${passkeyService.origin}`);
+const providers = chatClient.getAvailableProviders();
+console.log(`📊 Available Chat Providers: ${providers.join(', ')}`);
 
 export default app;
 

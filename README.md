@@ -70,6 +70,9 @@ When running MAIA, use your own credit card to pay for hosting. If someone else 
 - `CLOUDANT_URL`, `CLOUDANT_USERNAME`, `CLOUDANT_PASSWORD`  
   Required for user docs, sessions, and audit logs.
 
+### CouchDB Droplet (optional, self-hosted database)
+When `USE_COUCHDB_DROPLET=true`, the server auto-creates a DigitalOcean droplet (`ubuntu-s-1vcpu-1gb-tor1-01`) with Dockerized CouchDB and sets `CLOUDANT_*` from it. Credentials are stored in Spaces at `couchdb/credentials.json` so they survive redeploys. Requires `DIGITALOCEAN_TOKEN`, `DIGITALOCEAN_BUCKET`, `DIGITALOCEAN_AWS_ACCESS_KEY_ID`, `DIGITALOCEAN_AWS_SECRET_ACCESS_KEY`.
+
 ### DigitalOcean GenAI (agents, KBs, indexing)
 - `DIGITALOCEAN_TOKEN`  
   Auth for DO GenAI REST API.
@@ -101,7 +104,7 @@ When running MAIA, use your own credit card to pay for hosting. If someone else 
 ## Hosting Environment
 
 - **App Platform**: Runs the frontend + Node server.
-- **Droplet with Dockerized CouchDB**: Cloudant-compatible data store for users, chats, sessions, and audit log.
+- **Droplet with Dockerized CouchDB**: Cloudant-compatible data store for users, chats, sessions, and audit log. Can be auto-provisioned via `USE_COUCHDB_DROPLET=true` (see CouchDB Droplet env vars).
 - **GenAI Agent**: DigitalOcean Private AI agent per user.
 - **Knowledge Base**: DigitalOcean KB per user, indexed from the Spaces folder datasource.
 - **OpenSearch 2 Database**: Clinical notes indexing/search store.
