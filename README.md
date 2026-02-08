@@ -58,13 +58,13 @@ When running MAIA, use your own credit card to pay for hosting. If someone else 
 
 ## Hosting Configuration Notes (Key Env Vars)
 
-### Passkeys / WebAuthn
-- `PASSKEY_RPID`  
-  Domain scope for credentials (use apex domain to cover subdomains).
-- `PASSKEY_ORIGIN`  
-  Single allowed origin for WebAuthn verification.
-- `PASSKEY_ORIGINS`  
-  Optional comma-separated allowlist for multiple origins.
+### Passkeys / WebAuthn (single env)
+- `PUBLIC_APP_URL`  
+  **Single source:** passkey origin and allowed origins are derived from this; RPID is derived as the apex domain (e.g. `https://maia.adriang.xyz` → origin `https://maia.adriang.xyz`, RPID `adriang.xyz`). Used for deep links and app URL.
+- `PASSKEY_RPID` (optional)  
+  Override RPID if you need a different domain scope (e.g. full hostname instead of apex).
+- `PASSKEY_ORIGINS` (optional)  
+  Comma-separated allowlist if you need more than the single derived origin.
 
 ### Cloudant (users, sessions, audit log)
 - `CLOUDANT_URL`, `CLOUDANT_USERNAME`, `CLOUDANT_PASSWORD`  
@@ -94,10 +94,8 @@ When `USE_COUCHDB_DROPLET=true`, the server auto-creates a DigitalOcean droplet 
   Enables clinical notes indexing/search.
 
 ### App + Email
-- `PUBLIC_APP_URL`  
-  Canonical app URL for links.
-- `PORT`  
-  Server listen port.
+- **`PUBLIC_APP_URL`** — Canonical app URL (also drives passkey config; see Passkeys above).
+- `PORT` — Server listen port.
 
 ---
 

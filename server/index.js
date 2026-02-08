@@ -555,6 +555,26 @@ function getMaiaInstructionText() {
 const app = express();
 const PORT = process.env.PORT || 3001;
 
+// Derive passkey/app URLs from PUBLIC_APP_URL (single source of truth); override with PASSKEY_RPID if needed
+function getAppUrlConfig() {
+  const raw = process.env.PUBLIC_APP_URL?.trim();
+  if (raw) {
+    try {
+      const u = new URL(raw);
+      const origin = u.origin;
+      const host = u.hostname;
+      const rpID = process.env.PASSKEY_RPID?.trim() || (host.includes('.') ? host.split('.').slice(-2).join('.') : host);
+      return { appOrigin: origin, derivedRpID: rpID, allowedOrigins: [origin] };
+    } catch (_) {}
+  }
+  return {
+    appOrigin: 'http://localhost:5173',
+    derivedRpID: process.env.PASSKEY_RPID?.trim() || 'localhost',
+    allowedOrigins: ['http://localhost:5173']
+  };
+}
+const appUrlConfig = getAppUrlConfig();
+
 // Start listening immediately so readiness probes pass while CouchDB droplet setup runs
 app.get('/health', (req, res) => res.json({ status: 'ok', app: 'maia-cloud-user-app' }));
 app.listen(PORT, () => console.log(`User app server listening on port ${PORT} (startup in progress)`));
@@ -1163,11 +1183,11 @@ async function validateUserResources(userId) {
 }
 
 const passkeyService = new PasskeyService({
-  rpID: process.env.PASSKEY_RPID || 'user.agropper.xyz',
-  origin: process.env.PASSKEY_ORIGIN || `http://localhost:${PORT}`,
+  rpID: appUrlConfig.derivedRpID,
+  origin: appUrlConfig.appOrigin,
   allowedOrigins: process.env.PASSKEY_ORIGINS
     ? process.env.PASSKEY_ORIGINS.split(',').map(entry => entry.trim()).filter(Boolean)
-    : undefined
+    : appUrlConfig.allowedOrigins
 });
 
 const chatClient = new ChatClient({
@@ -1202,10 +1222,8 @@ const allowedOrigins = corsOriginsEnv
   ? corsOriginsEnv.split(',').map(origin => origin.trim())
   : [
       'http://localhost:5173', // Local development
-      'https://maia.agropper.xyz', // Production (hardcoded fallback)
-      process.env.PUBLIC_APP_URL, // From environment variable
-      process.env.PASSKEY_ORIGIN // From environment variable (should be set in production)
-    ].filter(Boolean); // Remove undefined values
+      appUrlConfig.appOrigin
+    ].filter(Boolean);
 
 app.use(cors({
   origin: (origin, callback) => {
@@ -4342,7 +4360,7 @@ app.post('/api/save-group-chat', async (req, res) => {
       shareId: shareId,
       message: 'Group chat saved successfully',
       result,
-      shareUrl: `${process.env.PUBLIC_APP_URL || 'http://localhost:5173'}/?share=${shareId}`
+      shareUrl: `${appUrlConfig.appOrigin}/?share=${shareId}`
     });
   } catch (error) {
     console.error('❌ Save group chat error:', error);
@@ -5953,7 +5971,7 @@ app.post('/api/test-medications-token', async (req, res) => {
     await cloudant.saveDocument('maia_users', userDoc);
     
     // Build deep link URL
-    const frontendUrl = process.env.PUBLIC_APP_URL || process.env.FRONTEND_URL || 'http://localhost:5173';
+    const frontendUrl = process.env.PUBLIC_APP_URL || process.env.FRONTEND_URL || appUrlConfig.appOrigin;
     const deepLinkUrl = `${frontendUrl}/?editMedications=${tokenData.token}&userId=${userId}`;
     
     return res.json({
@@ -9453,8 +9471,7 @@ if (isProduction) {
 
 // Startup complete (server already listening for readiness probes)
 console.log(`User app server ready on port ${PORT}`);
-console.log(`Passkey rpID: ${passkeyService.rpID}`);
-console.log(`Passkey origin: ${passkeyService.origin}`);
+console.log(`Passkey (from PUBLIC_APP_URL): origin=${passkeyService.origin} rpID=${passkeyService.rpID}`);
 const providers = chatClient.getAvailableProviders();
 console.log(`📊 Available Chat Providers: ${providers.join(', ')}`);
 

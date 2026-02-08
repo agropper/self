@@ -383,9 +383,17 @@ export default function setupAuthRoutes(app, passkeyService, cloudant, doClient,
 
       const adminSecretCheck = requireAdminSecretForUser(userId, adminSecret);
       if (adminSecretCheck.required && !adminSecretCheck.ok) {
+        const code = adminSecretCheck.error;
+        console.warn(`[Passkey] Admin registration 403 for userId=${userId}: ${code}`);
+        const message =
+          code === 'ADMIN_SECRET_NOT_CONFIGURED'
+            ? 'Admin passkey is not configured. Set ADMIN_SECRET (and ADMIN_USERNAME) on the server.'
+            : code === 'ADMIN_SECRET_REQUIRED'
+              ? 'Admin secret required to create or update the admin passkey.'
+              : 'Invalid admin secret.';
         return res.status(403).json({
-          error: 'Admin secret required to create or update the admin passkey.',
-          errorCode: adminSecretCheck.error
+          error: message,
+          errorCode: code
         });
       }
 
@@ -423,8 +431,8 @@ export default function setupAuthRoutes(app, passkeyService, cloudant, doClient,
 
       res.json(options);
     } catch (error) {
-      console.error('Registration options error:', error);
-      res.status(500).json({ error: error.message });
+      console.error(`[Passkey] Registration options error for userId=${req.body?.userId}:`, error?.message || error);
+      res.status(500).json({ error: error.message || 'Registration failed' });
     }
   });
 
@@ -439,9 +447,15 @@ export default function setupAuthRoutes(app, passkeyService, cloudant, doClient,
 
       const adminSecretCheck = requireAdminSecretForUser(userId, adminSecret);
       if (adminSecretCheck.required && !adminSecretCheck.ok) {
+        const code = adminSecretCheck.error;
+        console.warn(`[Passkey] Admin verify 403 for userId=${userId}: ${code}`);
         return res.status(403).json({
-          error: 'Admin secret required to verify the admin passkey.',
-          errorCode: adminSecretCheck.error
+          error: code === 'ADMIN_SECRET_NOT_CONFIGURED'
+            ? 'Admin passkey is not configured. Set ADMIN_SECRET on the server.'
+            : code === 'ADMIN_SECRET_REQUIRED'
+              ? 'Admin secret required to verify the admin passkey.'
+              : 'Invalid admin secret.',
+          errorCode: code
         });
       }
 
