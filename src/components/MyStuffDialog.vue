@@ -3257,7 +3257,9 @@ const loadPrivacyFilter = async () => {
         credentials: 'include'
       });
       
-      if (loadResponse.ok) {
+      if (!loadResponse.ok) {
+        privacyFilterMapping.value = [];
+      } else {
         const loadData = await loadResponse.json();
         if (loadData.mapping && loadData.mapping.length > 0) {
           // Deduplicate the loaded mapping (case-insensitive, keep first occurrence)
@@ -3283,7 +3285,7 @@ const loadPrivacyFilter = async () => {
           privacyFilterMapping.value = deduplicated;
         } else {
           // Even if no duplicates were found, still deduplicate to be safe
-          const { deduplicated } = deduplicateMapping(loadData.mapping);
+          const { deduplicated } = deduplicateMapping(loadData.mapping || []);
           privacyFilterMapping.value = deduplicated;
         }
       }
@@ -3444,14 +3446,17 @@ const createPseudonymMapping = async (responseText: string) => {
   loadingRandomNames.value = true;
   
   try {
-    // Load random names from backend API
-    const randomNamesResponse = await fetch('/api/random-names');
-    if (!randomNamesResponse.ok) {
-      throw new Error('Failed to load random names');
+    // Load random names from backend API (empty list if endpoint missing or fails)
+    let randomNamesList: string[] = [];
+    try {
+      const randomNamesResponse = await fetch('/api/random-names');
+      if (randomNamesResponse.ok) {
+        const randomNamesData = await randomNamesResponse.json();
+        randomNamesList = randomNamesData.names || [];
+      }
+    } catch (_) {
+      randomNamesList = [];
     }
-    
-    const randomNamesData = await randomNamesResponse.json();
-    const randomNamesList = randomNamesData.names || [];
     
     // Parse names from Privacy Filter response
     // Split by newlines and extract names (one per line, may have notes in parentheses)
@@ -4301,13 +4306,15 @@ const loadDiary = async () => {
   loadingDiary.value = true;
   diaryError.value = '';
 
+  const url = `/api/patient-diary?userId=${encodeURIComponent(props.userId)}`;
   try {
-    const response = await fetch(`/api/patient-diary?userId=${encodeURIComponent(props.userId)}`, {
+    const response = await fetch(url, {
       credentials: 'include'
     });
-    
     if (!response.ok) {
-      throw new Error(`Failed to fetch diary: ${response.statusText}`);
+      diaryEntries.value = [];
+      loadingDiary.value = false;
+      return;
     }
     
     const result = await response.json();
@@ -4398,7 +4405,8 @@ const addDiaryEntry = async () => {
       bubbleId
     };
 
-    const response = await fetch('/api/patient-diary', {
+    const postUrl = '/api/patient-diary';
+    const response = await fetch(postUrl, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json'

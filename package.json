@@ -11,7 +11,8 @@
     "build": "git lfs install && git lfs pull && vue-tsc && vite build",
     "preview": "vite preview",
     "start": "node server/index.js",
-    "dev:server": "nodemon server/index.js"
+    "dev:server": "nodemon server/index.js",
+    "dev:all": "concurrently -n v,s -c blue,green \"vite\" \"node server/index.js\""
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.68.0",
@@ -47,6 +48,7 @@
     "vue-router": "^4.5.0"
   },
   "devDependencies": {
+    "concurrently": "^9.1.0",
     "@quasar/vite-plugin": "^1.8.0",
     "@types/markdown-it": "^14.1.2",
     "@types/pouchdb-adapter-idb": "^6.1.7",

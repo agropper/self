@@ -376,9 +376,9 @@
                 <div v-for="file in stage3DisplayFiles" :key="file.name" class="wizard-slide-item">
                   <q-checkbox
                     :model-value="file.inKnowledgeBase"
-                    :disable="wizardKbTogglePending.has(file.bucketKey || file.name) || stage3IndexingActive || stage3PendingUploadActive || !file.bucketKey"
+                    :disable="!!file.needsRestore || wizardKbTogglePending.has(file.bucketKey || file.name) || stage3IndexingActive || stage3PendingUploadActive || (!file.needsRestore && !file.bucketKey)"
                     :color="file.pendingKbAdd ? 'grey-6' : 'primary'"
-                    @click.stop="toggleWizardKbCheckbox(file)"
+                    @click.stop="!file.needsRestore && toggleWizardKbCheckbox(file)"
                   />
                   <q-spinner
                     v-if="wizardKbTogglePending.has(file.bucketKey || file.name)"
@@ -404,8 +404,8 @@
                     dense
                     size="sm"
                     color="primary"
-                    label="Add a file"
-                    :disable="stage3IndexingActive || stage3PendingUploadActive"
+                    :label="(wizardRestoreActive && (wizardRestoreTargetName || firstUnrestoredFileName)) ? `Add file: ${wizardRestoreTargetName || firstUnrestoredFileName}` : 'Add a file'"
+                    :disable="stage3IndexingActive || stage3PendingUploadActive || (wizardRestoreActive && !firstUnrestoredFileName)"
                     @click="handleStage3Action"
                   />
                 </div>
@@ -417,7 +417,7 @@
                     color="primary"
                     label="No more files to add - Index now"
                     :disable="!wizardNeedsIndexing || stage3IndexingActive || stage3PendingUploadActive"
-                    @click="() => handleStage3Index()"
+                    @click="() => handleStage3Index(wizardRestoreActive ? stage3DisplayFiles.map(f => f.name) : undefined, wizardRestoreActive)"
                   />
                 </div>
               </div>
@@ -870,6 +870,12 @@ const positionWizardInlineDots = async () => {
 const wizardUserStorageKey = computed(() => props.user?.userId ? `wizard-completion-${props.user.userId}` : null);
 const wizardStage2NoDeviceKey = computed(() => props.user?.userId ? `wizardStage2NoDevice-${props.user.userId}` : null);
 const wizardRestoreActive = computed(() => !!props.rehydrationActive && (Array.isArray(props.rehydrationFiles) ? props.rehydrationFiles.length > 0 : false));
+const firstUnrestoredFileName = computed(() => {
+  if (!wizardRestoreActive.value) return null;
+  const files = Array.isArray(props.rehydrationFiles) ? props.rehydrationFiles : [];
+  const first = files.find((f: { restored?: boolean }) => !f.restored);
+  return first ? (first.fileName || (first.bucketKey ? first.bucketKey.split('/').pop() : null)) : null;
+});
 const showRestoreCompleteDialog = ref(false);
 const restoreIndexingActive = ref(false);
 const restoreIndexingQueued = ref(false);
@@ -916,13 +922,14 @@ const stage3DisplayFiles = computed(() => {
     const files = Array.isArray(props.rehydrationFiles) ? props.rehydrationFiles : [];
     return files
       .filter((file: { isInitial?: boolean }) => !file?.isInitial)
-      .map((file: { fileName?: string; bucketKey?: string }) => ({
+      .map((file: { fileName?: string; bucketKey?: string; restored?: boolean }) => ({
         name: getFileNameFromEntry(file),
         needsRestore: true,
         isAppleHealth: false,
-        inKnowledgeBase: false,
+        inKnowledgeBase: !!file.restored,
         bucketKey: file.bucketKey || null,
-        pendingKbAdd: false
+        pendingKbAdd: false,
+        restored: !!file.restored
       }))
       .filter((entry: { name: string }) => !!entry.name);
   }
@@ -945,6 +952,11 @@ const stage3DisplayFiles = computed(() => {
 });
 const stage3HasFiles = computed(() => stage3DisplayFiles.value.length > 0);
 const wizardNeedsIndexing = computed(() => {
+  if (wizardRestoreActive.value) {
+    const files = Array.isArray(props.rehydrationFiles) ? props.rehydrationFiles : [];
+    const unrestored = files.filter((f: { restored?: boolean }) => !f.restored);
+    return unrestored.length === 0 && files.length > 0;
+  }
   const indexedKeys = new Set(wizardKbIndexedKeys.value || []);
   return stage3DisplayFiles.value.some(file => !!file.inKnowledgeBase && !!file.bucketKey && !indexedKeys.has(file.bucketKey));
 });
@@ -2352,6 +2364,11 @@ const handleStage3Index = async (overrideNames?: string[], fromRestore = false) 
       clearInterval(stage3IndexingPoll.value);
     }
     if (result?.jobId) {
+      if (fromRestore) {
+        const files = Array.isArray(props.rehydrationFiles) ? props.rehydrationFiles : [];
+        const hasInitialFile = files.some((item: { isInitial?: boolean }) => !!item?.isInitial);
+        emit('rehydration-complete', { hasInitialFile });
+      }
       stage3IndexingPoll.value = setInterval(async () => {
         try {
           const statusResponse = await fetch(`/api/user-files?userId=${encodeURIComponent(props.user?.userId || '')}&source=wizard`, {
@@ -2403,8 +2420,14 @@ const handleStage3Index = async (overrideNames?: string[], fromRestore = false) 
 const handleStage3Action = () => {
   if (stage3IndexingActive.value) return;
   if (wizardRestoreActive.value) {
+    const files = Array.isArray(props.rehydrationFiles) ? props.rehydrationFiles : [];
+    const firstUnrestored = files.find((f: { restored?: boolean }) => !f.restored);
+    const firstName = firstUnrestored ? (firstUnrestored.fileName || (firstUnrestored.bucketKey ? firstUnrestored.bucketKey.split('/').pop() : null)) : null;
+    if (!firstName) {
+      return;
+    }
     wizardUploadIntent.value = 'restore';
-    wizardRestoreTargetName.value = null;
+    wizardRestoreTargetName.value = firstName;
     triggerWizardFileInput();
     return;
   }
@@ -2571,12 +2594,6 @@ const uploadRestoreFile = async (file: File) => {
     fileName: targetName,
     bucketKey: entry?.bucketKey
   });
-
-  const remaining = Array.isArray(props.rehydrationFiles) ? props.rehydrationFiles : [];
-  if (remaining.length === 1) {
-    const hasInitialFile = remaining.some(item => !!item?.isInitial);
-    emit('rehydration-complete', { hasInitialFile });
-  }
 };
 
 const uploadPDFFile = async (file: File) => {

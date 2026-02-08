@@ -944,15 +944,19 @@ const handleRehydrationFileRemoved = (payload: { bucketKey?: string; fileName?: 
   if (!payload) return;
   const name = payload.fileName || (payload.bucketKey ? payload.bucketKey.split('/').pop() : null);
   if (!name) return;
-  rehydrationFiles.value = rehydrationFiles.value.filter(entry => {
-    const entryName = entry.fileName || (entry.bucketKey ? entry.bucketKey.split('/').pop() : null);
-    return entryName !== name;
+  const entry = rehydrationFiles.value.find(e => {
+    const entryName = e.fileName || (e.bucketKey ? e.bucketKey.split('/').pop() : null);
+    return entryName === name;
   });
-  rehydrationActive.value = rehydrationFiles.value.length > 0;
-  console.log('[SAVE-RESTORE] Rehydration file removed', {
+  if (entry) {
+    entry.restored = true;
+    rehydrationFiles.value = [...rehydrationFiles.value];
+  }
+  console.log('[SAVE-RESTORE] Rehydration file marked restored', {
     userId: user.value?.userId || null,
     fileName: name,
-    remaining: rehydrationFiles.value.length
+    restoredCount: rehydrationFiles.value.filter(e => e.restored).length,
+    total: rehydrationFiles.value.length
   });
 };
 
