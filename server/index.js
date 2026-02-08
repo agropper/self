@@ -577,8 +577,8 @@ ensureBucketExists();
 
 // Initialize databases (retry Cloudant connection when CouchDB droplet is still warming)
 (async () => {
-  const maxAttempts = process.env.USE_COUCHDB_DROPLET === 'true' ? 24 : 1;
-  const intervalMs = 5000;
+  const maxAttempts = process.env.USE_COUCHDB_DROPLET === 'true' ? 10 : 1; // 5 min @ 30s (CouchDB can take 2.5+ min)
+  const intervalMs = process.env.USE_COUCHDB_DROPLET === 'true' ? 30000 : 0;
   let connected = false;
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     connected = await cloudant.testConnection();
