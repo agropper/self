@@ -129,11 +129,16 @@ const isOpen = computed({
 
 const fileName = computed(() => props.file?.name || 'PDF Viewer');
 
-// Helper to check if file is actually a PDF
+// Helper to check if file is actually a PDF (by name or by bucketKey/URL, so display names without .pdf still work)
 const isPdfFile = computed(() => {
-  if (!props.file?.name) return false;
-  const fileName = props.file.name.toLowerCase();
-  return fileName.endsWith('.pdf');
+  if (!props.file) return false;
+  const name = (props.file.name || '').toLowerCase();
+  if (name.endsWith('.pdf')) return true;
+  const bucketKey = (props.file.bucketKey || '').toLowerCase();
+  if (bucketKey && bucketKey.endsWith('.pdf')) return true;
+  const url = (props.file.fileUrl || '').toLowerCase();
+  if (url.endsWith('.pdf') || url.includes('/proxy-pdf/')) return true;
+  return false;
 });
 
 // Reactive state
