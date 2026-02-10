@@ -423,12 +423,43 @@ export default function setupChatRoutes(app, chatClient, cloudant, doClient) {
   /**
    * List available chat providers
    * GET /api/chat/providers
-   * Private AI (digitalocean) is included only when the user has completed Stage 1 (agent deployed).
+   * Private AI (digitalocean) is included when the user (or for deep link, the owner) has agent deployed.
+   * For deep link sessions, also requires owner's allowDeepLinkPrivateAI !== false.
    */
   app.get('/api/chat/providers', async (req, res) => {
     let providers = chatClient.getAvailableProviders();
     const userId = req.session?.userId;
-    if (userId && cloudant && doClient) {
+    const isDeepLink = !!req.session?.isDeepLink;
+
+    if (isDeepLink && (req.session?.deepLinkShareId || req.session?.deepLinkChatId) && cloudant) {
+      try {
+        let chat = null;
+        if (req.session.deepLinkShareId) {
+          chat = await findChatByShareId(cloudant, req.session.deepLinkShareId);
+        }
+        if (!chat && req.session.deepLinkChatId) {
+          try {
+            chat = await cloudant.getDocument('maia_chats', req.session.deepLinkChatId);
+          } catch (_) {}
+        }
+        if (chat) {
+          const ownerId = resolveAgentOwnerId(chat);
+          if (ownerId) {
+            const ownerDoc = await cloudant.getDocument('maia_users', ownerId);
+            const ownerHasAgent = ownerDoc?.workflowStage === 'agent_deployed' ||
+              !!(ownerDoc?.assignedAgentId && ownerDoc?.agentEndpoint);
+            const ownerAllows = ownerDoc?.allowDeepLinkPrivateAI !== false;
+            if (ownerHasAgent && ownerAllows) {
+              res.json({ providers });
+              return;
+            }
+          }
+        }
+      } catch (err) {
+        console.warn('[chat/providers] Deep link owner check failed:', err?.message);
+      }
+      providers = providers.filter((p) => p !== 'digitalocean');
+    } else if (userId && cloudant && doClient) {
       try {
         let userDoc = await cloudant.getDocument('maia_users', userId);
         let hasAgentDeployed = userDoc?.workflowStage === 'agent_deployed' ||

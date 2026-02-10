@@ -40,3 +40,43 @@ So the logic was fragile because it depended on **seeing the exact moment** the 
 **Single rule**: Whenever we learn from the server that the agent is ready (in `refreshWizardState()` or anywhere we get `hasAgent` / `agentReady`), if `providers` does not already include `digitalocean`, call `loadProviders()`. Do not depend on transitions; sync whenever we have evidence the agent is ready.
 
 That way, after Stage 2/3 (or any time `refreshWizardState()` runs and the server says the agent is ready), we ensure the providers list and dialog state match the backend.
+
+---
+
+## Deep link: Private AI Unavailable even when owner enabled it
+
+### The problem
+
+When a deep link is shared and the visitor opens it, Private AI shows as "Unavailable" even though the **owner** has enabled "Allow deep link users to use Private AI" in the My AI Agent tab.
+
+### Root cause: server ignores deep link and owner
+
+1. **`GET /api/chat/providers`** decides whether to include `digitalocean` only from **`req.session.userId`**:
+   - It loads the user doc for that `userId` and checks `hasAgentDeployed` (agent + endpoint).
+   - If no `userId` or no agent, it filters out `digitalocean`.
+
+2. **For a deep link user**, the session is a **deep link session**:
+   - The session store deliberately sets **`userId: null`** for deep link (the visitor is identified by `deepLinkUserId` and session doc id `deeplink_${deepLinkUserId}`).
+   - So `req.session.userId` is **null** (or missing) when the deep link visitor calls `/api/chat/providers`.
+
+3. **Server behaviour**: With no `userId`, the handler hits the `else` branch and **always** filters out `digitalocean`. It never looks at:
+   - whether the session is a deep link session,
+   - who the **owner** (patient) is,
+   - whether the owner has an agent deployed,
+   - or the owner’s **`allowDeepLinkPrivateAI`** setting.
+
+4. **Frontend**: The frontend receives a provider list that **already has no Private AI**. It then only **filters** when `ownerAllowDeepLinkPrivateAI === false`; it never **adds** Private AI when the server omitted it. So even with the owner setting enabled, the list stays without `digitalocean` and the modal stays.
+
+### Why it’s fragile
+
+- **Single user id**: The server treats “who is the user?” as “session userId”. For deep link, the acting identity is the visitor; the **agent and the allow setting** belong to the **owner**. The API never resolves the owner for providers.
+- **Owner only on frontend**: The owner’s `allowDeepLinkPrivateAI` is only loaded on the frontend (e.g. when a chat is selected) and used to filter. The server never includes Private AI for deep link, so that frontend check never gets a chance to “allow” it.
+
+### Fix (in code)
+
+**Server**: In `GET /api/chat/providers`, when the request is a **deep link session** (`isDeepLinkSession(req)`):
+- Resolve the **owner** (e.g. from the shared chat using `req.session.deepLinkShareId` or `deepLinkChatId`).
+- Load the **owner’s** user doc; check `hasAgentDeployed` and `allowDeepLinkPrivateAI !== false`.
+- If both are true, **include** `digitalocean` in the list (and do not filter it out for “no userId”).
+
+Then the frontend will receive Private AI when the owner has an agent and has allowed deep link Private AI; the existing frontend filter for `ownerAllowDeepLinkPrivateAI === false` remains correct.
