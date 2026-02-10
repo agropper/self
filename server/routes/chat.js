@@ -60,6 +60,16 @@ const resolveAgentOwnerId = (chatDoc) => {
   return null;
 };
 
+/**
+ * For deep link sessions, return the owner (patient) userId of the shared chat.
+ * Used by file routes to allow deep link users to access owner's files only.
+ */
+export async function getOwnerIdForDeepLinkSession(req, cloudant) {
+  if (!req.session?.isDeepLink || !req.session?.deepLinkShareId) return null;
+  const chat = await findChatByShareId(cloudant, req.session.deepLinkShareId);
+  return chat ? resolveAgentOwnerId(chat) : null;
+}
+
 export default function setupChatRoutes(app, chatClient, cloudant, doClient) {
   /**
    * Main chat endpoint - routes to appropriate provider

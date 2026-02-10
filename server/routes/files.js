@@ -11,6 +11,7 @@ import { extractPdfWithPages, extractIndividualClinicalNotes } from '../utils/pd
 import { extractAndSaveCategoryFiles } from '../utils/lists-processor.js';
 import { putObjectWithLog, deleteObjectWithLog } from '../utils/spaces-ops.js';
 import { getSpacesEndpoint, getSpacesBucketName } from '../utils/storage-config.js';
+import { getOwnerIdForDeepLinkSession } from './chat.js';
 
 /**
  * Extract medication records from markdown
@@ -809,6 +810,7 @@ export default function setupFileRoutes(app, cloudant, doClient) {
   /**
    * Proxy PDF files from DigitalOcean Spaces to avoid CORS issues
    * GET /api/files/proxy-pdf/:bucketKey(*)
+   * For deep link users, only allows access to files under the shared chat owner's path (ownerId/...).
    */
   app.get('/api/files/proxy-pdf/:bucketKey(*)', async (req, res) => {
     const resolveMovedKey = (key, userId, kbName) => {
@@ -829,7 +831,20 @@ export default function setupFileRoutes(app, cloudant, doClient) {
 
     try {
       const { bucketKey } = req.params;
-      const userId = req.session?.userId || req.session?.deepLinkUserId;
+      const isDeepLink = !!req.session?.isDeepLink;
+      let effectiveUserId = req.session?.userId || req.session?.deepLinkUserId;
+      if (isDeepLink && cloudant) {
+        const ownerId = await getOwnerIdForDeepLinkSession(req, cloudant);
+        if (!ownerId) {
+          return res.status(403).json({ success: false, error: 'No shared chat access' });
+        }
+        const ownerPrefix = ownerId + '/';
+        if (!bucketKey.startsWith(ownerPrefix)) {
+          return res.status(403).json({ success: false, error: 'Access denied to this file' });
+        }
+        effectiveUserId = ownerId;
+      }
+      const userId = effectiveUserId;
       
       const bucketUrl = getSpacesBucketName();
       const bucketName = bucketUrl?.split('//')[1]?.split('.')[0] || 'maia';
@@ -912,16 +927,30 @@ export default function setupFileRoutes(app, cloudant, doClient) {
   /**
    * Get text/markdown file content from DigitalOcean Spaces
    * GET /api/files/get-text/:bucketKey(*)
+   * For deep link users, only allows access to files under the shared chat owner's path (ownerId/...).
    */
   app.get('/api/files/get-text/:bucketKey(*)', async (req, res) => {
     try {
-      // Require authentication (regular user or deep-link user)
-      const userId = req.session?.userId || req.session?.deepLinkUserId;
-      if (!userId) {
+      const isDeepLink = !!req.session?.isDeepLink;
+      let effectiveUserId = req.session?.userId || req.session?.deepLinkUserId;
+      if (!effectiveUserId) {
         return res.status(401).json({ error: 'Authentication required' });
       }
 
       const { bucketKey } = req.params;
+
+      if (isDeepLink && cloudant) {
+        const ownerId = await getOwnerIdForDeepLinkSession(req, cloudant);
+        if (!ownerId) {
+          return res.status(403).json({ success: false, error: 'No shared chat access' });
+        }
+        const ownerPrefix = ownerId + '/';
+        if (!bucketKey.startsWith(ownerPrefix)) {
+          return res.status(403).json({ success: false, error: 'Access denied to this file' });
+        }
+        effectiveUserId = ownerId;
+      }
+      const userId = effectiveUserId;
       
       const bucketUrl = getSpacesBucketName();
       const bucketName = bucketUrl?.split('//')[1]?.split('.')[0] || 'maia';
