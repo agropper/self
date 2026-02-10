@@ -1,6 +1,10 @@
 # Clinical Notes OpenSearch Database
 
-This document describes the Clinical Notes indexing system that stores clinical notes from PDF files in a DigitalOcean OpenSearch database.
+**Note:** The OpenSearch-backed Clinical Notes feature (indexing/search via direct OpenSearch access) has been removed. The app no longer uses OpenSearch credentials or the Clinical Notes API routes. This document is kept for historical reference only. Clinical Notes from PDFs still appear in the Lists UI as a category derived from markdown extraction.
+
+---
+
+This document described the Clinical Notes indexing system that stored clinical notes from PDF files in a DigitalOcean OpenSearch database.
 
 ## Overview
 

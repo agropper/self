@@ -1145,12 +1145,15 @@ interface Props {
   rehydrationFiles?: Array<{ fileName?: string; bucketKey?: string; fileSize?: number; uploadedAt?: string }>;
   rehydrationActive?: boolean;
   wizardActive?: boolean;
+  /** When true and dialog opens on summary tab, trigger one requestNewSummary() then clear (avoids duplicate with wizard). */
+  requestSummaryOnOpen?: boolean;
 }
 
 const props = withDefaults(defineProps<Props>(), {
   initialTab: 'files',
   messages: () => [],
-  originalMessages: () => []
+  originalMessages: () => [],
+  requestSummaryOnOpen: false
 });
 
 const emit = defineEmits<{
@@ -1168,6 +1171,7 @@ const emit = defineEmits<{
   'patient-summary-verified': [data: { userId: string }];
   'rehydration-complete': [payload: { hasInitialFile: boolean }];
   'rehydration-file-removed': [payload: { bucketKey?: string; fileName?: string }];
+  'request-summary-done': [];
 }>();
 
 // Handle show patient summary from Lists component
@@ -5108,6 +5112,14 @@ watch(() => props.modelValue, async (newValue) => {
       loadDiary();
     } else if (currentTab.value === 'references') {
       loadReferences();
+    } else if (currentTab.value === 'summary' && props.requestSummaryOnOpen) {
+      // Wizard asked for one summary generation on open (avoids duplicate API call)
+      nextTick(() => {
+        setTimeout(() => {
+          requestNewSummary();
+          emit('request-summary-done');
+        }, 300);
+      });
     }
   }
 });

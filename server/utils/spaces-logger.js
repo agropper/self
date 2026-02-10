@@ -12,8 +12,9 @@ export const getFolderLabelFromKey = (key) => {
   return parts[1];
 };
 
-export const logWizMove = (fileName, fromLabel, toLabel) => {
-  console.log(`[WIZ] File ${fileName} moved from ${fromLabel} to ${toLabel}`);
+export const logWizMove = (_fileName, _fromLabel, _toLabel) => {
+  // Verbose wizard file-move logging disabled; re-enable for debugging:
+  // console.log(`[WIZ] File ${fileName} moved from ${fromLabel} to ${toLabel}`);
 };
 
 export const logWizMoveByKey = (sourceKey, destKey) => {

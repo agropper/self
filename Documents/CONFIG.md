@@ -210,7 +210,7 @@ The Spaces endpoint is derived from `DO_REGION` (or `SPACES_REGION`) as `https:/
 ---
 
 ### OpenSearch / database_id (DO-managed)
-Configured in NEW-AGENT.txt `## OpenSearch (DO-managed)` (database_id, endpoint, username, password) or via env fallback. See `server/utils/opensearch-config.js`. No env vars required if NEW-AGENT.txt is set.
+The app parses the database UUID from env **`OPENSEARCH_URL`** (DO dashboard URL, e.g. `https://cloud.digitalocean.com/databases/<uuid>?i=...`). Used only for KB creation. See `server/utils/opensearch-config.js`.
 
 ---
 
@@ -284,7 +284,7 @@ Configured in NEW-AGENT.txt `## OpenSearch (DO-managed)` (database_id, endpoint,
    - Per-user agent endpoint and API key (from user doc); no env vars required. Base URL default in `lib/chat-client/providers/digitalocean.js`.
 
 2. **DigitalOcean GenAI REST API v2**
-   - Environment Variables: `DIGITALOCEAN_TOKEN`, `DO_REGION`, `DO_PROJECT_ID`, `DO_EMBEDDING_MODEL_ID` (OpenSearch/database_id from NEW-AGENT.txt or env)
+   - Environment Variables: `DIGITALOCEAN_TOKEN`, `DO_REGION`, `DO_PROJECT_ID`, `DO_EMBEDDING_MODEL_ID`, `OPENSEARCH_URL` (database UUID parsed from URL)
    - Base URL: `https://api.digitalocean.com`
 
 3. **DigitalOcean Spaces (S3-compatible API)**

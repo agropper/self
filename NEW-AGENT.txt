@@ -377,11 +377,8 @@ DigitalOcean uses an S3-compatible Spaces bucket to pass files to the OpenSearch
 We call this bucket "maia" and the subfolders are named by userId.
 
 ## OpenSearch (DO-managed)
-OpenSearch is created as part of provisioning by the account owner and shared across all users' knowledge bases. Set these once (or use env fallback: DO_DATABASE_ID, OPENSEARCH_ENDPOINT, OPENSEARCH_USERNAME, OPENSEARCH_PASSWORD).
+OpenSearch is created as part of provisioning; one cluster per account, shared by all knowledge bases. The app uses only the database UUID (for KB creation). Set env OPENSEARCH_URL (DO dashboard URL for the cluster; the UUID is parsed from the path).
 
-Where to get database_id (UUID): The host/port in the dashboard (e.g. genai1-driftwood-do-user-3963249-0.h.db.ondigitalocean.com:25060) are connection details only; they do not contain the UUID. Get the database UUID by: (1) In the dashboard: Databases → click your OpenSearch cluster name → Overview; the cluster ID (UUID) is shown there. (2) CLI: doctl databases list (with DIGITALOCEAN_TOKEN or doctl auth). (3) If you already have a KB using this cluster: run scripts/extract-do-ids.js to print DO_DATABASE_ID.
-
-database_id: <uuid-from-do-databases>
-endpoint: <opensearch-url-from-do>
-username: <opensearch-user>
-password: <opensearch-password>
+## Embedding model (Knowledge base)
+embedding_model: GTE Large EN v1.5
+The app resolves this display name to a model UUID at runtime via the DigitalOcean GenAI models API (DIGITALOCEAN_TOKEN). Used when creating new knowledge bases. Optional env override: DO_EMBEDDING_MODEL_ID.

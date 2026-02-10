@@ -433,6 +433,9 @@ export default function setupChatRoutes(app, chatClient, cloudant, doClient) {
         const hasAgentDeployed = userDoc?.workflowStage === 'agent_deployed' ||
           (userDoc?.assignedAgentId && userDoc?.agentEndpoint);
         if (!hasAgentDeployed) {
+          if (providers.includes('digitalocean')) {
+            console.log(`[chat/providers] Excluding Private AI for ${userId}: workflowStage=${userDoc?.workflowStage ?? 'undefined'} assignedAgentId=${userDoc?.assignedAgentId ? 'set' : 'unset'} agentEndpoint=${userDoc?.agentEndpoint ? 'set' : 'unset'}`);
+          }
           providers = providers.filter((p) => p !== 'digitalocean');
         }
       } catch (err) {

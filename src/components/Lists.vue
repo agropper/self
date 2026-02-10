@@ -460,8 +460,6 @@ const error = ref<string>('');
 const pdfData = ref<PdfData | null>(null);
 const categories = ref<MarkdownCategory[]>([]);
 const activePageTab = ref<number>(1);
-const clinicalNotes = ref<ClinicalNote[]>([]);
-const isLoadingClinicalNotes = ref(false);
 const hasSavedResults = ref(false);
 const hasAppleHealthFile = ref(false);
 const appleHealthFileInfo = ref<{ bucketKey: string; fileName: string } | null>(null);
@@ -1401,26 +1399,6 @@ const downloadMarkdown = () => {
   }
 };
 
-const loadClinicalNotes = async () => {
-  isLoadingClinicalNotes.value = true;
-  try {
-    const response = await fetch('/api/files/clinical-notes', {
-      credentials: 'include'
-    });
-    
-    if (response.ok) {
-      const result = await response.json();
-      clinicalNotes.value = result.notes || [];
-    } else {
-      console.error('Failed to load clinical notes:', response.statusText);
-    }
-  } catch (err) {
-    console.error('Error loading clinical notes:', err);
-  } finally {
-    isLoadingClinicalNotes.value = false;
-  }
-};
-
 const formatNoteDescription = (note: ClinicalNote): string => {
   const parts: string[] = [];
   
@@ -2107,7 +2085,6 @@ onMounted(async () => {
   loadWizardAutoFlow();
   // Load initial file info first (needed for PDF viewing)
   await checkInitialFile();
-  loadClinicalNotes();
   await loadSavedResults(); // Check for saved results first
   // Load current medications from user document
   loadCurrentMedications();

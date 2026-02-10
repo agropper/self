@@ -22,6 +22,7 @@ import { ChatClient } from '../lib/chat-client/index.js';
 import { findUserAgent, getOrCreateAgentApiKey } from './utils/agent-helper.js';
 import { normalizeStorageEnv, getSpacesEndpoint, getSpacesBucketName } from './utils/storage-config.js';
 import { getOpenSearchDatabaseId } from './utils/opensearch-config.js';
+import { getEmbeddingModelIdForKb } from './utils/embedding-model-config.js';
 import setupAuthRoutes from './routes/auth.js';
 import setupChatRoutes from './routes/chat.js';
 import setupFileRoutes from './routes/files.js';
@@ -40,7 +41,7 @@ import {
 dotenv.config();
 const storageConfig = normalizeStorageEnv();
 
-const SUPPRESSED_LOG_PATTERN = /\[(NEW FLOW 2|STARTUP|STORAGE|WELCOME|DESTROY|AGENT|WIZARD|LOCAL|KB UPDATE|KB AUTO|KB)\]/i;
+const SUPPRESSED_LOG_PATTERN = /\[(NEW FLOW 2|STARTUP|STORAGE|WELCOME|DESTROY|AGENT|WIZARD|LOCAL|KB UPDATE|KB AUTO|KB|WIZ)\]/i;
 const shouldSuppressLog = (args) =>
   Array.isArray(args) && args.some(arg => typeof arg === 'string' && SUPPRESSED_LOG_PATTERN.test(arg));
 const originalConsoleLog = console.log.bind(console);
@@ -685,9 +686,23 @@ async function runStartupUserValidation() {
   } catch (error) {}
 }
 
-const doClient = new DigitalOceanClient(process.env.DIGITALOCEAN_TOKEN, {
+// Log token presence for debugging (first 4 + last 4 chars only)
+function maskToken(token) {
+  if (!token || typeof token !== 'string') return '(not set)';
+  const t = String(token).trim();
+  if (t.length < 8) return t.length ? '(too short to display)' : '(empty)';
+  return `${t.slice(0, 4)}...${t.slice(-4)}`;
+}
+
+const doToken = process.env.DIGITALOCEAN_TOKEN;
+console.log(`[DO] DIGITALOCEAN_TOKEN at startup: ${doToken ? maskToken(doToken) : '(not set)'}`);
+
+const doClient = new DigitalOceanClient(doToken, {
   region: process.env.DO_REGION || 'tor1'
 });
+
+// Log OpenSearch database_id resolution at startup (for KB creation)
+getOpenSearchDatabaseId();
 
 // Simple in-memory caches to reduce repeated DO API calls
 const RESOURCE_CACHE_TTL = 30 * 1000; // 30 seconds
@@ -4176,9 +4191,6 @@ async function provisionUserAsync(userId, token) {
             const latestUserDoc = await cloudant.getDocument('maia_users', userId);
             if (latestUserDoc.currentMedications && latestUserDoc.currentMedications.trim().length > 0) {
               summaryPrompt += `\n\nUse this as the authoritative source for Current Medications (the patient has reviewed and confirmed this list):\n\n${latestUserDoc.currentMedications}`;
-              logProvisioning(userId, `📝 [PATIENT SUMMARY] Including Current Medications in prompt (${latestUserDoc.currentMedications.length} chars)`, 'info');
-            } else {
-              logProvisioning(userId, `📝 [PATIENT SUMMARY] No Current Medications found - generating from KB only`, 'info');
             }
 
             const summaryResponse = await agentProvider.chat(
@@ -4198,7 +4210,6 @@ async function provisionUserAsync(userId, token) {
                 summaryUserDoc.workflowStage = 'patient_summary';
                 await cloudant.saveDocument('maia_users', summaryUserDoc);
                 invalidateResourceCache(userId);
-                logProvisioning(userId, `✅ [PATIENT SUMMARY] Patient summary generated and saved successfully (${summary.length} chars)`, 'success');
                 updateStatus('Patient summary generated', { summaryLength: summary.length });
               } else {
                 logProvisioning(userId, `❌ [PATIENT SUMMARY] Could not load user document to save patient summary`, 'error');
@@ -6273,10 +6284,10 @@ async function setupKnowledgeBase(userId, kbName, filesInKB, bucketName, existin
       };
     }
 
-    // Get required values: projectId from env; databaseId from opensearch-config (NEW-AGENT.txt or env)
+    // Get required values: projectId from env; databaseId from opensearch-config; embedding from NEW-AGENT.txt (resolved via DO API) or DO_EMBEDDING_MODEL_ID
     const projectId = process.env.DO_PROJECT_ID;
     const databaseId = getOpenSearchDatabaseId();
-    const embeddingModelId = process.env.DO_EMBEDDING_MODEL_ID || null;
+    const embeddingModelId = await getEmbeddingModelIdForKb(doClient) || null;
     
     // Validate UUID format helper
     const isValidUUID = (str) => {
@@ -6296,7 +6307,7 @@ async function setupKnowledgeBase(userId, kbName, filesInKB, bucketName, existin
     if (!isValidUUID(databaseId)) {
       return { 
         error: 'DATABASE_ID_NOT_CONFIGURED', 
-        message: 'OpenSearch database_id is required (set in NEW-AGENT.txt ## OpenSearch (DO-managed) or DO_DATABASE_ID in .env).' 
+        message: 'OpenSearch database_id is required. Set OPENSEARCH_URL in .env to your DO database dashboard URL (e.g. https://cloud.digitalocean.com/databases/<uuid>?i=...).' 
       };
     }
     
@@ -6325,7 +6336,7 @@ async function setupKnowledgeBase(userId, kbName, filesInKB, bucketName, existin
       // Add embedding model ID if provided
       if (embeddingModelId && isValidUUID(embeddingModelId)) {
         kbCreateOptions.embeddingModelId = embeddingModelId;
-        console.log(`[KB Setup] Using embedding model ID from env: ${embeddingModelId}`);
+        console.log(`[KB Setup] Using embedding model ID: ${embeddingModelId}`);
       }
       
       console.log(`[KB AUTO] Calling doClient.kb.create() with name: ${kbName}, projectId: ${projectId}, databaseId: ${databaseId}, bucketName: ${bucketName}, itemPath: ${kbCreateOptions.itemPath}${embeddingModelId ? `, embeddingModelId: ${embeddingModelId}` : ''}`);
@@ -8147,8 +8158,10 @@ app.get('/api/billing/balance', async (_req, res) => {
   try {
     const token = process.env.DIGITALOCEAN_TOKEN;
     if (!token) {
+      console.log('[DO] billing/balance: DIGITALOCEAN_TOKEN not set');
       return res.status(500).json({ error: 'DigitalOcean API token not configured' });
     }
+    console.log(`[DO] billing/balance using token: ${maskToken(token)}`);
     const response = await fetch('https://api.digitalocean.com/v2/customers/my/balance', {
       headers: {
         Authorization: `Bearer ${token}`
@@ -8506,12 +8519,7 @@ app.post('/api/generate-patient-summary', async (req, res) => {
     
     if (userDoc.currentMedications && userDoc.currentMedications.trim().length > 0) {
       summaryPrompt += `\n\nUse this as the authoritative source for Current Medications (the patient has reviewed and confirmed this list):\n\n${userDoc.currentMedications}`;
-      console.log(`📝 [PATIENT SUMMARY] Including Current Medications in prompt (${userDoc.currentMedications.length} chars)`);
-    } else {
-      console.log(`📝 [PATIENT SUMMARY] No Current Medications found in user document - generating from KB only`);
     }
-    
-    console.log(`📝 Generating patient summary for user ${userId} using agent ${userDoc.assignedAgentId}`);
     
     try {
       // chat() method signature: chat(messages, options, onUpdate)
@@ -8553,8 +8561,6 @@ app.post('/api/generate-patient-summary', async (req, res) => {
       res.locals.savedCurrentSummary = savedCurrentSummary;
       saved = true; // Mark as "saved" (actually just prepared, frontend will save)
 
-      console.log(`✅ Patient summary generated successfully for user ${userId}`);
-      
       // Get current summaries array (before saving new one)
       const finalUserDoc = await cloudant.getDocument('maia_users', userId);
       const summaries = initializeSummariesArray(finalUserDoc);

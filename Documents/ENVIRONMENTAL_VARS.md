@@ -16,13 +16,14 @@ HTTP port the Node server listens on. Defaults to 3001; Vite dev proxy uses this
 **USE_COUCHDB_DROPLET=true**  
 When `'true'`, the app uses a CouchDB instance on a DigitalOcean droplet (discovered via DO API) instead of `CLOUDANT_*`; Cloudant client is configured with the droplet’s URL. When false, Cloudant is configured from `CLOUDANT_URL` (and related env).
 
-**DO_REGION=**  
+**DO_REGION=tor1**  
 DigitalOcean region (e.g. `tor1`). Used by the DO client and for Spaces/GenAI region selection; falls back to `SPACES_REGION` or `'tor1'` when unset.
 **Do we need SPACES_REGION?** It is used as a fallback in `server/utils/storage-config.js` and in one place in `server/index.js` (before `DO_REGION`). If you set `DO_REGION`, you don’t need `SPACES_REGION`; it’s only for environments that already use the older Spaces-specific name.
 
-**DO_EMBEDDING_MODEL_ID=22653204-79ed-11ef-bf8f-4e013e2ddde4**  
-DigitalOcean GenAI embedding model UUID. Used when creating or updating datasources and for embedding-related indexing; required for knowledge-base indexing. Can be discovered via `scripts/extract-do-ids.js`.
-**Are there UUIDs hard-coded in the code that need to be discovered by a DO account owner?** Yes. The code has a hardcoded default agent base URL (`…agents.do-ai.run/api/v1`) and a default in `lib/chat-client/providers/digitalocean.js`; those are MAIA-specific. A DO account owner should run `scripts/extract-do-ids.js` (with `DIGITALOCEAN_TOKEN` set) to get their own `DO_PROJECT_ID`, `DO_EMBEDDING_MODEL_ID` for .env (OpenSearch database_id is in NEW-AGENT.txt or DO_DATABASE_ID); the agent URL per user comes from the user’s `agentEndpoint` in the DB, not from env.
+**DO_EMBEDDING_MODEL_ID=**  
+Optional. DigitalOcean GenAI embedding model UUID used when creating new knowledge bases. **Preferred:** set the embedding model by **display name** in `NEW-AGENT.txt` under `## Embedding model (Knowledge base)` as `embedding_model: GTE Large EN v1.5` (or the name shown in the DO dashboard). At startup / first KB creation the app uses `DIGITALOCEAN_TOKEN` to call the GenAI models API, finds the model whose name matches, and uses its UUID for KB creation. **Override:** set `DO_EMBEDDING_MODEL_ID` in `.env` to a model UUID to skip name resolution. If neither is set, the app does not pass an embedding model and DO may use its default.
+
+**Hard-coded values:** The only value that affects normal app behavior is the default agent base URL in `lib/chat-client/providers/digitalocean.js` (e.g. `…agents.do-ai.run/api/v1`). That default is only used if no `baseURL` is passed; in normal use the server always passes the user’s `agentEndpoint` from the DB, so each user’s Private AI uses their own endpoint. Scripts under `scripts/` show example UUIDs in their usage/error messages; those are examples only, not used at runtime.
 
 ---
 
@@ -78,6 +79,6 @@ Spaces access key (S3-compatible). Used with `DIGITALOCEAN_AWS_SECRET_ACCESS_KEY
 **DIGITALOCEAN_AWS_SECRET_ACCESS_KEY=**  
 Spaces secret key (S3-compatible). Used with the access key and endpoint for all Spaces/S3 client configuration. **Aliasing:** If you set `SPACES_AWS_SECRET_ACCESS_KEY` instead, `normalizeStorageEnv()` copies it into `DIGITALOCEAN_AWS_SECRET_ACCESS_KEY` at startup.
 
-## OpenSearch (DO-managed)
+## OpenSearch (DO-managed, KB creation only)
 
-OpenSearch is provided by DigitalOcean, created as part of provisioning by the account owner, and shared across all users' knowledge bases. **No env vars are required** if you configure it in NEW-AGENT.txt: add a section `## OpenSearch (DO-managed)` with lines `database_id:`, `endpoint:`, `username:`, `password:` (see NEW-AGENT.txt). The app reads from `server/utils/opensearch-config.js`, which parses that section and falls back to env vars `DO_DATABASE_ID`, `OPENSEARCH_ENDPOINT`, `OPENSEARCH_USERNAME`, `OPENSEARCH_PASSWORD` if the section is missing or values are omitted. **Where to get the database UUID:** The host and port (e.g. genai1-driftwood-do-user-…:25060) are connection details only; the UUID is the cluster’s ID. Get it from: Control Panel → Databases → click the cluster → Overview (cluster ID); or `doctl databases list`; or run `scripts/extract-do-ids.js` if you already have a KB using that cluster.
+OpenSearch is provided by DigitalOcean; one cluster per account, shared by all knowledge bases. The app uses only the **database UUID** (for KB creation so new KBs attach to the existing cluster). No direct OpenSearch access or credentials. **Set env `OPENSEARCH_URL`** to your DO database dashboard URL; the app parses the UUID from the path (e.g. `https://cloud.digitalocean.com/databases/95abbf7a-d15c-4048-a47c-8e20ee31fef5?i=...`).

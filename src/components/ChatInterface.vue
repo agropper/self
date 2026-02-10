@@ -444,7 +444,7 @@
             </div>
           </div>
 
-            <div v-if="!wizardStage1Complete" class="text-caption q-mt-md" :class="wizardStage1TimerActive ? 'text-green-7' : 'text-grey-7'">
+            <div class="text-caption q-mt-md" :class="wizardStage1Complete ? 'text-green-7' : (wizardStage1TimerActive ? 'text-green-7' : 'text-grey-7')">
             Private AI agent deployment status: {{ wizardStage1StatusLine }}
           </div>
 
@@ -571,6 +571,7 @@
       v-model="showMyStuffDialog"
       :userId="props.user?.userId || ''"
       :initial-tab="myStuffInitialTab"
+      :request-summary-on-open="wizardRequestSummaryOnOpen"
       :messages="messages"
       :original-messages="trulyOriginalMessages.length > 0 ? trulyOriginalMessages : originalMessages"
       :wizard-active="showAgentSetupDialog"
@@ -587,6 +588,7 @@
       @current-medications-saved="handleCurrentMedicationsSaved"
       @patient-summary-saved="handlePatientSummarySaved"
       @patient-summary-verified="handlePatientSummaryVerified"
+      @request-summary-done="wizardRequestSummaryOnOpen = false"
       @rehydration-file-removed="handleRehydrationFileRemoved"
       @rehydration-complete="handleRehydrationComplete"
       v-if="canAccessMyStuff"
@@ -784,6 +786,7 @@ const showSavedChatsModal = ref(false);
 const savedChatCount = ref(0);
 const showMyStuffDialog = ref(false);
 const myStuffInitialTab = ref<string>('files');
+const wizardRequestSummaryOnOpen = ref(false);
 const contextualTip = ref('Loading...');
 const editingMessageIdx = ref<number[]>([]);
 const editingOriginalContent = ref<Record<number, string>>({});
@@ -1855,9 +1858,16 @@ const refreshWizardState = async () => {
         }
       }
       if (statusResult?.agentReady !== undefined) {
+        const wasReady = wizardAgentReady.value;
         wizardAgentReady.value = !!statusResult.agentReady;
-        if (wizardAgentReady.value && props.rehydrationActive && !wizardStage1Complete.value) {
-          wizardStage1Complete.value = true;
+        if (wizardAgentReady.value) {
+          if (!wizardStage1Complete.value) {
+            wizardStage1Complete.value = true;
+          }
+          // Refetch providers so Private AI appears without page reload
+          if (!wasReady) {
+            loadProviders();
+          }
         }
       }
       if (statusResult?.initialFile && !wizardStage2FileName.value) {
@@ -2172,24 +2182,12 @@ const handleWizardMedsAction = () => {
   }
 };
 
-const handleWizardSummaryAction = async () => {
+const handleWizardSummaryAction = () => {
   if (!props.user?.userId) return;
   myStuffInitialTab.value = 'summary';
   showMyStuffDialog.value = true;
-  try {
-    await fetch('/api/generate-patient-summary', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json'
-      },
-      credentials: 'include',
-      body: JSON.stringify({ userId: props.user.userId })
-    });
-    // Keep verified flag false until user confirms
-    wizardPatientSummary.value = false;
-  } catch (error) {
-    console.error('Failed to generate patient summary:', error);
-  }
+  wizardRequestSummaryOnOpen.value = true;
+  wizardPatientSummary.value = false;
 };
 
 const dismissWizard = () => {
@@ -2393,7 +2391,7 @@ const handleStage3Index = async (overrideNames?: string[], fromRestore = false) 
             }
             stage3IndexingCompletedAt.value = Date.now();
             stopStage3ElapsedTimer();
-            refreshWizardState();
+            await refreshWizardState();
             if (restoreIndexingActive.value) {
               restoreIndexingActive.value = false;
               showRestoreCompleteDialog.value = true;
