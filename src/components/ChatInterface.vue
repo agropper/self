@@ -2621,6 +2621,7 @@ const uploadPDFFile = async (file: File) => {
   
   const parseResponse = await fetch('/api/files/parse-pdf', {
     method: 'POST',
+    credentials: 'include',
     body: formData
   });
 
