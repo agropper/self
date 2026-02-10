@@ -562,19 +562,22 @@ const PORT = getPort();
 // Derive passkey/app URLs from PUBLIC_APP_URL (single source of truth); override with PASSKEY_RPID if needed
 function getAppUrlConfig() {
   const raw = process.env.PUBLIC_APP_URL?.trim();
+  const devOrigin = 'http://localhost:5173';
   if (raw) {
     try {
       const u = new URL(raw);
       const origin = u.origin;
       const host = u.hostname;
       const rpID = process.env.PASSKEY_RPID?.trim() || (host.includes('.') ? host.split('.').slice(-2).join('.') : host);
-      return { appOrigin: origin, derivedRpID: rpID, allowedOrigins: [origin] };
+      // Include dev origin when PUBLIC_APP_URL is production so passkeys work in local dev
+      const allowedOrigins = origin === devOrigin ? [origin] : [origin, devOrigin];
+      return { appOrigin: origin, derivedRpID: rpID, allowedOrigins };
     } catch (_) {}
   }
   return {
-    appOrigin: 'http://localhost:5173',
+    appOrigin: devOrigin,
     derivedRpID: process.env.PASSKEY_RPID?.trim() || 'localhost',
-    allowedOrigins: ['http://localhost:5173']
+    allowedOrigins: [devOrigin]
   };
 }
 const appUrlConfig = getAppUrlConfig();
