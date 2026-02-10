@@ -10,6 +10,7 @@
 
 import dotenv from 'dotenv';
 import { ClinicalNotesClient } from '../lib/opensearch/clinical-notes.js';
+import { getOpenSearchConfig } from '../server/utils/opensearch-config.js';
 
 dotenv.config();
 
@@ -18,27 +19,27 @@ async function testConnection() {
 
   console.log('🧪 Testing OpenSearch connection for Clinical Notes...\n');
 
-  // Check environment variables
-  if (!process.env.OPENSEARCH_ENDPOINT) {
-    console.error('❌ OPENSEARCH_ENDPOINT not configured');
-    console.error('   Please set OPENSEARCH_ENDPOINT in your .env file');
+  const config = getOpenSearchConfig();
+  if (!config?.endpoint) {
+    console.error('❌ OpenSearch not configured');
+    console.error('   Set in NEW-AGENT.txt ## OpenSearch (DO-managed) or env: OPENSEARCH_ENDPOINT, OPENSEARCH_USERNAME, OPENSEARCH_PASSWORD, DO_DATABASE_ID');
     process.exit(1);
   }
 
   console.log(`📋 Configuration:`);
-  console.log(`   Endpoint: ${process.env.OPENSEARCH_ENDPOINT}`);
-  console.log(`   Username: ${process.env.OPENSEARCH_USERNAME || 'not set'}`);
-  console.log(`   Password: ${process.env.OPENSEARCH_PASSWORD ? '***' : 'not set'}`);
+  console.log(`   Endpoint: ${config.endpoint}`);
+  console.log(`   Username: ${config.username || 'not set'}`);
+  console.log(`   Password: ${config.password ? '***' : 'not set'}`);
   console.log(`   Test User ID: ${userId}\n`);
 
   try {
     // Initialize client
     console.log('🔌 Initializing OpenSearch client...');
     const client = new ClinicalNotesClient({
-      endpoint: process.env.OPENSEARCH_ENDPOINT,
-      username: process.env.OPENSEARCH_USERNAME,
-      password: process.env.OPENSEARCH_PASSWORD,
-      databaseId: process.env.DO_DATABASE_ID
+      endpoint: config.endpoint,
+      username: config.username,
+      password: config.password,
+      databaseId: config.databaseId
     });
     console.log('✅ Client initialized\n');
 

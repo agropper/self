@@ -8,6 +8,7 @@ import { writeFileSync, readFileSync, existsSync } from 'fs';
 import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
 import { S3Client, GetObjectCommand, PutObjectCommand } from '@aws-sdk/client-s3';
+import { getSpacesEndpoint, getSpacesBucketName } from './storage-config.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const CREDENTIALS_FILE = join(__dirname, '../../.couchdb-droplet-credentials');
@@ -32,9 +33,9 @@ function getBucketName(bucketUrl) {
 }
 
 function getSpacesClient() {
-  const bucketUrl = process.env.DIGITALOCEAN_BUCKET;
+  const bucketUrl = getSpacesBucketName();
   const bucketName = getBucketName(bucketUrl);
-  const endpoint = process.env.DIGITALOCEAN_ENDPOINT_URL || 'https://tor1.digitaloceanspaces.com';
+  const endpoint = getSpacesEndpoint();
   const accessKeyId = process.env.DIGITALOCEAN_AWS_ACCESS_KEY_ID || '';
   const secretAccessKey = process.env.DIGITALOCEAN_AWS_SECRET_ACCESS_KEY || '';
   if (!bucketName || !accessKeyId || !secretAccessKey) return null;

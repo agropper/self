@@ -5,6 +5,7 @@
 
 import { config } from 'dotenv';
 import { DigitalOceanClient } from '../lib/do-client/index.js';
+import { getSpacesBucketName } from '../server/utils/storage-config.js';
 
 config();
 
@@ -25,7 +26,7 @@ async function addDataSource() {
     console.log(`   Item Path: ${itemPath}`);
 
     // Get bucket name from env
-    const bucketUrl = process.env.DIGITALOCEAN_BUCKET;
+    const bucketUrl = getSpacesBucketName();
     const bucketName = bucketUrl?.split('//')[1]?.split('.')[0] || 'maia';
     const region = process.env.DO_REGION || 'tor1';
 

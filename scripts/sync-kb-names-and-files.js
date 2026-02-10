@@ -7,7 +7,7 @@ import { config } from 'dotenv';
 import { CloudantClient } from '../lib/cloudant/index.js';
 import { DigitalOceanClient } from '../lib/do-client/index.js';
 import { S3Client, CopyObjectCommand, DeleteObjectCommand, ListObjectsV2Command } from '@aws-sdk/client-s3';
-import { normalizeStorageEnv } from '../server/utils/storage-config.js';
+import { normalizeStorageEnv, getSpacesEndpoint, getSpacesBucketName } from '../server/utils/storage-config.js';
 
 config();
 normalizeStorageEnv();
@@ -32,11 +32,11 @@ async function syncKB() {
 
     const doClient = new DigitalOceanClient(process.env.DIGITALOCEAN_TOKEN);
 
-    const bucketUrl = process.env.DIGITALOCEAN_BUCKET;
+    const bucketUrl = getSpacesBucketName();
     const bucketName = bucketUrl?.split('//')[1]?.split('.')[0] || 'maia';
 
     const s3Client = new S3Client({
-      endpoint: process.env.DIGITALOCEAN_ENDPOINT_URL || 'https://tor1.digitaloceanspaces.com',
+      endpoint: getSpacesEndpoint(),
       region: 'us-east-1',
       forcePathStyle: process.env.S3_FORCE_PATH_STYLE === 'true',
       credentials: {

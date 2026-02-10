@@ -20,7 +20,8 @@ import { moveObjectWithVerify } from './utils/spaces-move.js';
 import { deleteObjectWithLog } from './utils/spaces-ops.js';
 import { ChatClient } from '../lib/chat-client/index.js';
 import { findUserAgent, getOrCreateAgentApiKey } from './utils/agent-helper.js';
-import { normalizeStorageEnv } from './utils/storage-config.js';
+import { normalizeStorageEnv, getSpacesEndpoint, getSpacesBucketName } from './utils/storage-config.js';
+import { getOpenSearchDatabaseId } from './utils/opensearch-config.js';
 import setupAuthRoutes from './routes/auth.js';
 import setupChatRoutes from './routes/chat.js';
 import setupFileRoutes from './routes/files.js';
@@ -79,13 +80,13 @@ function getBucketName(bucketUrl) {
 }
 
 async function ensureBucketExists() {
-  const bucketUrl = process.env.DIGITALOCEAN_BUCKET;
+  const bucketUrl = getSpacesBucketName();
   if (!bucketUrl) {
     return;
   }
 
   const bucketName = getBucketName(bucketUrl);
-  const endpoint = process.env.DIGITALOCEAN_ENDPOINT_URL || 'https://tor1.digitaloceanspaces.com';
+  const endpoint = getSpacesEndpoint();
   const accessKeyId = process.env.DIGITALOCEAN_AWS_ACCESS_KEY_ID || '';
   const secretAccessKey = process.env.DIGITALOCEAN_AWS_SECRET_ACCESS_KEY || '';
   const forcePathStyle = process.env.S3_FORCE_PATH_STYLE === 'true';
@@ -126,7 +127,7 @@ function shouldUseEphemeralSpaces() {
 }
 
 function getSpacesConfig() {
-  const endpoint = process.env.SPACES_ENDPOINT_URL || 'https://tor1.digitaloceanspaces.com';
+  const endpoint = getSpacesEndpoint();
   const region = process.env.SPACES_REGION || process.env.DO_REGION || 'tor1';
   const accessKeyId = process.env.SPACES_AWS_ACCESS_KEY_ID || process.env.SPACES_ACCESS_KEY_ID;
   const secretAccessKey = process.env.SPACES_AWS_SECRET_ACCESS_KEY || process.env.SPACES_SECRET_ACCESS_KEY;
@@ -343,7 +344,7 @@ function generateKBName(userId) {
  * This is called during registration to enable file uploads before admin approval
  */
 async function createUserBucketFolders(userId, kbName) {
-  const bucketUrl = process.env.DIGITALOCEAN_BUCKET;
+  const bucketUrl = getSpacesBucketName();
   if (!bucketUrl) {
     throw new Error('DigitalOcean bucket not configured');
   }
@@ -353,7 +354,7 @@ async function createUserBucketFolders(userId, kbName) {
   try {
     const { S3Client, PutObjectCommand } = await import('@aws-sdk/client-s3');
     const s3Client = new S3Client({
-      endpoint: process.env.DIGITALOCEAN_ENDPOINT_URL || 'https://tor1.digitaloceanspaces.com',
+      endpoint: getSpacesEndpoint(),
       region: 'us-east-1',
       forcePathStyle: process.env.S3_FORCE_PATH_STYLE === 'true',
       credentials: {
@@ -398,13 +399,13 @@ async function createUserBucketFolders(userId, kbName) {
 }
 
 async function deleteKbFolderPlaceholder(userId, kbName) {
-  const bucketUrl = process.env.DIGITALOCEAN_BUCKET;
+  const bucketUrl = getSpacesBucketName();
   if (!bucketUrl || !userId || !kbName) return;
   const bucketName = bucketUrl.split('//')[1]?.split('.')[0] || 'maia';
   try {
     const { S3Client } = await import('@aws-sdk/client-s3');
     const s3Client = new S3Client({
-      endpoint: process.env.DIGITALOCEAN_ENDPOINT_URL || 'https://tor1.digitaloceanspaces.com',
+      endpoint: getSpacesEndpoint(),
       region: 'us-east-1',
       forcePathStyle: process.env.S3_FORCE_PATH_STYLE === 'true',
       credentials: {
@@ -1191,10 +1192,7 @@ const passkeyService = new PasskeyService({
 });
 
 const chatClient = new ChatClient({
-  digitalocean: {
-    apiKey: process.env.DIGITALOCEAN_PERSONAL_API_KEY,
-    baseURL: process.env.DIGITALOCEAN_GENAI_ENDPOINT || 'https://vzfujeetn2dkj4d5awhvvibo.agents.do-ai.run/api/v1'
-  },
+  digitalocean: {},
   anthropic: {
     apiKey: process.env.ANTHROPIC_API_KEY
   },
@@ -2758,12 +2756,12 @@ app.post('/api/admin/provision/confirm', async (req, res) => {
         console.log(`[NEW FLOW 2] Starting cleanup for rejected user: ${userId}`);
         
         // Delete all files in user's bucket folder
-        const bucketUrl = process.env.DIGITALOCEAN_BUCKET;
+        const bucketUrl = getSpacesBucketName();
         if (bucketUrl) {
           const bucketName = bucketUrl.split('//')[1]?.split('.')[0] || 'maia';
         const { S3Client, ListObjectsV2Command } = await import('@aws-sdk/client-s3');
           const s3Client = new S3Client({
-            endpoint: process.env.DIGITALOCEAN_ENDPOINT_URL || 'https://tor1.digitaloceanspaces.com',
+            endpoint: getSpacesEndpoint(),
             region: 'us-east-1',
             forcePathStyle: process.env.S3_FORCE_PATH_STYLE === 'true',
             credentials: {
@@ -2938,11 +2936,11 @@ async function verifyProvisioningComplete(userId, agentId, agentName, kbName, ex
     // 1. Verify bucket folders (check accessibility)
     try {
       const { S3Client, ListObjectsV2Command } = await import('@aws-sdk/client-s3');
-      const bucketUrl = process.env.DIGITALOCEAN_BUCKET;
+      const bucketUrl = getSpacesBucketName();
       if (bucketUrl) {
         const bucketName = bucketUrl.split('//')[1]?.split('.')[0] || 'maia';
         const s3Client = new S3Client({
-          endpoint: process.env.DIGITALOCEAN_ENDPOINT_URL || 'https://tor1.digitaloceanspaces.com',
+          endpoint: getSpacesEndpoint(),
           region: 'us-east-1',
           forcePathStyle: process.env.S3_FORCE_PATH_STYLE === 'true',
           credentials: {
@@ -3302,7 +3300,7 @@ async function provisionUserAsync(userId, token) {
     updateStatus('Verifying bucket folders...');
     logProvisioning(userId, `📁 Verifying bucket folders for user: ${userId}`, 'info');
     
-    const bucketUrl = process.env.DIGITALOCEAN_BUCKET;
+    const bucketUrl = getSpacesBucketName();
     if (!bucketUrl) {
       throw new Error('DigitalOcean bucket not configured');
     }
@@ -3314,7 +3312,7 @@ async function provisionUserAsync(userId, token) {
     try {
       const { S3Client, PutObjectCommand, GetObjectCommand } = await import('@aws-sdk/client-s3');
       const s3Client = new S3Client({
-        endpoint: process.env.DIGITALOCEAN_ENDPOINT_URL || 'https://tor1.digitaloceanspaces.com',
+        endpoint: getSpacesEndpoint(),
         region: 'us-east-1',
         forcePathStyle: process.env.S3_FORCE_PATH_STYLE === 'true',
         credentials: {
@@ -3424,7 +3422,7 @@ async function provisionUserAsync(userId, token) {
         // Verify file exists in S3
         const { S3Client, HeadObjectCommand, GetObjectCommand } = await import('@aws-sdk/client-s3');
         const s3Client = new S3Client({
-          endpoint: process.env.DIGITALOCEAN_ENDPOINT_URL || 'https://tor1.digitaloceanspaces.com',
+          endpoint: getSpacesEndpoint(),
           region: 'us-east-1',
           forcePathStyle: process.env.S3_FORCE_PATH_STYLE === 'true',
           credentials: {
@@ -3969,7 +3967,7 @@ async function provisionUserAsync(userId, token) {
         const { S3Client, GetObjectCommand, HeadObjectCommand } = await import('@aws-sdk/client-s3');
         
         // Get S3 client (same pattern as in files.js)
-        const bucketUrl = process.env.DIGITALOCEAN_BUCKET;
+        const bucketUrl = getSpacesBucketName();
         if (!bucketUrl) {
           console.log(`[CUR MEDS] ⚠️  DigitalOcean bucket not configured. Skipping.`);
           logProvisioning(userId, `⚠️  [CURRENT MEDICATIONS] DigitalOcean bucket not configured. Skipping.`, 'warning');
@@ -3977,7 +3975,7 @@ async function provisionUserAsync(userId, token) {
           console.log(`[CUR MEDS] Bucket URL: ${bucketUrl}`);
           const bucketName = bucketUrl.split('//')[1]?.split('.')[0] || 'maia';
           const s3Client = new S3Client({
-            endpoint: process.env.DIGITALOCEAN_ENDPOINT_URL || 'https://tor1.digitaloceanspaces.com',
+            endpoint: getSpacesEndpoint(),
             region: 'us-east-1',
             forcePathStyle: process.env.S3_FORCE_PATH_STYLE === 'true',
             credentials: {
@@ -4850,7 +4848,7 @@ app.post('/api/cleanup-imported-files', async (req, res) => {
     const { S3Client, ListObjectsV2Command } = await import('@aws-sdk/client-s3');
 
     // Setup S3/Spaces client
-    const bucketUrl = process.env.DIGITALOCEAN_BUCKET;
+    const bucketUrl = getSpacesBucketName();
     if (!bucketUrl) {
       return res.status(500).json({
         success: false,
@@ -4862,7 +4860,7 @@ app.post('/api/cleanup-imported-files', async (req, res) => {
     const bucketName = bucketUrl.split('//')[1]?.split('.')[0] || 'maia';
 
     const s3Client = new S3Client({
-      endpoint: process.env.DIGITALOCEAN_ENDPOINT_URL || 'https://tor1.digitaloceanspaces.com',
+      endpoint: getSpacesEndpoint(),
       region: 'us-east-1',
       forcePathStyle: process.env.S3_FORCE_PATH_STYLE === 'true',
       credentials: {
@@ -4980,7 +4978,7 @@ app.post('/api/archive-user-files', async (req, res) => {
     const { S3Client, ListObjectsV2Command } = await import('@aws-sdk/client-s3');
 
     // Setup S3/Spaces client
-    const bucketUrl = process.env.DIGITALOCEAN_BUCKET;
+    const bucketUrl = getSpacesBucketName();
     if (!bucketUrl) {
       return res.status(500).json({
         success: false,
@@ -4992,7 +4990,7 @@ app.post('/api/archive-user-files', async (req, res) => {
     const bucketName = bucketUrl.split('//')[1]?.split('.')[0] || 'maia';
 
     const s3Client = new S3Client({
-      endpoint: process.env.DIGITALOCEAN_ENDPOINT_URL || 'https://tor1.digitaloceanspaces.com',
+      endpoint: getSpacesEndpoint(),
       region: 'us-east-1',
       forcePathStyle: process.env.S3_FORCE_PATH_STYLE === 'true',
       credentials: {
@@ -5173,7 +5171,7 @@ app.get('/api/verify-file-state', async (req, res) => {
     }
 
     // Setup S3/Spaces client
-    const bucketUrl = process.env.DIGITALOCEAN_BUCKET;
+    const bucketUrl = getSpacesBucketName();
     if (!bucketUrl) {
       return res.status(500).json({
         success: false,
@@ -5186,7 +5184,7 @@ app.get('/api/verify-file-state', async (req, res) => {
 
     const { S3Client, HeadObjectCommand, ListObjectsV2Command } = await import('@aws-sdk/client-s3');
     const s3Client = new S3Client({
-      endpoint: process.env.DIGITALOCEAN_ENDPOINT_URL || 'https://tor1.digitaloceanspaces.com',
+      endpoint: getSpacesEndpoint(),
       region: 'us-east-1',
       forcePathStyle: process.env.S3_FORCE_PATH_STYLE === 'true',
       credentials: {
@@ -5561,7 +5559,7 @@ app.post('/api/toggle-file-knowledge-base', async (req, res) => {
     const { S3Client } = await import('@aws-sdk/client-s3');
 
     // Setup S3/Spaces client
-    const bucketUrl = process.env.DIGITALOCEAN_BUCKET;
+    const bucketUrl = getSpacesBucketName();
     if (!bucketUrl) {
       return res.status(500).json({
         success: false,
@@ -5573,7 +5571,7 @@ app.post('/api/toggle-file-knowledge-base', async (req, res) => {
     const bucketName = bucketUrl.split('//')[1]?.split('.')[0] || 'maia';
 
     const s3Client = new S3Client({
-      endpoint: process.env.DIGITALOCEAN_ENDPOINT_URL || 'https://tor1.digitaloceanspaces.com',
+      endpoint: getSpacesEndpoint(),
       region: 'us-east-1',
       forcePathStyle: process.env.S3_FORCE_PATH_STYLE === 'true',
       credentials: {
@@ -6151,7 +6149,7 @@ app.delete('/api/delete-file', async (req, res) => {
     const { S3Client } = await import('@aws-sdk/client-s3');
 
     // Setup S3/Spaces client
-    const bucketUrl = process.env.DIGITALOCEAN_BUCKET;
+    const bucketUrl = getSpacesBucketName();
     if (!bucketUrl) {
       return res.status(500).json({
         success: false,
@@ -6163,7 +6161,7 @@ app.delete('/api/delete-file', async (req, res) => {
     const bucketName = bucketUrl.split('//')[1]?.split('.')[0] || 'maia';
 
     const s3Client = new S3Client({
-      endpoint: process.env.DIGITALOCEAN_ENDPOINT_URL || 'https://tor1.digitaloceanspaces.com',
+      endpoint: getSpacesEndpoint(),
       region: 'us-east-1',
       forcePathStyle: process.env.S3_FORCE_PATH_STYLE === 'true',
       credentials: {
@@ -6275,9 +6273,9 @@ async function setupKnowledgeBase(userId, kbName, filesInKB, bucketName, existin
       };
     }
 
-    // Get required values directly from environment variables
+    // Get required values: projectId from env; databaseId from opensearch-config (NEW-AGENT.txt or env)
     const projectId = process.env.DO_PROJECT_ID;
-    const databaseId = process.env.DO_DATABASE_ID;
+    const databaseId = getOpenSearchDatabaseId();
     const embeddingModelId = process.env.DO_EMBEDDING_MODEL_ID || null;
     
     // Validate UUID format helper
@@ -6287,7 +6285,7 @@ async function setupKnowledgeBase(userId, kbName, filesInKB, bucketName, existin
       return uuidRegex.test(str.trim());
     };
     
-    // Validate required environment variables
+    // Validate required configuration
     if (!isValidUUID(projectId)) {
       return { 
         error: 'PROJECT_ID_NOT_CONFIGURED', 
@@ -6298,7 +6296,7 @@ async function setupKnowledgeBase(userId, kbName, filesInKB, bucketName, existin
     if (!isValidUUID(databaseId)) {
       return { 
         error: 'DATABASE_ID_NOT_CONFIGURED', 
-        message: 'DO_DATABASE_ID environment variable is required and must be a valid UUID. Please set DO_DATABASE_ID in your .env file and restart the server.' 
+        message: 'OpenSearch database_id is required (set in NEW-AGENT.txt ## OpenSearch (DO-managed) or DO_DATABASE_ID in .env).' 
       };
     }
     
@@ -6396,7 +6394,7 @@ app.post('/api/update-knowledge-base', async (req, res) => {
     const kbName = getKBNameFromUserDoc(userDoc, userId);
 
     // Get bucket name for data source path
-    const bucketUrl = process.env.DIGITALOCEAN_BUCKET;
+    const bucketUrl = getSpacesBucketName();
     if (!bucketUrl) {
       return res.status(500).json({
         success: false,
@@ -6412,7 +6410,7 @@ app.post('/api/update-knowledge-base', async (req, res) => {
     let spacesConfig = null;
 
     const storageClient = new S3Client({
-      endpoint: process.env.DIGITALOCEAN_ENDPOINT_URL || 'https://tor1.digitaloceanspaces.com',
+      endpoint: getSpacesEndpoint(),
       region: 'us-east-1',
       forcePathStyle: process.env.S3_FORCE_PATH_STYLE === 'true',
       credentials: {
@@ -7353,11 +7351,11 @@ app.get('/api/admin/users', async (req, res) => {
       // Get total file storage in MB (using same calculation as file routes)
       let totalStorageMB = 0;
       try {
-        const bucketUrl = process.env.DIGITALOCEAN_BUCKET;
+        const bucketUrl = getSpacesBucketName();
         if (bucketUrl && process.env.DIGITALOCEAN_AWS_ACCESS_KEY_ID && process.env.DIGITALOCEAN_AWS_SECRET_ACCESS_KEY) {
           const bucketName = bucketUrl.split('//')[1]?.split('.')[0] || 'maia';
           const s3Client = new S3Client({
-            endpoint: process.env.DIGITALOCEAN_ENDPOINT_URL || 'https://tor1.digitaloceanspaces.com',
+            endpoint: getSpacesEndpoint(),
             region: 'us-east-1',
             forcePathStyle: process.env.S3_FORCE_PATH_STYLE === 'true',
             credentials: {
@@ -7693,13 +7691,13 @@ async function deleteUserAndResources(userId, options = {}) {
   // 1. Delete all files from Spaces folder
   try {
     console.log(`[DESTROY] Deleting stored files for ${userId}`);
-    const bucketUrl = process.env.DIGITALOCEAN_BUCKET;
+    const bucketUrl = getSpacesBucketName();
     if (bucketUrl) {
       const bucketName = bucketUrl.split('//')[1]?.split('.')[0] || 'maia';
       const { S3Client, ListObjectsV2Command } = await import('@aws-sdk/client-s3');
       
       const s3Client = new S3Client({
-        endpoint: process.env.DIGITALOCEAN_ENDPOINT_URL || 'https://tor1.digitaloceanspaces.com',
+        endpoint: getSpacesEndpoint(),
         region: 'us-east-1',
         forcePathStyle: process.env.S3_FORCE_PATH_STYLE === 'true',
         credentials: {

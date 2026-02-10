@@ -11,6 +11,8 @@ import { extractPdfWithPages, extractIndividualClinicalNotes } from '../utils/pd
 import { ClinicalNotesClient } from '../../lib/opensearch/clinical-notes.js';
 import { extractAndSaveCategoryFiles } from '../utils/lists-processor.js';
 import { putObjectWithLog, deleteObjectWithLog } from '../utils/spaces-ops.js';
+import { getSpacesEndpoint, getSpacesBucketName } from '../utils/storage-config.js';
+import { getOpenSearchConfig } from '../utils/opensearch-config.js';
 
 /**
  * Extract medication records from markdown
@@ -534,7 +536,7 @@ Please provide a list of all top-level markdown categories (### headings) and th
 
 // Helper function to get S3 client
 function getS3Client() {
-  const bucketUrl = process.env.DIGITALOCEAN_BUCKET;
+  const bucketUrl = getSpacesBucketName();
   if (!bucketUrl) {
     throw new Error('DigitalOcean bucket not configured');
   }
@@ -543,7 +545,7 @@ function getS3Client() {
 
   return {
     client: new S3Client({
-      endpoint: process.env.DIGITALOCEAN_ENDPOINT_URL || 'https://tor1.digitaloceanspaces.com',
+      endpoint: getSpacesEndpoint(),
       region: 'us-east-1',
       forcePathStyle: process.env.S3_FORCE_PATH_STYLE === 'true',
       credentials: {
@@ -563,16 +565,17 @@ function getClinicalNotesClient() {
     return clinicalNotesClient;
   }
 
-  if (!process.env.OPENSEARCH_ENDPOINT) {
+  const config = getOpenSearchConfig();
+  if (!config?.endpoint) {
     return null;
   }
 
   try {
     clinicalNotesClient = new ClinicalNotesClient({
-      endpoint: process.env.OPENSEARCH_ENDPOINT,
-      username: process.env.OPENSEARCH_USERNAME,
-      password: process.env.OPENSEARCH_PASSWORD,
-      databaseId: process.env.DO_DATABASE_ID
+      endpoint: config.endpoint,
+      username: config.username,
+      password: config.password,
+      databaseId: config.databaseId
     });
     return clinicalNotesClient;
   } catch (error) {
@@ -715,7 +718,7 @@ export default function setupFileRoutes(app, cloudant, doClient) {
       const bucketKey = `${userFolder}${cleanName}`;
 
       // Setup S3/Spaces client
-      const bucketUrl = process.env.DIGITALOCEAN_BUCKET;
+      const bucketUrl = getSpacesBucketName();
       if (!bucketUrl) {
         return res.status(500).json({
           error: 'DigitalOcean bucket not configured',
@@ -726,7 +729,7 @@ export default function setupFileRoutes(app, cloudant, doClient) {
       const bucketName = bucketUrl.split('//')[1]?.split('.')[0] || 'maia';
 
       const s3Client = new S3Client({
-        endpoint: process.env.DIGITALOCEAN_ENDPOINT_URL || 'https://tor1.digitaloceanspaces.com',
+        endpoint: getSpacesEndpoint(),
         region: 'us-east-1',
         forcePathStyle: process.env.S3_FORCE_PATH_STYLE === 'true',
         credentials: {
@@ -857,11 +860,11 @@ export default function setupFileRoutes(app, cloudant, doClient) {
       const { bucketKey } = req.params;
       const userId = req.session?.userId || req.session?.deepLinkUserId;
       
-      const bucketUrl = process.env.DIGITALOCEAN_BUCKET;
+      const bucketUrl = getSpacesBucketName();
       const bucketName = bucketUrl?.split('//')[1]?.split('.')[0] || 'maia';
 
       const s3Client = new S3Client({
-        endpoint: process.env.DIGITALOCEAN_ENDPOINT_URL || 'https://tor1.digitaloceanspaces.com',
+        endpoint: getSpacesEndpoint(),
         region: 'us-east-1',
         forcePathStyle: process.env.S3_FORCE_PATH_STYLE === 'true',
         credentials: {
@@ -949,11 +952,11 @@ export default function setupFileRoutes(app, cloudant, doClient) {
 
       const { bucketKey } = req.params;
       
-      const bucketUrl = process.env.DIGITALOCEAN_BUCKET;
+      const bucketUrl = getSpacesBucketName();
       const bucketName = bucketUrl?.split('//')[1]?.split('.')[0] || 'maia';
 
       const s3Client = new S3Client({
-        endpoint: process.env.DIGITALOCEAN_ENDPOINT_URL || 'https://tor1.digitaloceanspaces.com',
+        endpoint: getSpacesEndpoint(),
         region: 'us-east-1',
         forcePathStyle: process.env.S3_FORCE_PATH_STYLE === 'true',
         credentials: {
@@ -1049,11 +1052,11 @@ export default function setupFileRoutes(app, cloudant, doClient) {
 
       const { bucketKey } = req.params;
       
-      const bucketUrl = process.env.DIGITALOCEAN_BUCKET;
+      const bucketUrl = getSpacesBucketName();
       const bucketName = bucketUrl?.split('//')[1]?.split('.')[0] || 'maia';
 
       const s3Client = new S3Client({
-        endpoint: process.env.DIGITALOCEAN_ENDPOINT_URL || 'https://tor1.digitaloceanspaces.com',
+        endpoint: getSpacesEndpoint(),
         region: 'us-east-1',
         forcePathStyle: process.env.S3_FORCE_PATH_STYLE === 'true',
         credentials: {
@@ -1107,11 +1110,11 @@ export default function setupFileRoutes(app, cloudant, doClient) {
       }
 
       const { bucketKey } = req.params;
-      const bucketUrl = process.env.DIGITALOCEAN_BUCKET;
+      const bucketUrl = getSpacesBucketName();
       const bucketName = bucketUrl?.split('//')[1]?.split('.')[0] || 'maia';
 
       const s3Client = new S3Client({
-        endpoint: process.env.DIGITALOCEAN_ENDPOINT_URL || 'https://tor1.digitaloceanspaces.com',
+        endpoint: getSpacesEndpoint(),
         region: 'us-east-1',
         forcePathStyle: process.env.S3_FORCE_PATH_STYLE === 'true',
         credentials: {
@@ -1163,7 +1166,7 @@ export default function setupFileRoutes(app, cloudant, doClient) {
         });
       }
 
-      const bucketUrl = process.env.DIGITALOCEAN_BUCKET;
+      const bucketUrl = getSpacesBucketName();
       if (!bucketUrl) {
         return res.status(500).json({
           error: 'DigitalOcean bucket not configured',
@@ -1174,7 +1177,7 @@ export default function setupFileRoutes(app, cloudant, doClient) {
       const bucketName = bucketUrl.split('//')[1]?.split('.')[0] || 'maia';
 
       const s3Client = new S3Client({
-        endpoint: process.env.DIGITALOCEAN_ENDPOINT_URL || 'https://tor1.digitaloceanspaces.com',
+        endpoint: getSpacesEndpoint(),
         region: 'us-east-1',
         forcePathStyle: process.env.S3_FORCE_PATH_STYLE === 'true',
         credentials: {
@@ -1214,11 +1217,11 @@ export default function setupFileRoutes(app, cloudant, doClient) {
     try {
       const { bucketKey } = req.params;
 
-      const bucketUrl = process.env.DIGITALOCEAN_BUCKET;
+      const bucketUrl = getSpacesBucketName();
       const bucketName = bucketUrl?.split('//')[1]?.split('.')[0] || 'maia';
 
       const s3Client = new S3Client({
-        endpoint: process.env.DIGITALOCEAN_ENDPOINT_URL || 'https://tor1.digitaloceanspaces.com',
+        endpoint: getSpacesEndpoint(),
         region: 'us-east-1',
         forcePathStyle: process.env.S3_FORCE_PATH_STYLE === 'true',
         credentials: {
@@ -1665,7 +1668,7 @@ export default function setupFileRoutes(app, cloudant, doClient) {
         if (!notesClient) {
           return res.status(503).json({ 
             error: 'Clinical Notes indexing not configured',
-            message: 'OPENSEARCH_ENDPOINT environment variable is required'
+            message: 'OpenSearch not configured (set in NEW-AGENT.txt ## OpenSearch or OPENSEARCH_ENDPOINT)'
           });
         }
         
@@ -2775,7 +2778,7 @@ export default function setupFileRoutes(app, cloudant, doClient) {
       if (!notesClient) {
         return res.status(503).json({ 
           error: 'Clinical Notes indexing not configured',
-          message: 'OPENSEARCH_ENDPOINT environment variable is required'
+          message: 'OpenSearch not configured (set in NEW-AGENT.txt ## OpenSearch or OPENSEARCH_ENDPOINT)'
         });
       }
 
@@ -2861,17 +2864,17 @@ export default function setupFileRoutes(app, cloudant, doClient) {
       if (!notesClient) {
         return res.status(503).json({ 
           error: 'Clinical Notes indexing not configured',
-          message: 'OPENSEARCH_ENDPOINT environment variable is required'
+          message: 'OpenSearch not configured (set in NEW-AGENT.txt ## OpenSearch or OPENSEARCH_ENDPOINT)'
         });
       }
 
       const { bucketKey } = req.params;
       
-      const bucketUrl = process.env.DIGITALOCEAN_BUCKET;
+      const bucketUrl = getSpacesBucketName();
       const bucketName = bucketUrl?.split('//')[1]?.split('.')[0] || 'maia';
 
       const s3Client = new S3Client({
-        endpoint: process.env.DIGITALOCEAN_ENDPOINT_URL || 'https://tor1.digitaloceanspaces.com',
+        endpoint: getSpacesEndpoint(),
         region: 'us-east-1',
         forcePathStyle: process.env.S3_FORCE_PATH_STYLE === 'true',
         credentials: {
@@ -2960,7 +2963,7 @@ export default function setupFileRoutes(app, cloudant, doClient) {
       if (!notesClient) {
         return res.status(503).json({ 
           error: 'Clinical Notes search not configured',
-          message: 'OPENSEARCH_ENDPOINT environment variable is required'
+          message: 'OpenSearch not configured (set in NEW-AGENT.txt ## OpenSearch or OPENSEARCH_ENDPOINT)'
         });
       }
 
@@ -3003,7 +3006,7 @@ export default function setupFileRoutes(app, cloudant, doClient) {
       if (!notesClient) {
         return res.status(503).json({ 
           error: 'Clinical Notes not configured',
-          message: 'OPENSEARCH_ENDPOINT environment variable is required'
+          message: 'OpenSearch not configured (set in NEW-AGENT.txt ## OpenSearch or OPENSEARCH_ENDPOINT)'
         });
       }
 
@@ -3087,7 +3090,7 @@ export default function setupFileRoutes(app, cloudant, doClient) {
       if (!notesClient) {
         return res.status(503).json({ 
           error: 'Clinical Notes not configured',
-          message: 'OPENSEARCH_ENDPOINT environment variable is required'
+          message: 'OpenSearch not configured (set in NEW-AGENT.txt ## OpenSearch or OPENSEARCH_ENDPOINT)'
         });
       }
 

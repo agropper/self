@@ -71,27 +71,23 @@ When running MAIA, use your own credit card to pay for hosting. If someone else 
   Required for user docs, sessions, and audit logs.
 
 ### CouchDB Droplet (optional, self-hosted database)
-When `USE_COUCHDB_DROPLET=true`, the server auto-creates a DigitalOcean droplet (`ubuntu-s-1vcpu-1gb-tor1-01`) with Dockerized CouchDB and sets `CLOUDANT_*` from it. Credentials are stored in Spaces at `couchdb/credentials.json` so they survive redeploys. Requires `DIGITALOCEAN_TOKEN`, `DIGITALOCEAN_BUCKET`, `DIGITALOCEAN_AWS_ACCESS_KEY_ID`, `DIGITALOCEAN_AWS_SECRET_ACCESS_KEY`.
+When `USE_COUCHDB_DROPLET=true`, the server auto-creates a DigitalOcean droplet (`ubuntu-s-1vcpu-1gb-tor1-01`) with Dockerized CouchDB and sets `CLOUDANT_*` from it. Credentials are stored in Spaces at `couchdb/credentials.json` so they survive redeploys. Requires `DIGITALOCEAN_TOKEN`, `DIGITALOCEAN_AWS_ACCESS_KEY_ID`, `DIGITALOCEAN_AWS_SECRET_ACCESS_KEY` (bucket name is from NEW-AGENT.txt).
 
 ### DigitalOcean GenAI (agents, KBs, indexing)
 - `DIGITALOCEAN_TOKEN`  
   Auth for DO GenAI REST API.
 - `DO_REGION`, `DO_PROJECT_ID`  
   Required to create agents and KBs.
-- `DO_DATABASE_ID`  
-  DO database ID used when creating KBs.
 - `DO_EMBEDDING_MODEL_ID` (optional)  
-  Overrides default embedding model.
+  Overrides default embedding model. OpenSearch/database_id is configured in NEW-AGENT.txt (see ## OpenSearch (DO-managed)) or env.
 
 ### DigitalOcean Spaces (file storage)
-- `DIGITALOCEAN_BUCKET`  
-  Bucket name or URL for user files.
-- `DIGITALOCEAN_AWS_ACCESS_KEY_ID`, `DIGITALOCEAN_AWS_SECRET_ACCESS_KEY`, `DIGITALOCEAN_ENDPOINT_URL`  
-  S3-compatible access to Spaces.
+- Bucket name is fixed in code (see NEW-AGENT.txt; `getSpacesBucketName()`).
+- `DIGITALOCEAN_AWS_ACCESS_KEY_ID`, `DIGITALOCEAN_AWS_SECRET_ACCESS_KEY`  
+  S3-compatible access to Spaces (endpoint derived from `DO_REGION`).
 
 ### OpenSearch (optional, clinical notes)
-- `OPENSEARCH_ENDPOINT`, `OPENSEARCH_USERNAME`, `OPENSEARCH_PASSWORD`  
-  Enables clinical notes indexing/search.
+- Configure in NEW-AGENT.txt `## OpenSearch (DO-managed)` (database_id, endpoint, username, password), or set env vars `DO_DATABASE_ID`, `OPENSEARCH_ENDPOINT`, `OPENSEARCH_USERNAME`, `OPENSEARCH_PASSWORD`.
 
 ### App + Email
 - **`PUBLIC_APP_URL`** — Canonical app URL (also drives passkey config; see Passkeys above).

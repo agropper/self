@@ -422,10 +422,26 @@ export default function setupChatRoutes(app, chatClient, cloudant, doClient) {
   /**
    * List available chat providers
    * GET /api/chat/providers
+   * Private AI (digitalocean) is included only when the user has completed Stage 1 (agent deployed).
    */
-  app.get('/api/chat/providers', (req, res) => {
-    res.json({
-      providers: chatClient.getAvailableProviders()
-    });
+  app.get('/api/chat/providers', async (req, res) => {
+    let providers = chatClient.getAvailableProviders();
+    const userId = req.session?.userId;
+    if (userId && cloudant) {
+      try {
+        const userDoc = await cloudant.getDocument('maia_users', userId);
+        const hasAgentDeployed = userDoc?.workflowStage === 'agent_deployed' ||
+          (userDoc?.assignedAgentId && userDoc?.agentEndpoint);
+        if (!hasAgentDeployed) {
+          providers = providers.filter((p) => p !== 'digitalocean');
+        }
+      } catch (err) {
+        console.warn('[chat/providers] Could not load user doc, excluding Private AI:', err?.message);
+        providers = providers.filter((p) => p !== 'digitalocean');
+      }
+    } else {
+      providers = providers.filter((p) => p !== 'digitalocean');
+    }
+    res.json({ providers });
   });
 }

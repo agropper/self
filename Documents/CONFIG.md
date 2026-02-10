@@ -5,34 +5,7 @@ This document lists the APIs related to each environment variable used in the MA
 ## DigitalOcean Environment Variables
 
 ### DIGITALOCEAN_PERSONAL_API_KEY
-**API:** DigitalOcean GenAI Personal AI Chat API (OpenAI-compatible)
-
-**Endpoints:**
-- `POST {DIGITALOCEAN_GENAI_ENDPOINT}/chat/completions` - Chat completions (streaming and non-streaming)
-
-**Usage:**
-- Used by `lib/chat-client/providers/digitalocean.js` for chat interactions
-- Configured in `server/index.js` via ChatClient
-- Default endpoint: `https://vzfujeetn2dkj4d5awhvvibo.agents.do-ai.run/api/v1`
-
-**Related Files:**
-- `lib/chat-client/providers/digitalocean.js`
-- `server/index.js` (lines 707-710)
-
----
-
-### DIGITALOCEAN_GENAI_ENDPOINT
-**API:** DigitalOcean GenAI Personal AI Chat API Base URL
-
-**Default:** `https://vzfujeetn2dkj4d5awhvvibo.agents.do-ai.run/api/v1`
-
-**Usage:**
-- Base URL for OpenAI-compatible chat completions API
-- Used as `baseURL` in DigitalOceanProvider
-
-**Related Files:**
-- `lib/chat-client/providers/digitalocean.js` (line 14)
-- `server/index.js` (line 710)
+**No longer used.** Private AI uses the per-user agent API key (Stage 1). See ENVIRONMENTAL_VARS.md.
 
 ---
 
@@ -113,15 +86,7 @@ This document lists the APIs related to each environment variable used in the MA
 ---
 
 ### SPACES_ENDPOINT_URL
-**Status:** Optional
-
-**Default:** `https://tor1.digitaloceanspaces.com`
-
-**Usage:**
-- Spaces endpoint used for ephemeral KB indexing bucket
-
-**Related Files:**
-- `server/index.js`
+**No longer used.** Spaces endpoint is derived from `DO_REGION` or `SPACES_REGION` via `getSpacesEndpoint()` in `server/utils/storage-config.js`.
 
 ---
 
@@ -173,18 +138,7 @@ This document lists the APIs related to each environment variable used in the MA
 
 ---
 
-### DIGITALOCEAN_BUCKET
-**API:** DigitalOcean Spaces (S3-compatible API)
-
-**Usage:**
-- Bucket URL/name for storing user files
-- Used to extract bucket name for S3 client operations
-- Format: `https://{bucket}.{region}.digitaloceanspaces.com` or just the bucket name
-
-**Related Files:**
-- `server/routes/files.js` (multiple locations)
-- `server/index.js` (multiple locations)
-- `server/routes/auth.js` (line 42)
+Bucket name is defined in NEW-AGENT.txt and returned by `getSpacesBucketName()` in `server/utils/storage-config.js`. No env var.
 
 ---
 
@@ -216,30 +170,7 @@ This document lists the APIs related to each environment variable used in the MA
 
 ---
 
-### DIGITALOCEAN_ENDPOINT_URL
-**API:** DigitalOcean Spaces (S3-compatible API)
-
-**Default:** `https://tor1.digitaloceanspaces.com`
-
-**S3 Operations Used:**
-- `PutObjectCommand` - Upload files
-- `GetObjectCommand` - Download files
-- `DeleteObjectCommand` - Delete files
-- `HeadObjectCommand` - Check file metadata
-- `ListObjectsV2Command` - List files in bucket
-- `CopyObjectCommand` - Copy/move files within bucket
-- `GetObjectAttributesCommand` - Get file attributes
-- Presigned URLs via `getSignedUrl()` - Generate temporary file access URLs
-
-**Usage:**
-- S3-compatible endpoint URL for DigitalOcean Spaces
-- Used to configure AWS SDK S3Client
-- Region defaults to `us-east-1` (for S3 compatibility, not actual region)
-
-**Related Files:**
-- `server/routes/files.js` (line 545)
-- `server/index.js` (multiple locations)
-- `server/routes/auth.js` (line 51)
+The Spaces endpoint is derived from `DO_REGION` (or `SPACES_REGION`) as `https://<region>.digitaloceanspaces.com` via `getSpacesEndpoint()` in `server/utils/storage-config.js`. No env var.
 
 ---
 
@@ -278,22 +209,8 @@ This document lists the APIs related to each environment variable used in the MA
 
 ---
 
-### DO_DATABASE_ID
-**API:** DigitalOcean GenAI REST API v2 / OpenSearch Database
-
-**Endpoints:**
-- Used when creating knowledge bases: `POST /v2/gen-ai/knowledge_bases`
-- References a DigitalOcean OpenSearch/PostgreSQL database cluster
-
-**Usage:**
-- UUID of the DigitalOcean database cluster used for knowledge base storage
-- Required for creating knowledge bases
-- Also used for clinical notes OpenSearch indexing (if configured)
-
-**Related Files:**
-- `lib/do-client/kb.js` (line 49)
-- `server/index.js` (lines 574, 2922, 6953)
-- `server/routes/files.js` (line 574)
+### OpenSearch / database_id (DO-managed)
+Configured in NEW-AGENT.txt `## OpenSearch (DO-managed)` (database_id, endpoint, username, password) or via env fallback. See `server/utils/opensearch-config.js`. No env vars required if NEW-AGENT.txt is set.
 
 ---
 
@@ -364,14 +281,14 @@ This document lists the APIs related to each environment variable used in the MA
 
 ### APIs Used:
 1. **DigitalOcean GenAI Personal AI Chat API** (OpenAI-compatible)
-   - Environment Variables: `DIGITALOCEAN_PERSONAL_API_KEY`, `DIGITALOCEAN_GENAI_ENDPOINT`
+   - Per-user agent endpoint and API key (from user doc); no env vars required. Base URL default in `lib/chat-client/providers/digitalocean.js`.
 
 2. **DigitalOcean GenAI REST API v2**
-   - Environment Variables: `DIGITALOCEAN_TOKEN`, `DO_REGION`, `DO_PROJECT_ID`, `DO_DATABASE_ID`, `DO_EMBEDDING_MODEL_ID`
+   - Environment Variables: `DIGITALOCEAN_TOKEN`, `DO_REGION`, `DO_PROJECT_ID`, `DO_EMBEDDING_MODEL_ID` (OpenSearch/database_id from NEW-AGENT.txt or env)
    - Base URL: `https://api.digitalocean.com`
 
 3. **DigitalOcean Spaces (S3-compatible API)**
-   - Environment Variables: `DIGITALOCEAN_BUCKET`, `DIGITALOCEAN_AWS_ACCESS_KEY_ID`, `DIGITALOCEAN_AWS_SECRET_ACCESS_KEY`, `DIGITALOCEAN_ENDPOINT_URL`
+   - Environment Variables: `DIGITALOCEAN_AWS_ACCESS_KEY_ID`, `DIGITALOCEAN_AWS_SECRET_ACCESS_KEY`; endpoint and bucket from code (DO_REGION / NEW-AGENT.txt)
    - Uses AWS SDK S3Client for operations
 
 ### Not Used:

@@ -166,7 +166,7 @@ Nathaniel Douglas
 - **URL**: From the droplet API, get the public IP once the droplet is running. Construct `CLOUDANT_URL` as `http://<droplet-ip>:5984`.
 - **Username**: Use a fixed value (e.g. `admin`) for `CLOUDANT_USERNAME` and pass it to CouchDB via `COUCHDB_USER` when starting the container.
 - **Password**: Generate a random password (e.g. `openssl rand -base64 24`) and pass it to CouchDB via `COUCHDB_PASSWORD` when starting the container. Store the same value as `CLOUDANT_PASSWORD` for the app.
-- **Credentials storage**: Store credentials in Spaces at `couchdb/credentials.json` (and locally at `.couchdb-droplet-credentials`). Load from Spaces first, then local file. Requires DIGITALOCEAN_BUCKET, DIGITALOCEAN_AWS_ACCESS_KEY_ID, DIGITALOCEAN_AWS_SECRET_ACCESS_KEY.
+- **Credentials storage**: Store credentials in Spaces at `couchdb/credentials.json` (and locally at `.couchdb-droplet-credentials`). Load from Spaces first, then local file. Requires DIGITALOCEAN_AWS_ACCESS_KEY_ID, DIGITALOCEAN_AWS_SECRET_ACCESS_KEY (bucket name is fixed in code; see "maia" in this file).
 
 ---
 
@@ -372,3 +372,16 @@ Use this to:
    - Store secret_key in user document
 
 GET /v2/gen-ai/knowledge_bases/{knowledge_base_uuid}/indexing_jobs
+
+DigitalOcean uses an S3-compatible Spaces bucket to pass files to the OpenSearch database for indexing into a Knowledge Base that is attached to the user's private AI agent. 
+We call this bucket "maia" and the subfolders are named by userId.
+
+## OpenSearch (DO-managed)
+OpenSearch is created as part of provisioning by the account owner and shared across all users' knowledge bases. Set these once (or use env fallback: DO_DATABASE_ID, OPENSEARCH_ENDPOINT, OPENSEARCH_USERNAME, OPENSEARCH_PASSWORD).
+
+Where to get database_id (UUID): The host/port in the dashboard (e.g. genai1-driftwood-do-user-3963249-0.h.db.ondigitalocean.com:25060) are connection details only; they do not contain the UUID. Get the database UUID by: (1) In the dashboard: Databases → click your OpenSearch cluster name → Overview; the cluster ID (UUID) is shown there. (2) CLI: doctl databases list (with DIGITALOCEAN_TOKEN or doctl auth). (3) If you already have a KB using this cluster: run scripts/extract-do-ids.js to print DO_DATABASE_ID.
+
+database_id: <uuid-from-do-databases>
+endpoint: <opensearch-url-from-do>
+username: <opensearch-user>
+password: <opensearch-password>
