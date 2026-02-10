@@ -20,7 +20,8 @@ import { moveObjectWithVerify } from './utils/spaces-move.js';
 import { deleteObjectWithLog } from './utils/spaces-ops.js';
 import { ChatClient } from '../lib/chat-client/index.js';
 import { findUserAgent, getOrCreateAgentApiKey } from './utils/agent-helper.js';
-import { normalizeStorageEnv, getSpacesEndpoint, getSpacesBucketName } from './utils/storage-config.js';
+import { normalizeStorageEnv, getSpacesEndpoint, getSpacesBucketName, getSpacesRegion } from './utils/storage-config.js';
+import { getDoRegion, getPort } from './utils/new-agent-config.js';
 import { getOpenSearchDatabaseId } from './utils/opensearch-config.js';
 import { getEmbeddingModelIdForKb } from './utils/embedding-model-config.js';
 import { getProjectIdForGenAI } from './utils/project-config.js';
@@ -130,7 +131,7 @@ function shouldUseEphemeralSpaces() {
 
 function getSpacesConfig() {
   const endpoint = getSpacesEndpoint();
-  const region = process.env.SPACES_REGION || process.env.DO_REGION || 'tor1';
+  const region = getSpacesRegion();
   const accessKeyId = process.env.SPACES_AWS_ACCESS_KEY_ID || process.env.SPACES_ACCESS_KEY_ID;
   const secretAccessKey = process.env.SPACES_AWS_SECRET_ACCESS_KEY || process.env.SPACES_SECRET_ACCESS_KEY;
   const bucketPrefix = process.env.SPACES_BUCKET_PREFIX || 'maia-kb-temp';
@@ -556,7 +557,7 @@ function getMaiaInstructionText() {
 }
 
 const app = express();
-const PORT = process.env.PORT || 3001;
+const PORT = getPort();
 
 // Derive passkey/app URLs from PUBLIC_APP_URL (single source of truth); override with PASSKEY_RPID if needed
 function getAppUrlConfig() {
@@ -699,7 +700,7 @@ const doToken = process.env.DIGITALOCEAN_TOKEN;
 console.log(`[DO] DIGITALOCEAN_TOKEN at startup: ${doToken ? maskToken(doToken) : '(not set)'}`);
 
 const doClient = new DigitalOceanClient(doToken, {
-  region: process.env.DO_REGION || 'tor1'
+  region: getDoRegion()
 });
 
 // Log OpenSearch database_id resolution at startup (for KB creation)
@@ -3614,7 +3615,7 @@ async function provisionUserAsync(userId, token) {
       instruction: maiaInstruction,
       modelId: modelId.trim(), // Ensure no whitespace
       projectId: projectId.trim(), // Ensure no whitespace
-      region: process.env.DO_REGION || 'tor1',
+      region: getDoRegion(),
       maxTokens: 16384,
       topP: 1,
       temperature: 0.1,
@@ -6324,7 +6325,7 @@ async function setupKnowledgeBase(userId, kbName, filesInKB, bucketName, existin
         spaces_data_source: {
           bucket_name: bucketName,
           item_path: buildKbDataSourcePath(userId, kbName, null, useEphemeralSpaces),
-          region: process.env.DO_REGION || 'tor1'
+          region: getDoRegion()
         }
       }
     ];
@@ -6336,7 +6337,7 @@ async function setupKnowledgeBase(userId, kbName, filesInKB, bucketName, existin
         databaseId: databaseId,
         bucketName: bucketName,
         datasources,
-        region: process.env.DO_REGION || 'tor1'
+        region: getDoRegion()
       };
       
       // Add embedding model ID if provided
@@ -6422,7 +6423,7 @@ app.post('/api/update-knowledge-base', async (req, res) => {
     const bucketName = bucketUrl.split('//')[1]?.split('.')[0] || 'maia';
     const useEphemeralSpaces = shouldUseEphemeralSpaces();
     let indexingBucketName = bucketName;
-    let indexingRegion = process.env.DO_REGION || 'tor1';
+    let indexingRegion = getDoRegion();
     let ephemeralContext = null;
     let spacesConfig = null;
 

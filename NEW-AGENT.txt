@@ -382,3 +382,7 @@ OpenSearch is created as part of provisioning; one cluster per account, shared b
 ## Embedding model (Knowledge base)
 embedding_model: GTE Large EN v1.5
 The app resolves this display name to a model UUID at runtime via the DigitalOcean GenAI models API (DIGITALOCEAN_TOKEN). Used when creating new knowledge bases. Optional env override: DO_EMBEDDING_MODEL_ID.
+
+## App Platform Settings
+DO_REGION=tor1
+PORT=3001

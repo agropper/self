@@ -7,6 +7,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { findUserAgent } from '../utils/agent-helper.js';
 import { getProjectIdForGenAI } from '../utils/project-config.js';
+import { getDoRegion } from '../utils/new-agent-config.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -284,7 +285,7 @@ export async function ensureUserAgent(doClient, cloudant, userDoc) {
       instruction,
       modelId: modelId.trim(),
       projectId: projectId.trim(),
-      region: process.env.DO_REGION || 'tor1',
+      region: getDoRegion(),
       maxTokens: 16384,
       topP: 1,
       temperature: 0.1,

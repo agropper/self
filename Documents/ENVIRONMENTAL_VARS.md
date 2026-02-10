@@ -11,13 +11,13 @@ Canonical public URL of the app. Drives passkey origin/rpID, CORS allowed origin
 **When do we need a PASSKEY_RPID override?** When the passkey “relying party ID” must differ from the hostname derived from `PUBLIC_APP_URL` (e.g. you serve the app at `app.example.com` but want rpID `example.com`, or you use a custom domain that doesn’t match the default slice).
 
 **PORT=3001**  
-HTTP port the Node server listens on. Defaults to 3001; Vite dev proxy uses this when proxying API requests to the backend.
+HTTP port the Node server listens on. Read from NEW-AGENT.txt (## App Platform Settings) when set there; otherwise from env; default 3001. Vite dev proxy uses this when proxying API requests to the backend.
 
 **USE_COUCHDB_DROPLET=true**  
 When `'true'`, the app uses a CouchDB instance on a DigitalOcean droplet (discovered via DO API) instead of `CLOUDANT_*`; Cloudant client is configured with the droplet’s URL. When false, Cloudant is configured from `CLOUDANT_URL` (and related env).
 
 **DO_REGION=tor1**  
-DigitalOcean region (e.g. `tor1`). Used by the DO client and for Spaces/GenAI region selection; falls back to `SPACES_REGION` or `'tor1'` when unset.
+DigitalOcean region (e.g. `tor1`). Read from NEW-AGENT.txt (## App Platform Settings) when set there; otherwise from env; default `tor1`. Used by the DO client and for Spaces/GenAI region selection.
 **Do we need SPACES_REGION?** It is used as a fallback in `server/utils/storage-config.js` and in one place in `server/index.js` (before `DO_REGION`). If you set `DO_REGION`, you don’t need `SPACES_REGION`; it’s only for environments that already use the older Spaces-specific name.
 
 **DO_EMBEDDING_MODEL_ID=**  

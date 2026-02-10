@@ -1,6 +1,8 @@
-/** Region used for Spaces (DO_REGION or SPACES_REGION). */
+import { getDoRegion } from './new-agent-config.js';
+
+/** Region used for Spaces (env DO_REGION/SPACES_REGION or NEW-AGENT.txt App Platform Settings). */
 export function getSpacesRegion() {
-  return process.env.DO_REGION || process.env.SPACES_REGION || 'tor1';
+  return process.env.DO_REGION || process.env.SPACES_REGION || getDoRegion();
 }
 
 /** Derived Spaces endpoint from region; no env var needed. */
@@ -26,10 +28,7 @@ export function normalizeStorageEnv() {
     process.env.DIGITALOCEAN_AWS_ACCESS_KEY_ID;
   const secretAccessKey =
     process.env.DIGITALOCEAN_AWS_SECRET_ACCESS_KEY;
-  const region =
-    process.env.DO_REGION ||
-    process.env.SPACES_REGION ||
-    'tor1';
+  const region = getSpacesRegion();
 
   if (accessKeyId) {
     process.env.DIGITALOCEAN_AWS_ACCESS_KEY_ID = accessKeyId;
