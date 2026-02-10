@@ -9345,8 +9345,11 @@ if (isProduction) {
         console.log(`📦 [CATCH-ALL] Serving static asset: ${req.path}`);
         return res.sendFile(filePath);
       } else {
-        // File doesn't exist - return 404 (don't serve index.html for missing assets)
+        // File doesn't exist - return 404 with text/plain so browsers don't treat it as HTML
+        // (Express's .send() defaults to text/html, which causes "disallowed MIME type" in Firefox for script loads)
         console.log(`❌ [CATCH-ALL] Static asset not found: ${req.path}`);
+        res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+        res.setHeader('Cache-Control', 'no-store');
         return res.status(404).send('Asset not found');
       }
     }

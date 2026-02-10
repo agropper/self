@@ -19,5 +19,14 @@ app.use(Quasar, {
   }
 });
 
-app.mount('#app');
+// Defer mount until page is fully loaded to avoid "Layout was forced before the page was fully loaded"
+// and reduce flash of unstyled content (FOUC), especially in Firefox
+function mountApp() {
+  app.mount('#app');
+}
+if (document.readyState === 'complete') {
+  mountApp();
+} else {
+  window.addEventListener('load', mountApp);
+}
 
