@@ -1443,6 +1443,7 @@ const loadProviders = async () => {
     if (providers.value.length > 0) {
       if (providers.value.includes('digitalocean')) {
         selectedProvider.value = providerLabels.digitalocean;
+        showPrivateUnavailableDialog.value = false; // clear in case it was shown before refetch
       } else {
         showPrivateUnavailableDialog.value = true;
         selectFirstNonPrivateProvider();
@@ -1458,6 +1459,7 @@ const loadProviders = async () => {
     providers.value = fallbackProviders;
     if (providers.value.includes('digitalocean')) {
       selectedProvider.value = providerLabels.digitalocean;
+      showPrivateUnavailableDialog.value = false;
     } else {
       showPrivateUnavailableDialog.value = true;
       selectFirstNonPrivateProvider();
@@ -1486,6 +1488,7 @@ watch(
     if (!available.length) return;
     if (available.includes('digitalocean')) {
       selectedProvider.value = providerLabels.digitalocean;
+      showPrivateUnavailableDialog.value = false; // Private AI is available
       return;
     }
     if (getProviderKey(selectedProvider.value) === 'digitalocean') {
@@ -1494,6 +1497,16 @@ watch(
     }
   },
   { immediate: true }
+);
+
+// When agent becomes ready (e.g. after wizard Stage 1 or indexing), refetch providers so Private AI appears
+watch(
+  () => userResourceStatus.value?.hasAgent,
+  (hasAgent, prevHasAgent) => {
+    if (hasAgent && !prevHasAgent) {
+      loadProviders();
+    }
+  }
 );
 
 // Token estimation helper
@@ -4483,6 +4496,8 @@ const startSetupWizardPolling = () => {
         agentSetupPollingActive.value = false;
         stopAgentSetupTimer();
         updateContextualTip();
+        // Refetch providers so Private AI appears without page reload (await so UI updates before we return)
+        await loadProviders();
         return;
       }
 

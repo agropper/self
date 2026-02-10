@@ -5,6 +5,7 @@
 import { ChatClient } from '../../lib/chat-client/index.js';
 import { DigitalOceanProvider } from '../../lib/chat-client/providers/digitalocean.js';
 import { getOrCreateAgentApiKey, recreateAgentApiKey } from '../utils/agent-helper.js';
+import { ensureUserAgent } from './auth.js';
 
 const isPlainObject = (value) => value && typeof value === 'object' && !Array.isArray(value);
 
@@ -427,11 +428,21 @@ export default function setupChatRoutes(app, chatClient, cloudant, doClient) {
   app.get('/api/chat/providers', async (req, res) => {
     let providers = chatClient.getAvailableProviders();
     const userId = req.session?.userId;
-    if (userId && cloudant) {
+    if (userId && cloudant && doClient) {
       try {
-        const userDoc = await cloudant.getDocument('maia_users', userId);
-        const hasAgentDeployed = userDoc?.workflowStage === 'agent_deployed' ||
+        let userDoc = await cloudant.getDocument('maia_users', userId);
+        let hasAgentDeployed = userDoc?.workflowStage === 'agent_deployed' ||
           (userDoc?.assignedAgentId && userDoc?.agentEndpoint);
+        // If user has a KB (or active workflow) but no agent yet, create agent so it can become ready
+        if (!hasAgentDeployed && (userDoc?.kbId || userDoc?.workflowStage === 'active' || userDoc?.workflowStage === 'files_archived' || userDoc?.workflowStage === 'indexing')) {
+          try {
+            userDoc = await ensureUserAgent(doClient, cloudant, userDoc);
+            hasAgentDeployed = userDoc?.workflowStage === 'agent_deployed' ||
+              !!(userDoc?.assignedAgentId && userDoc?.agentEndpoint);
+          } catch (ensureErr) {
+            console.warn('[chat/providers] ensureUserAgent failed:', ensureErr?.message);
+          }
+        }
         if (!hasAgentDeployed) {
           if (providers.includes('digitalocean')) {
             console.log(`[chat/providers] Excluding Private AI for ${userId}: workflowStage=${userDoc?.workflowStage ?? 'undefined'} assignedAgentId=${userDoc?.assignedAgentId ? 'set' : 'unset'} agentEndpoint=${userDoc?.agentEndpoint ? 'set' : 'unset'}`);

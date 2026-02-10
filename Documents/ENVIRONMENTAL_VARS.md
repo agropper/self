@@ -63,7 +63,7 @@ API key for the OpenAI/ChatGPT chat provider. The server uses `OPENAI_API_KEY` o
 **No longer used.** Private AI (digitalocean) is available only when the user’s GenAI agent is deployed (Stage 1). The server uses the per-user agent API key from the user document (via `getOrCreateAgentApiKey`), not a global env key. You can remove this from `.env` and cloud environment variables.
 
 **DO_PROJECT_ID=**  
-DigitalOcean project UUID that owns agents/KBs. Required for GenAI API calls (agents, knowledge bases, indexing) and referenced in auth and server routes; can be discovered via `scripts/extract-do-ids.js`.
+Optional. DigitalOcean project UUID that owns agents/KBs. When unset, the app discovers it at runtime via the DO API: it uses the account’s default project (GET /v2/projects/default) or the first project from the list. Set this in `.env` only if you need to pin a specific project; otherwise leave it unset and the app will resolve it using `DIGITALOCEAN_TOKEN`.
 
 **DIGITALOCEAN_TOKEN=**  
 DigitalOcean API token (OAuth or PAT). Used by the DigitalOcean client for management APIs: agents, knowledge bases, indexing, Spaces, and (when `USE_COUCHDB_DROPLET` is true) CouchDB droplet discovery. Required for provisioning and backend DO operations.

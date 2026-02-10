@@ -23,6 +23,7 @@ import { findUserAgent, getOrCreateAgentApiKey } from './utils/agent-helper.js';
 import { normalizeStorageEnv, getSpacesEndpoint, getSpacesBucketName } from './utils/storage-config.js';
 import { getOpenSearchDatabaseId } from './utils/opensearch-config.js';
 import { getEmbeddingModelIdForKb } from './utils/embedding-model-config.js';
+import { getProjectIdForGenAI } from './utils/project-config.js';
 import setupAuthRoutes from './routes/auth.js';
 import setupChatRoutes from './routes/chat.js';
 import setupFileRoutes from './routes/files.js';
@@ -3264,6 +3265,11 @@ async function provisionUserAsync(userId, token) {
       }
     }
 
+    // If still no valid project, resolve via API (default or first project)
+    if (!isValidUUID(projectId)) {
+      projectId = await getProjectIdForGenAI(doClient) || projectId;
+    }
+
     // If still no valid model, try to list models
     if (!isValidUUID(modelId)) {
       try {
@@ -6284,8 +6290,8 @@ async function setupKnowledgeBase(userId, kbName, filesInKB, bucketName, existin
       };
     }
 
-    // Get required values: projectId from env; databaseId from opensearch-config; embedding from NEW-AGENT.txt (resolved via DO API) or DO_EMBEDDING_MODEL_ID
-    const projectId = process.env.DO_PROJECT_ID;
+    // Get required values: projectId from env or DO API; databaseId from opensearch-config; embedding from NEW-AGENT.txt (resolved via DO API) or DO_EMBEDDING_MODEL_ID
+    const projectId = await getProjectIdForGenAI(doClient);
     const databaseId = getOpenSearchDatabaseId();
     const embeddingModelId = await getEmbeddingModelIdForKb(doClient) || null;
     
@@ -6300,7 +6306,7 @@ async function setupKnowledgeBase(userId, kbName, filesInKB, bucketName, existin
     if (!isValidUUID(projectId)) {
       return { 
         error: 'PROJECT_ID_NOT_CONFIGURED', 
-        message: 'DO_PROJECT_ID environment variable is required and must be a valid UUID. Please set DO_PROJECT_ID in your .env file and restart the server.' 
+        message: 'Project ID is required for KB creation. Set DO_PROJECT_ID in .env or ensure your DO account has a (default) project; the app can discover it via the API.' 
       };
     }
     

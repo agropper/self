@@ -6,6 +6,7 @@ import { readFileSync } from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { findUserAgent } from '../utils/agent-helper.js';
+import { getProjectIdForGenAI } from '../utils/project-config.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -92,18 +93,7 @@ async function resolveModelAndProject(doClient) {
   }
 
   if (!isValidUUID(projectId)) {
-    try {
-      const projectsResponse = await doClient.request('/v2/projects');
-      const projects = projectsResponse.projects || projectsResponse.data?.projects || [];
-      if (projects.length > 0) {
-        const selectedProject = projects[0];
-        if (selectedProject?.id && isValidUUID(selectedProject.id)) {
-          projectId = selectedProject.id;
-        }
-      }
-    } catch (error) {
-      // Continue
-    }
+    projectId = await getProjectIdForGenAI(doClient) || projectId;
   }
 
   return { modelId, projectId };
@@ -267,7 +257,7 @@ function formatTempUserId(name, suffix) {
   return `${base}${suffix}`;
 }
 
-async function ensureUserAgent(doClient, cloudant, userDoc) {
+export async function ensureUserAgent(doClient, cloudant, userDoc) {
   if (!userDoc) return userDoc;
   const userId = userDoc.userId;
   if (!userId) return userDoc;
