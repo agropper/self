@@ -1877,7 +1877,7 @@ const refreshWizardState = async () => {
           if (!wizardStage1Complete.value) {
             wizardStage1Complete.value = true;
           }
-          // Refetch providers so Private AI appears without page reload
+          // Refetch only on transition (keeps existing behavior)
           if (!wasReady) {
             loadProviders();
           }
@@ -1896,6 +1896,11 @@ const refreshWizardState = async () => {
         hasFilesInKB: !!statusResult?.hasFilesInKB,
         workflowStage: statusResult?.workflowStage || null
       };
+      // Whenever server says agent is ready, ensure providers list includes Private AI (no reliance on one-time transitions)
+      const agentReady = !!(statusResult?.hasAgent || statusResult?.agentReady);
+      if (agentReady && !providers.value.includes('digitalocean')) {
+        await loadProviders();
+      }
     }
 
     if (filesResponse.ok) {
