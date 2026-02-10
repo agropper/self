@@ -89,12 +89,15 @@
                   </div>
                 </div>
 
+                <p v-if="showAuth && welcomeBackPasskeyUserId" class="text-body2 text-center text-primary q-mb-md">
+                  Welcome back. Sign in with your passkey for <strong>{{ welcomeBackPasskeyUserId }}</strong>.
+                </p>
                 <PasskeyAuth
                   v-if="showAuth"
                   :prefill-user-id="passkeyPrefillUserId"
                   :prefill-action="passkeyPrefillAction"
                   @authenticated="handleAuthenticated"
-                  @cancelled="showAuth = false"
+                  @cancelled="onPasskeyAuthCancelled"
                 />
               </q-card-section>
             </q-card>
@@ -434,6 +437,8 @@ const destroyConfirm = ref('');
 const destroyLoading = ref(false);
 const passkeyPrefillUserId = ref<string | null>(null);
 const passkeyPrefillAction = ref<'signin' | 'register' | null>(null);
+/** When set, we showed PasskeyAuth for a returning passkey user (from Get Started + local snapshot). */
+const welcomeBackPasskeyUserId = ref<string | null>(null);
 const showPasskeyDialog = ref(false);
 const showDormantDialog = ref(false);
 const dormantDeepLinkCount = ref(0);
@@ -514,6 +519,11 @@ const setAuthenticatedUser = (userData: any, deepLink: DeepLinkInfo | null = nul
   }
 };
 
+const onPasskeyAuthCancelled = () => {
+  showAuth.value = false;
+  welcomeBackPasskeyUserId.value = null;
+};
+
 const handleAuthenticated = (userData: any) => {
   const pendingDeepLink =
     deepLinkShareId.value
@@ -561,6 +571,7 @@ const resetAuthState = () => {
   showAuth.value = false;
   passkeyPrefillUserId.value = null;
   passkeyPrefillAction.value = null;
+  welcomeBackPasskeyUserId.value = null;
   showPasskeyDialog.value = false;
   showDeepLinkAccess.value = !!deepLinkShareId.value;
 
@@ -1027,6 +1038,25 @@ const startTemporarySession = async () => {
   try {
     const lastSnapshotUserId = getLastSnapshotUserId();
     if (lastSnapshotUserId) {
+      // If the stored user has a passkey, guide them to sign in instead of restoring as temporary
+      try {
+        const checkResponse = await fetch(`/api/passkey/check-user?userId=${encodeURIComponent(lastSnapshotUserId)}`, {
+          credentials: 'include'
+        });
+        if (checkResponse.ok) {
+          const checkData = await checkResponse.json();
+          if (checkData.exists && checkData.hasPasskey) {
+            passkeyPrefillUserId.value = lastSnapshotUserId;
+            passkeyPrefillAction.value = 'signin';
+            welcomeBackPasskeyUserId.value = lastSnapshotUserId;
+            showAuth.value = true;
+            return;
+          }
+        }
+      } catch (_) {
+        // If check fails, continue with restore flow
+      }
+
       const agentResponse = await fetch(`/api/agent-exists?userId=${encodeURIComponent(lastSnapshotUserId)}`);
       const agentData = agentResponse.ok ? await agentResponse.json() : null;
       if (agentData && agentData.exists) {
