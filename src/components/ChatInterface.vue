@@ -594,6 +594,32 @@
       v-if="canAccessMyStuff"
     />
 
+    <!-- Needs indexing prompt: agent exists, files exist, but KB not attached/indexed -->
+    <q-dialog v-model="showNeedsIndexingPrompt" persistent>
+      <q-card style="min-width: 420px; max-width: 520px">
+        <q-card-section>
+          <div class="text-h6">Index Your Records</div>
+        </q-card-section>
+        <q-card-section class="q-pt-none text-body2">
+          You have imported records that are not indexed for access by your Private AI.
+        </q-card-section>
+        <q-card-actions align="right" class="q-gutter-sm">
+          <q-btn
+            flat
+            label="NOT YET"
+            color="grey-8"
+            @click="showNeedsIndexingPrompt = false"
+          />
+          <q-btn
+            unelevated
+            label="INDEX NOW"
+            color="primary"
+            @click="handleNeedsIndexingIndexNow"
+          />
+        </q-card-actions>
+      </q-card>
+    </q-dialog>
+
     <!-- Document Chooser Dialog -->
     <q-dialog v-model="showDocumentChooser" persistent>
       <q-card style="min-width: 400px">
@@ -799,6 +825,7 @@ const pendingPageLink = ref<{ pageNum: number; bucketKey?: string } | null>(null
 const availableUserFiles = ref<Array<{ fileName: string; bucketKey: string; fileType?: string }>>([]);
 const loadingUserFiles = ref(false);
 const showAgentSetupDialog = ref(false);
+const showNeedsIndexingPrompt = ref(false);
 const agentSetupStatus = ref('');
 const agentSetupElapsed = ref(0);
 const agentSetupTimedOut = ref(false);
@@ -1090,11 +1117,13 @@ watch(
 );
 watch(
   () => showAgentSetupDialog.value,
-  (isOpen) => {
+  (isOpen, wasOpen) => {
     if (isOpen) {
       wizardSlideIndex.value = 0;
       void loadWizardMessages();
       void positionWizardInlineDots();
+    } else if (wasOpen) {
+      nextTick(() => void checkAndShowNeedsIndexingPrompt());
     }
   }
 );
@@ -1135,6 +1164,40 @@ const startRestoreIndexing = async () => {
   } finally {
     restoreIndexingQueued.value = false;
   }
+};
+
+/** Check if user has agent + files but no KB attached/indexed; if so, show the needs-indexing prompt. */
+const checkAndShowNeedsIndexingPrompt = async () => {
+  if (!props.user?.userId || props.rehydrationActive || isDeepLink.value) return;
+  try {
+    const response = await fetch(`/api/user-status?userId=${encodeURIComponent(props.user.userId)}`, {
+      credentials: 'include'
+    });
+    if (!response.ok) return;
+    const data = await response.json();
+    const hasAgent = !!data.hasAgent;
+    const fileCount = Number(data.fileCount) || 0;
+    const kbStatus = data.kbStatus || 'none';
+    const hasFilesInKB = !!data.hasFilesInKB;
+    const needsIndexing =
+      hasAgent &&
+      fileCount > 0 &&
+      (kbStatus === 'none' || kbStatus === 'not_attached' || !hasFilesInKB);
+    if (needsIndexing) {
+      showNeedsIndexingPrompt.value = true;
+    }
+  } catch {
+    // ignore
+  }
+};
+
+/** INDEX NOW from needs-indexing prompt: open wizard and start indexing. */
+const handleNeedsIndexingIndexNow = async () => {
+  showNeedsIndexingPrompt.value = false;
+  wizardDismissed.value = false;
+  showAgentSetupDialog.value = true;
+  await nextTick();
+  await startRestoreIndexing();
 };
 
 const handleRehydrationComplete = async (payload: { hasInitialFile: boolean }) => {
@@ -2212,6 +2275,38 @@ const dismissWizard = () => {
   wizardDismissed.value = true;
   showAgentSetupDialog.value = false;
   stopAgentSetupTimer();
+};
+
+/** Show prompt when agent exists, files exist, but KB is not attached/indexed. */
+const checkAndShowNeedsIndexingPrompt = async () => {
+  if (!props.user?.userId || isDeepLink.value || props.rehydrationActive) return;
+  try {
+    const res = await fetch(`/api/user-status?userId=${encodeURIComponent(props.user.userId)}`, {
+      credentials: 'include'
+    });
+    if (!res.ok) return;
+    const data = await res.json();
+    const hasAgent = !!data.hasAgent;
+    const fileCount = Number(data.fileCount) || 0;
+    const kbStatus = data.kbStatus || 'none';
+    const hasFilesInKB = !!data.hasFilesInKB;
+    const needsIndexing =
+      hasAgent &&
+      fileCount > 0 &&
+      (kbStatus === 'none' || kbStatus === 'not_attached' || !hasFilesInKB);
+    if (needsIndexing) {
+      showNeedsIndexingPrompt.value = true;
+    }
+  } catch (_) {
+    // ignore
+  }
+};
+
+const handleNeedsIndexingIndexNow = async () => {
+  showNeedsIndexingPrompt.value = false;
+  wizardDismissed.value = false;
+  showAgentSetupDialog.value = true;
+  await startRestoreIndexing();
 };
 
 const stage3IndexingPoll = ref<ReturnType<typeof setInterval> | null>(null);
@@ -4850,7 +4945,8 @@ onMounted(async () => {
   if (!isDeepLink.value) {
     startSetupWizardPolling();
     updateContextualTip();
-    
+    setTimeout(() => void checkAndShowNeedsIndexingPrompt(), 800);
+
     // Update tip immediately when context changes (no polling needed for these)
     watch(() => savedChatCount.value, () => {
       updateContextualTip();
@@ -4870,6 +4966,7 @@ onMounted(async () => {
           wizardStage2Pending.value = false;
           refreshWizardState();
         }
+        void checkAndShowNeedsIndexingPrompt();
       }
     });
     
@@ -4965,6 +5062,11 @@ onMounted(async () => {
       console.error('Error processing pending medications edit:', err);
       sessionStorage.removeItem('pendingMedicationsEdit');
     }
+  }
+
+  // On load/reload: if agent + files but no KB indexed, show needs-indexing prompt after a short delay
+  if (!isDeepLink.value && props.user?.userId) {
+    setTimeout(() => checkAndShowNeedsIndexingPrompt(), 1200);
   }
 });
 
