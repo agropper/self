@@ -64,8 +64,8 @@
                       flat
                       dense
                       color="primary"
-                      label="Use Passkey Instead"
-                      @click="() => { passkeyPrefillUserId = null; passkeyPrefillAction = null; showAuth = true; }"
+                      label="Other Account Options"
+                      @click="showOtherAccountOptionsDialog = true"
                     />
                   </div>
 
@@ -126,6 +126,44 @@
       </q-page>
     </q-page-container>
     
+    <!-- Other Account Options (from welcome: backup+delete, delete only, cancel) -->
+    <q-dialog v-model="showOtherAccountOptionsDialog" persistent>
+      <q-card style="min-width: 420px; max-width: 520px">
+        <q-card-section>
+          <div class="text-h6">Other Account Options</div>
+        </q-card-section>
+        <q-card-actions vertical align="stretch" class="q-gutter-sm">
+          <q-btn
+            flat
+            color="primary"
+            label="Sign in with passkey"
+            class="text-center"
+            @click="openPasskeyFromOtherOptions"
+          />
+          <q-btn
+            unelevated
+            color="primary"
+            label="BACK UP LOCALLY and DELETE CLOUD ACCOUNT (account can be recovered)"
+            class="text-center"
+            @click="startAccountClosure('backup-and-delete')"
+          />
+          <q-btn
+            flat
+            color="grey-8"
+            label="DELETE ACCOUNT without LOCAL BACKUP (a new account will be needed)"
+            class="text-center"
+            @click="startAccountClosure('delete-only')"
+          />
+          <q-btn
+            flat
+            label="CANCEL"
+            color="primary"
+            @click="closeOtherAccountOptions"
+          />
+        </q-card-actions>
+      </q-card>
+    </q-dialog>
+
     <!-- Privacy Dialog -->
     <PrivacyDialog v-model="showPrivacyDialog" />
 
@@ -458,6 +496,8 @@ const showDevicePrivacyDialog = ref(false);
 const showSharedDeviceWarning = ref(false);
 const deviceChoiceResolved = ref(false);
 const sharedComputerMode = ref(false);
+const showOtherAccountOptionsDialog = ref(false);
+const pendingAccountAction = ref<'backup-and-delete' | 'delete-only' | null>(null);
 
 const $q = useQuasar();
 
@@ -522,9 +562,69 @@ const setAuthenticatedUser = (userData: any, deepLink: DeepLinkInfo | null = nul
 const onPasskeyAuthCancelled = () => {
   showAuth.value = false;
   welcomeBackPasskeyUserId.value = null;
+  pendingAccountAction.value = null;
+};
+
+const closeOtherAccountOptions = () => {
+  showOtherAccountOptionsDialog.value = false;
+};
+
+const openPasskeyFromOtherOptions = () => {
+  showOtherAccountOptionsDialog.value = false;
+  passkeyPrefillUserId.value = null;
+  passkeyPrefillAction.value = null;
+  showAuth.value = true;
+};
+
+const startAccountClosure = (action: 'backup-and-delete' | 'delete-only') => {
+  pendingAccountAction.value = action;
+  showOtherAccountOptionsDialog.value = false;
+  passkeyPrefillUserId.value = null;
+  passkeyPrefillAction.value = 'signin';
+  showAuth.value = true;
+};
+
+const runPendingAccountClosure = async () => {
+  const action = pendingAccountAction.value;
+  pendingAccountAction.value = null;
+  showAuth.value = false;
+  if (!user.value?.userId) return;
+  try {
+    if (action === 'backup-and-delete') {
+      await saveLocalSnapshot(null);
+      await fetch('/api/account/dormant', { method: 'POST', credentials: 'include' });
+      await performSignOut();
+    } else if (action === 'delete-only') {
+      const response = await fetch('/api/self/delete', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ userId: user.value.userId })
+      });
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({}));
+        throw new Error(data.error || 'Failed to delete account');
+      }
+      await performSignOut();
+    }
+  } catch (error) {
+    console.error('Account closure error:', error);
+    if (typeof window !== 'undefined' && $q?.notify) {
+      $q.notify({
+        type: 'negative',
+        message: error instanceof Error ? error.message : 'Account closure failed',
+        timeout: 5000
+      });
+    }
+  }
 };
 
 const handleAuthenticated = (userData: any) => {
+  if (pendingAccountAction.value) {
+    setAuthenticatedUser(userData, null);
+    void runPendingAccountClosure();
+    return;
+  }
   const pendingDeepLink =
     deepLinkShareId.value
       ? { shareId: deepLinkShareId.value, chatId: null }
@@ -572,6 +672,7 @@ const resetAuthState = () => {
   passkeyPrefillUserId.value = null;
   passkeyPrefillAction.value = null;
   welcomeBackPasskeyUserId.value = null;
+  pendingAccountAction.value = null;
   showPasskeyDialog.value = false;
   showDeepLinkAccess.value = !!deepLinkShareId.value;
 
