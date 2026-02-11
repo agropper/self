@@ -2277,38 +2277,6 @@ const dismissWizard = () => {
   stopAgentSetupTimer();
 };
 
-/** Show prompt when agent exists, files exist, but KB is not attached/indexed. */
-const checkAndShowNeedsIndexingPrompt = async () => {
-  if (!props.user?.userId || isDeepLink.value || props.rehydrationActive) return;
-  try {
-    const res = await fetch(`/api/user-status?userId=${encodeURIComponent(props.user.userId)}`, {
-      credentials: 'include'
-    });
-    if (!res.ok) return;
-    const data = await res.json();
-    const hasAgent = !!data.hasAgent;
-    const fileCount = Number(data.fileCount) || 0;
-    const kbStatus = data.kbStatus || 'none';
-    const hasFilesInKB = !!data.hasFilesInKB;
-    const needsIndexing =
-      hasAgent &&
-      fileCount > 0 &&
-      (kbStatus === 'none' || kbStatus === 'not_attached' || !hasFilesInKB);
-    if (needsIndexing) {
-      showNeedsIndexingPrompt.value = true;
-    }
-  } catch (_) {
-    // ignore
-  }
-};
-
-const handleNeedsIndexingIndexNow = async () => {
-  showNeedsIndexingPrompt.value = false;
-  wizardDismissed.value = false;
-  showAgentSetupDialog.value = true;
-  await startRestoreIndexing();
-};
-
 const stage3IndexingPoll = ref<ReturnType<typeof setInterval> | null>(null);
 const stage3IndexingPending = ref(false);
 const stage3IndexingStartedAt = ref<number | null>(null);
