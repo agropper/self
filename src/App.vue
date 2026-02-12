@@ -42,8 +42,14 @@
                 <div class="text-h6 text-center q-mb-sm">
                   Welcome to MAIA
                 </div>
+                <!-- User Status line (USER_AUTH.md §2): black / orange / green by type -->
                 <div class="text-center q-mb-md">
-                  <p class="q-ma-none">Sign in with your passkey or create a new account</p>
+                  <p
+                    class="q-ma-none text-body2"
+                    :style="welcomeUserType === 'new' ? { color: '#1a1a1a' } : welcomeUserType === 'local' ? { color: '#e65100' } : welcomeUserType === 'cloud' ? { color: '#2e7d32' } : {}"
+                  >
+                    {{ welcomeUserStatusLine }}
+                  </p>
                 </div>
 
                 <div v-if="!showAuth">
@@ -64,7 +70,7 @@
                       flat
                       dense
                       color="primary"
-                      label="Other Account Options"
+                      label="More Choices"
                       @click="showOtherAccountOptionsDialog = true"
                     />
                   </div>
@@ -126,40 +132,47 @@
       </q-page>
     </q-page-container>
     
-    <!-- Other Account Options (from welcome: backup+delete, delete only, cancel) -->
+    <!-- More Choices: content depends on cookie (local only / passkey) or new client -->
     <q-dialog v-model="showOtherAccountOptionsDialog" persistent>
       <q-card style="min-width: 420px; max-width: 520px">
         <q-card-section>
-          <div class="text-h6">Other Account Options</div>
+          <div class="text-h6">More Choices</div>
         </q-card-section>
-        <q-card-actions vertical align="stretch" class="q-gutter-sm">
+        <!-- Local-only cookie: DELETE LOCAL STORAGE or CANCEL -->
+        <q-card-actions v-if="welcomeStatus.tempCookieUserId && !welcomeStatus.tempCookieHasPasskey" vertical align="stretch" class="q-gutter-sm">
           <q-btn
-            flat
-            color="primary"
-            label="Sign in with passkey"
+            unelevated
+            color="negative"
+            label="DELETE LOCAL STORAGE (destroys the account)"
             class="text-center"
-            @click="openPasskeyFromOtherOptions"
+            @click="handleDeleteLocalStorageOnly"
           />
+          <q-btn flat label="CANCEL" color="primary" @click="closeOtherAccountOptions" />
+        </q-card-actions>
+        <!-- Passkey cookie: DELETE CLOUD options (require passkey) or CANCEL -->
+        <q-card-actions v-else-if="welcomeStatus.tempCookieUserId && welcomeStatus.tempCookieHasPasskey" vertical align="stretch" class="q-gutter-sm">
           <q-btn
             unelevated
             color="primary"
-            label="BACK UP LOCALLY and DELETE CLOUD ACCOUNT (account can be recovered)"
+            label="DELETE CLOUD ACCOUNT and KEEP LOCAL BACKUP (account can be recovered)"
             class="text-center"
             @click="startAccountClosure('backup-and-delete')"
           />
           <q-btn
             flat
             color="grey-8"
-            label="DELETE ACCOUNT without LOCAL BACKUP (a new account will be needed)"
+            label="DELETE CLOUD ACCOUNT and LOCAL BACKUP (a new account will be needed)"
             class="text-center"
             @click="startAccountClosure('delete-only')"
           />
-          <q-btn
-            flat
-            label="CANCEL"
-            color="primary"
-            @click="closeOtherAccountOptions"
-          />
+          <q-btn flat label="CANCEL" color="primary" @click="closeOtherAccountOptions" />
+        </q-card-actions>
+        <!-- New client: sign in with passkey or delete options (require sign-in) -->
+        <q-card-actions v-else vertical align="stretch" class="q-gutter-sm">
+          <q-btn flat color="primary" label="Sign in with passkey" class="text-center" @click="openPasskeyFromOtherOptions" />
+          <q-btn unelevated color="primary" label="BACK UP LOCALLY and DELETE CLOUD ACCOUNT (account can be recovered)" class="text-center" @click="startAccountClosure('backup-and-delete')" />
+          <q-btn flat color="grey-8" label="DELETE ACCOUNT without LOCAL BACKUP (a new account will be needed)" class="text-center" @click="startAccountClosure('delete-only')" />
+          <q-btn flat label="CANCEL" color="primary" @click="closeOtherAccountOptions" />
         </q-card-actions>
       </q-card>
     </q-dialog>
@@ -401,7 +414,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted } from 'vue';
+import { ref, computed, onMounted, onUnmounted } from 'vue';
 import VueMarkdown from 'vue-markdown-render';
 
 // Store route check interval and event listener for cleanup (must be at top level)
@@ -498,6 +511,111 @@ const deviceChoiceResolved = ref(false);
 const sharedComputerMode = ref(false);
 const showOtherAccountOptionsDialog = ref(false);
 const pendingAccountAction = ref<'backup-and-delete' | 'delete-only' | null>(null);
+/** [AUTH] Welcome status: from /api/welcome-status and localStorage (for status line and flow branching). */
+const welcomeStatus = ref<{
+  authenticated?: boolean;
+  userId?: string;
+  isTemporary?: boolean;
+  tempCookieUserId?: string;
+  tempCookieHasPasskey?: boolean;
+  cloudFileCount?: number;
+  cloudIndexedCount?: number;
+}>({});
+const welcomeLocalUserId = ref<string | null>(null);
+/** When we have only local storage (no cookie), true if that userId has a passkey (Cloud User). */
+const welcomeLocalHasPasskey = ref<boolean | null>(null);
+/** [AUTH] Local snapshot details (files indexed, medications/summary verified); loaded when welcomeLocalUserId is set. */
+const welcomeLocalSnapshot = ref<{
+  fileCount: number;
+  indexedCount: number;
+  medicationsVerified: boolean;
+  summaryVerified: boolean;
+} | null>(null);
+
+/** [AUTH] Classify welcome into New / Local / Cloud for status line and copy (USER_AUTH.md §1–2). */
+const welcomeUserType = computed(() => {
+  const localId = welcomeLocalUserId.value;
+  const ws = welcomeStatus.value;
+  const cookieUserId = ws.tempCookieUserId;
+  const cookieHasPasskey = ws.tempCookieHasPasskey;
+  const localHasPasskey = welcomeLocalHasPasskey.value;
+  if (!localId && !cookieUserId) return 'new' as const;
+  if (cookieUserId && cookieHasPasskey) return 'cloud' as const;
+  if (cookieUserId && !cookieHasPasskey) return 'local' as const;
+  if (localId && localHasPasskey === true) return 'cloud' as const;
+  if (localId) return 'local' as const;
+  return 'new' as const;
+});
+
+/** [AUTH] Single User Status line below "Welcome to MAIA" (USER_AUTH.md §2). */
+const welcomeUserStatusLine = computed(() => {
+  const type = welcomeUserType.value;
+  const localId = welcomeLocalUserId.value;
+  const snap = welcomeLocalSnapshot.value;
+  const ws = welcomeStatus.value;
+  if (type === 'new') return 'Sign in with your passkey or create a new account';
+  if (type === 'local') {
+    const userId = ws.tempCookieUserId || localId || '';
+    const X = snap?.indexedCount ?? 0;
+    return `${userId} has ${X} local files indexed to be restored. Click Get Started.`;
+  }
+  const userId = ws.tempCookieUserId || localId || '';
+  return `${userId} has an encrypted local backup available. Click More Choices instead of Get Started if your passkey does not work.`;
+});
+
+/** [AUTH] New client = no local backup and no temp cookie. */
+const isNewClient = computed(() => !welcomeLocalUserId.value && !welcomeStatus.value.tempCookieUserId);
+
+/** [AUTH] Load welcome-status and localStorage for status line and branching. */
+const loadWelcomeStatus = async () => {
+  welcomeLocalUserId.value = getLastSnapshotUserId();
+  welcomeLocalSnapshot.value = null;
+  welcomeLocalHasPasskey.value = null;
+  const localId = welcomeLocalUserId.value;
+  if (localId) {
+    try {
+      const [snapshot, passkeyRes] = await Promise.all([
+        getUserSnapshot(localId),
+        fetch(`/api/passkey/check-user?userId=${encodeURIComponent(localId)}`, { credentials: 'include' })
+      ]);
+      if (passkeyRes.ok) {
+        const passkeyData = await passkeyRes.json();
+        welcomeLocalHasPasskey.value = !!passkeyData.hasPasskey;
+      }
+      if (snapshot) {
+        const fileStatusSummary = snapshot.fileStatusSummary || snapshot.files || [];
+        const fileCount = Array.isArray(fileStatusSummary) ? fileStatusSummary.length : 0;
+        const indexedCount = Array.isArray(snapshot.fileStatusSummary)
+          ? snapshot.fileStatusSummary.filter((f: any) => f?.chipStatus === 'indexed').length
+          : 0;
+        welcomeLocalSnapshot.value = {
+          fileCount,
+          indexedCount,
+          medicationsVerified: !!(snapshot.currentMedications != null && String(snapshot.currentMedications).trim() !== ''),
+          summaryVerified: !!(snapshot.patientSummary != null && String(snapshot.patientSummary).trim() !== '')
+        };
+      }
+    } catch (_) {
+      welcomeLocalSnapshot.value = null;
+    }
+  }
+  try {
+    const res = await fetch('/api/welcome-status', { credentials: 'include' });
+    if (!res.ok) return;
+    const data = await res.json();
+    if (data.authenticated && data.userId) return;
+    welcomeStatus.value = {
+      tempCookieUserId: data.tempCookieUserId || undefined,
+      tempCookieHasPasskey: data.tempCookieHasPasskey,
+      cloudFileCount: data.cloudFileCount,
+      cloudIndexedCount: data.cloudIndexedCount
+    };
+  } catch (e) {
+    if (typeof console !== 'undefined' && console.warn) {
+      console.warn('[AUTH] welcome-status failed:', e);
+    }
+  }
+};
 
 const $q = useQuasar();
 
@@ -567,6 +685,40 @@ const onPasskeyAuthCancelled = () => {
 
 const closeOtherAccountOptions = () => {
   showOtherAccountOptionsDialog.value = false;
+};
+
+/** [AUTH] Local-only cookie: restore session then show destroy dialog. */
+const handleDeleteLocalStorageOnly = async () => {
+  const uid = welcomeStatus.value.tempCookieUserId;
+  if (!uid) return;
+  showOtherAccountOptionsDialog.value = false;
+  tempStartLoading.value = true;
+  tempStartError.value = '';
+  try {
+    const res = await fetch('/api/temporary/restore', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify({ userId: uid })
+    });
+    const data = await res.json();
+    if (!res.ok || !data.authenticated || !data.user) {
+      throw new Error(data.error || 'Could not restore session');
+    }
+    setAuthenticatedUser(data.user, null);
+    destroyConfirm.value = '';
+    showDestroyDialog.value = true;
+    if (typeof console !== 'undefined' && console.log) {
+      console.log('[AUTH] Restored local-only session for destroy:', uid);
+    }
+  } catch (e) {
+    tempStartError.value = e instanceof Error ? e.message : 'Failed to restore session';
+    if (typeof console !== 'undefined' && console.warn) {
+      console.warn('[AUTH] Delete local storage restore failed:', e);
+    }
+  } finally {
+    tempStartLoading.value = false;
+  }
 };
 
 const openPasskeyFromOtherOptions = () => {
@@ -679,6 +831,7 @@ const resetAuthState = () => {
   if (typeof document !== 'undefined') {
     document.title = DEFAULT_TITLE;
   }
+  void loadWelcomeStatus();
 };
 
 const saveLocalSnapshot = async (snapshot?: SignOutSnapshot | null) => {
@@ -765,9 +918,15 @@ const handleSharedWarningOk = () => {
 };
 
 const handleGetStarted = () => {
-  const lastSnapshotUserId = getLastSnapshotUserId();
-  if (!lastSnapshotUserId && !deviceChoiceResolved.value) {
-    showDevicePrivacyDialog.value = true;
+  if (typeof console !== 'undefined' && console.log) {
+    console.log('[AUTH] Get Started: newClient=', isNewClient.value, 'deviceResolved=', deviceChoiceResolved.value);
+  }
+  if (isNewClient.value) {
+    if (!deviceChoiceResolved.value) {
+      showDevicePrivacyDialog.value = true;
+      return;
+    }
+    startTemporarySession();
     return;
   }
   startTemporarySession();
@@ -1398,6 +1557,10 @@ onMounted(async () => {
     }
   } catch (error) {
     console.error('Auth check error:', error);
+  }
+
+  if (!share) {
+    void loadWelcomeStatus();
   }
 
   if (share) {

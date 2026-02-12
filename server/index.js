@@ -5486,6 +5486,24 @@ app.get('/api/user-files', async (req, res) => {
       }
     }
 
+    // Canonical indexing state for Saved Files as source of truth (INDEXING_SAVED_FILES_SOURCE_OF_TRUTH.md)
+    const indexedSet = new Set(kbIndexedBucketKeys);
+    const kbFiles = files.filter(f => f.inKnowledgeBase);
+    const allKbFilesIndexed = kbFiles.length === 0 || kbFiles.every(f => (f.bucketKey && indexedSet.has(f.bucketKey)));
+    const userDocSaysIndexed = kbIndexedBucketKeys.length > 0 || !!userDoc.kbIndexingStatus?.backendCompleted;
+    const doSaysIndexed = typeof kbIndexedDataSourceCount === 'number' && kbIndexedDataSourceCount > 0;
+    const discrepancy = userDocSaysIndexed !== doSaysIndexed;
+    const indexingState = {
+      allKbFilesIndexed,
+      discrepancy,
+      ...(discrepancy ? {
+        discrepancyMessage: userDocSaysIndexed && !doSaysIndexed
+          ? 'Your saved indexing state does not match the server. The server may be temporarily unavailable or out of sync.'
+          : 'The server reports indexed content but your account does not. Your list may be out of date.',
+        suggestedFix: 'Open Saved Files and click INDEX NOW to re-run indexing, or refresh the page to reload state.'
+      } : {})
+    };
+
     const response = {
       success: true,
       files: files,
@@ -5499,7 +5517,8 @@ app.get('/api/user-files', async (req, res) => {
       kbName: kbName,
       kbLastIndexedAt: kbLastIndexedAt,
       kbIndexedBucketKeys,
-      kbIndexingStatus: userDoc.kbIndexingStatus || null
+      kbIndexingStatus: userDoc.kbIndexingStatus || null,
+      indexingState
     };
 
     // Intentionally quiet: no debug logging on file listing
@@ -6844,6 +6863,8 @@ app.post('/api/update-knowledge-base', async (req, res) => {
     let finished = false;
     let pollTimer = null;
     let notFoundLogged = false;
+    let lastKbStatusKey = '';
+    let errorPollLogged = false;
 
     const clearPollTimer = () => {
       if (pollTimer) {
@@ -7049,12 +7070,15 @@ const runPoll = async () => {
 
            if (isCompleted) {
             console.log(`[KB AUTO] ✅ Completion detected for job ${activeJobId} (status=${status})`);
-             console.log(`[KB AUTO] ✅ Detected completion for job ${activeJobId} (poll ${pollCount})`);
             await completeIndexing(job, fileCount, tokens, indexedFiles, 'status_completed');
             await logFinalIndexingStatus('completed_status');
              return;
            }
-          console.log(`[KB Status] job=${activeJobId} poll=${pollCount}/${maxPolls} status=${status} files=${fileCount} tokens=${tokens}`);
+          const statusKey = `${status}|${fileCount}|${tokens}`;
+          if (statusKey !== lastKbStatusKey) {
+            lastKbStatusKey = statusKey;
+            console.log(`[KB Status] job=${activeJobId} poll=${pollCount}/${maxPolls} status=${status} files=${fileCount} tokens=${tokens}`);
+          }
         } else {
           if (!notFoundLogged) {
             console.log(`[KB AUTO] ⚠️ Job ${activeJobId} not found in list (reason=not_found jobs=${jobsArray.length})`);
@@ -7113,8 +7137,11 @@ const runPoll = async () => {
            }
          }
        } catch (error) {
-        console.log(`[KB Status] job=${activeJobId} poll=${pollCount}/${maxPolls} status=error files=? tokens=? error=${error.message}`);
-         console.error(`[KB AUTO] ❌ Error polling indexing status (poll ${pollCount}):`, error.message);
+        if (!errorPollLogged) {
+          errorPollLogged = true;
+          console.log(`[KB Status] job=${activeJobId} poll=${pollCount}/${maxPolls} status=error files=? tokens=? error=${error.message}`);
+          console.error(`[KB AUTO] ❌ Error polling indexing status (poll ${pollCount}):`, error.message);
+        }
          if (isRateLimitError(error) && pollCount > 0) {
            pollCount -= 1; // do not count this attempt when rate limited
          }
@@ -8114,7 +8141,16 @@ app.get('/api/user-status', async (req, res) => {
         hasFilesInKB = false;
       }
     }
-    
+    // Fallback: DO API can fail (e.g. 404 "Failed to list indexing jobs") or be out of sync.
+    // Saved Files uses userDoc.kbIndexedBucketKeys; if we have that or backendCompleted, treat as indexed
+    // so the "Index your records" modal does not show when Saved Files already shows indexed records.
+    if (!hasFilesInKB && userDoc.kbIndexingStatus?.backendCompleted === true) {
+      hasFilesInKB = true;
+    }
+    if (!hasFilesInKB && Array.isArray(userDoc.kbIndexedBucketKeys) && userDoc.kbIndexedBucketKeys.length > 0) {
+      hasFilesInKB = true;
+    }
+
     const agentReady = !!(userDoc.assignedAgentId && userDoc.agentEndpoint);
     logWizAttachCheck(
       `user-status:${userId}`,

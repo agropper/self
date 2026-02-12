@@ -1027,6 +1027,42 @@ export default function setupAuthRoutes(app, passkeyService, cloudant, doClient,
     }
   });
 
+  // Welcome page: session or temp cookie status (for [AUTH] status line and flow branching)
+  app.get('/api/welcome-status', async (req, res) => {
+    try {
+      if (req.session?.userId) {
+        return res.json({
+          authenticated: true,
+          userId: req.session.userId,
+          isTemporary: !!req.session.isTemporary
+        });
+      }
+      const cookieUserId = req.cookies?.[TEMP_USER_COOKIE];
+      if (cookieUserId && typeof cookieUserId === 'string') {
+        try {
+          const userDoc = await cloudant.getDocument('maia_users', cookieUserId);
+          const hasPasskey = !!userDoc?.credentialID;
+          const cloudFileCount = Array.isArray(userDoc?.files) ? userDoc.files.length : 0;
+          const cloudIndexedCount = Array.isArray(userDoc?.kbIndexedBucketKeys)
+            ? userDoc.kbIndexedBucketKeys.length
+            : (userDoc?.kbIndexedAt ? cloudFileCount : 0);
+          return res.json({
+            tempCookieUserId: cookieUserId,
+            tempCookieHasPasskey: hasPasskey,
+            cloudFileCount,
+            cloudIndexedCount
+          });
+        } catch (err) {
+          return res.json({ tempCookieUserId: cookieUserId, tempCookieHasPasskey: false });
+        }
+      }
+      return res.json({});
+    } catch (error) {
+      console.error('[AUTH] welcome-status error:', error?.message || error);
+      res.status(500).json({});
+    }
+  });
+
   // Current user
   app.get('/api/current-user', (req, res) => {
     if (!req.session || !req.session.userId) {

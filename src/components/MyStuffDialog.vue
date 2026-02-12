@@ -1090,6 +1090,30 @@
         </q-card-actions>
       </q-card>
     </q-dialog>
+
+    <!-- Indexing discrepancy: user doc and DO API disagree (Saved Files source of truth) -->
+    <q-dialog v-model="showIndexingDiscrepancyModal" persistent>
+      <q-card style="min-width: 420px; max-width: 560px">
+        <q-card-section>
+          <div class="text-h6">Indexing state mismatch</div>
+        </q-card-section>
+        <q-card-section class="q-pt-none text-body2">
+          <p class="q-ma-none">{{ indexingDiscrepancyMessage }}</p>
+          <p class="q-mt-sm q-mb-none text-weight-medium">Suggested fix:</p>
+          <p class="q-ma-none">{{ indexingDiscrepancySuggestedFix }}</p>
+        </q-card-section>
+        <q-card-actions align="right">
+          <q-btn
+            unelevated
+            label="INDEX NOW"
+            color="primary"
+            :loading="indexingKB"
+            :disable="indexingKB"
+            @click="handleDiscrepancyIndexNow"
+          />
+        </q-card-actions>
+      </q-card>
+    </q-dialog>
   </q-dialog>
 </template>
 
@@ -1147,6 +1171,8 @@ interface Props {
   wizardActive?: boolean;
   /** When true and dialog opens on summary tab, trigger one requestNewSummary() then clear (avoids duplicate with wizard). */
   requestSummaryOnOpen?: boolean;
+  /** When true and dialog opens, switch to Saved Files and run updateAndIndexKB (e.g. from discrepancy modal INDEX NOW). */
+  triggerIndexNowOnOpen?: boolean;
 }
 
 const props = withDefaults(defineProps<Props>(), {
@@ -1157,6 +1183,7 @@ const props = withDefaults(defineProps<Props>(), {
 });
 
 const emit = defineEmits<{
+  'index-now-triggered': [];
   'update:modelValue': [value: boolean];
   'chat-selected': [chat: SavedChat];
   'indexing-started': [data: { jobId: string; phase: string }];
@@ -1270,6 +1297,9 @@ const summaryNeedsVerify = ref(false);
 const showSummaryAttention = computed(() => showWizardSummaryActions.value || summaryNeedsVerify.value);
 const kbDataSourceCount = ref<number | null>(null);
 const kbIndexedDataSourceCount = ref<number | null>(null);
+const showIndexingDiscrepancyModal = ref(false);
+const indexingDiscrepancyMessage = ref('');
+const indexingDiscrepancySuggestedFix = ref('');
 
 // Rehydration flow (temporary account restore)
 const rehydrationQueue = ref<Array<{ fileName?: string; bucketKey?: string; fileSize?: number; uploadedAt?: string; chipStatus?: string; kbName?: string | null; isInitial?: boolean }>>([]);
@@ -1612,7 +1642,12 @@ const loadFiles = async () => {
         clearWizardPendingStorage();
       }
     }
-    
+
+    if (result.indexingState?.discrepancy && !props.triggerIndexNowOnOpen) {
+      indexingDiscrepancyMessage.value = result.indexingState.discrepancyMessage || 'Your indexing state does not match the server.';
+      indexingDiscrepancySuggestedFix.value = result.indexingState.suggestedFix || 'Open Saved Files and click INDEX NOW to re-run indexing, or refresh the page.';
+      showIndexingDiscrepancyModal.value = true;
+    }
   } catch (err) {
     filesError.value = err instanceof Error ? err.message : 'Failed to load files';
   } finally {
@@ -2205,6 +2240,14 @@ const deleteFile = async (file: UserFile) => {
   } finally {
     updatingFiles.value.delete(file.bucketKey);
   }
+};
+
+/** INDEX NOW from discrepancy modal: switch to Saved Files tab and start indexing. */
+const handleDiscrepancyIndexNow = async () => {
+  showIndexingDiscrepancyModal.value = false;
+  currentTab.value = 'files';
+  await nextTick();
+  await updateAndIndexKB();
 };
 
 const updateAndIndexKB = async () => {
@@ -2885,7 +2928,7 @@ const handleReplaceSummaryByIndex = async (indexToReplace: number) => {
     
     newSummaryToReplace.value = '';
   } catch (error) {
-    console.error('[Summary] Error saving summary:', error);
+    console.error('Error saving summary:', error);
     if ($q && typeof $q.notify === 'function') {
       $q.notify({
         type: 'negative',
@@ -2938,7 +2981,7 @@ const handleReplaceSummary = async (replaceStrategy: 'keep' | 'oldest' | 'newest
     
     newSummaryToReplace.value = '';
   } catch (error) {
-    console.error('[Summary] Error saving summary:', error);
+    console.error('Error saving summary:', error);
     if ($q && typeof $q.notify === 'function') {
       $q.notify({
         type: 'negative',
@@ -3126,7 +3169,7 @@ const swapSummary = async (index: number) => {
       });
     }
   } catch (error) {
-    console.error('[Summary] Error swapping summary:', error);
+    console.error('Error swapping summary:', error);
     if ($q && typeof $q.notify === 'function') {
       $q.notify({
         type: 'negative',
@@ -4826,8 +4869,6 @@ const requestNewSummary = async () => {
   summaryError.value = '';
 
   try {
-    console.log('[Summary] Requesting new patient summary...');
-    
     const response = await fetch('/api/generate-patient-summary', {
       method: 'POST',
       headers: {
@@ -4845,8 +4886,7 @@ const requestNewSummary = async () => {
     }
 
     const result = await response.json();
-    console.log('[Summary] Patient summary generated:', result);
-    
+
     // Use server's summary count (from generate response) so we don't rely on stale client state
     const summaryCount = result.summaries?.length ?? patientSummaries.value.length;
     const hasEmptySlots = summaryCount < 3;
@@ -4861,7 +4901,7 @@ const requestNewSummary = async () => {
       showReplaceSummaryDialog.value = true;
     }
   } catch (error) {
-    console.error('[Summary] Error generating patient summary:', error);
+    console.error('Error generating patient summary:', error);
     summaryError.value = error instanceof Error ? error.message : 'Failed to generate patient summary';
     
     if ($q && typeof $q.notify === 'function') {
@@ -4943,7 +4983,7 @@ const saveSummaryFromTab = async () => {
       });
     }
   } catch (error) {
-    console.error('[Summary] Error saving summary:', error);
+    console.error('Error saving summary:', error);
     const message = error instanceof Error ? error.message : 'Failed to save patient summary';
     if ($q && typeof $q.notify === 'function') {
       $q.notify({
@@ -5120,6 +5160,13 @@ watch(() => props.modelValue, async (newValue) => {
           emit('request-summary-done');
         }, 300);
       });
+    }
+
+    if (props.triggerIndexNowOnOpen) {
+      currentTab.value = 'files';
+      await nextTick();
+      await updateAndIndexKB();
+      emit('index-now-triggered');
     }
   }
 });

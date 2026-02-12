@@ -430,6 +430,9 @@ export default function setupChatRoutes(app, chatClient, cloudant, doClient) {
     }
   });
 
+  /** Log "Excluding Private AI" at most once per userId per process. */
+  const excludedPrivateAILogged = new Set();
+
   /**
    * List available chat providers
    * GET /api/chat/providers
@@ -486,7 +489,10 @@ export default function setupChatRoutes(app, chatClient, cloudant, doClient) {
         }
         if (!hasAgentDeployed) {
           if (providers.includes('digitalocean')) {
-            console.log(`[chat/providers] Excluding Private AI for ${userId}: workflowStage=${userDoc?.workflowStage ?? 'undefined'} assignedAgentId=${userDoc?.assignedAgentId ? 'set' : 'unset'} agentEndpoint=${userDoc?.agentEndpoint ? 'set' : 'unset'}`);
+            if (!excludedPrivateAILogged.has(userId)) {
+              excludedPrivateAILogged.add(userId);
+              console.log(`[chat/providers] Excluding Private AI for ${userId}: workflowStage=${userDoc?.workflowStage ?? 'undefined'} assignedAgentId=${userDoc?.assignedAgentId ? 'set' : 'unset'} agentEndpoint=${userDoc?.agentEndpoint ? 'set' : 'unset'}`);
+            }
           }
           providers = providers.filter((p) => p !== 'digitalocean');
         }

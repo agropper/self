@@ -1,129 +1,169 @@
 # User authentication: sign-in, sign-out, and account types
 
-This document describes the two kinds of users, how anonymous users are offered passkey creation, what happens on account deletion/destruction, and how local backup affects the welcome and restore flows. It also lists auth-related modals and considers making the welcome page responsive to stored identity so passkey users are not sent into the file-restoration wizard.
+This document describes the two kinds of users, the welcome page (status line, GET STARTED, Other Account Options), passkey vs temporary flows, account deletion/destruction, and local backup/restore.
 
 ---
 
-## 1. Two kinds of users
+## 1. Three kinds of users
 
-### 1.1 User **with** passkey (persistent account)
+### 1.0 New User has neither a cookie nor local storage on this client.
+### 1.1 Local User has **no passkey** but has an **un-encrypted** local copy of temporary cloud stuff.
+### 1.2 Cloud User **has passkey** registered in the cloud, and may have an **encrypted** local copy as well.
 
-- **Server:** `maia_users` document has `credentialID` set; `temporaryAccount` is false (or absent).
-- **Session:** After sign-in via passkey, `req.session.isTemporary` is false.
-- **Sign-in:** User signs in via **Passkey** (WebAuthn). Can sign in from any device that has their passkey.
-- **Sign-out:** Session and cookies are cleared. No cookie is used to “remember” the user; they must sign in again with passkey.
-- **Local backup:** On “Go dormant” or “Keep server live” sign-out, the app may save a **local snapshot** (chats, file list, medications, summary) and set `localStorage` key `maia_last_snapshot_user` to that `userId`. This is used only to offer **restore** when the same user later starts a **temporary** session on the same device (see below). It does **not** by itself imply the user should use “Get Started” instead of “Sign in with Passkey.”
+## 2. The line below the "Welcome to MAIA" title is the **User Status** line.
 
-### 1.2 User **without** passkey (temporary / “local only” account)
+### 2.0 For New User it says: "Sign in with your passkey or create a new account" in black.
+### 2.1 For Local User it says: "<userId> has X local files indexed to be restored. Click Get Started" in orange.
+### 2.2 For Cloud User it says: "<userId> has an encrypted local backup available. Click More Choices instead of Get Started if your passkey does not work." in green.
 
-- **Server:** `maia_users` document has no `credentialID`; `temporaryAccount` is true.
-- **Session:** After “Get Started” or temporary restore, `req.session.isTemporary` is true.
-- **Cookie:** Server sets `maia_temp_user` (httpOnly, sameSite: lax, long-lived). On sign-out the server clears this cookie.
-- **Sign-in:** There is no passkey; “sign-in” is either:
-  - **Get Started** → new temporary user, or
-  - **Get Started** with existing local backup → **temporary/restore** (reuse same `userId` if agent still exists) then optionally **Restore Local Backup** dialog.
-- **Toolbar:** Shows **“Local only user: &lt;userId&gt;”** to indicate the account is device-bound and not protected by passkey.
-- **Sign-out:** Temporary sign-out dialog offers **SIGN OUT** (keep account for restore on this device), **CREATE A PASSKEY** (upgrade to persistent), or **DESTROY ACCOUNT** (permanent delete).
 
----
+## 3. How MAIA uses cookies
 
-## 2. How an anonymous user is offered a passkey
+If you are on a **private** computer and browser, MAIA uses a long-lasting cookie to sign-in and it *deletes* your private data, including your Private AI agent instructions, every time you "Sign-Out". An **un-encrypted** local copy of your account is kept by default. 
 
-- **Welcome (no deep link):** Card shows subtitle “Sign in with your passkey or create a new account” and:
-  - **[Get Started]** – starts temporary flow (device privacy dialog if needed, then new temp user or restore).
-  - **[Use Passkey Instead]** – opens `PasskeyAuth` with no prefill; user chooses “Sign in with Passkey” or “Create New Passkey”.
-- **PasskeyAuth (choose):**
-  - **Sign in with Passkey** → prompt for User ID → continue → WebAuthn authenticate → session set (persistent).
-  - **Create New Passkey** → prompt for User ID → continue → check-user → if already has passkey, error “Please sign in instead”; else WebAuthn register → session set (persistent).
-- **When temp user clicks “CREATE A PASSKEY” (from sign-out dialog):** App prefills `userId` and calls `/api/passkey/check-user`; if user already has passkey, prefill action is `signin`, else `register`. Passkey dialog opens; after success, user is persistent and sign-out dialog closes.
-- **Server:** `/api/passkey/check-user?userId=...` returns `{ exists, hasPasskey, isAdminUser }`. Used to decide sign-in vs register and to block duplicate passkey registration.
+If you are on a **less-trusted** computer and browser, you must create and use a **passkey** every time you sign-in to MAIA. A cookie will be set so you do not have to re-enter your userId each time.
+
+(Future Feature) Passkey users can choose to create an **encrypted** local backup of their MAIA in case their cloud account is deleted. This backup does not include the health records files themselves which should be backed up separately or otherwise refreshed when you restore a MAIA and create a new userId and passkey. 
+
+<< Description of how the welcome page detects the presence of a local backup and requests a PIN for decryption.>>
 
 ---
 
-## 3. What happens when a user wants to delete or destroy their account
+## Implementation note: code changes to match sections 1–2
 
-### 3.1 Temporary user (no passkey)
+### Local storage vs cookie
 
-- **Sign out dialog** (opened from toolbar SIGN OUT):
-  - **DESTROY ACCOUNT** → opens “Destroy Account” dialog (confirm by typing `userId`) → `POST /api/self/delete` with `userId` → server deletes user data (and agent/KB per implementation) → `resetAuthState()`, session cleared.
-  - **SIGN OUT** → save local snapshot (if not shared computer), `POST /api/sign-out` → session and `maia_temp_user` cookie cleared; account and agent remain for later restore on same device.
-  - **CREATE A PASSKEY** → add passkey then treat as persistent; future sign-out uses dormant/live flow.
+- **Local storage (and IndexedDB):** Client-only. The key `maia_last_snapshot_user` in `localStorage` holds the last `userId` that saved a snapshot on this device. The snapshot itself (chats, file list, medications, patient summary, which files are indexed) lives in **IndexedDB** per userId (e.g. `maia-user-<userId>`). The server never reads this. So “local storage” here means: this device has an **un-encrypted** local copy of that user’s MAIA data (today; encrypted backup is a future feature). We detect it via `getLastSnapshotUserId()` and optionally load details with `getUserSnapshot(userId)` (e.g. to get X = number of files indexed to restore).
+- **Cookie:** The server sets `maia_temp_user` when a user is created or restored in the **temporary** (no passkey) flow, and clears it on sign-out. The cookie is sent with every request so the server can say “this browser was last used by userId X” even when there is no active session. So the cookie is a **server-side identity hint** for this browser. We learn it from `GET /api/welcome-status`, which also tells us whether that user **has a passkey** (`tempCookieHasPasskey` from the user doc’s `credentialID`). So: cookie + no passkey → Local User (server “remembers” this device for that local-only account). Cookie + passkey → Cloud User (server remembers userId only; sign-in still requires passkey).
 
-### 3.2 User with passkey (persistent)
+### How the code will be changed
 
-- **Sign out** (toolbar SIGN OUT):
-  - If user has deep links: **Dormant dialog** → “KEEP SERVER LIVE” (sign out, keep KB/deep links) or “GO DORMANT” (save local snapshot, `POST /api/account/dormant` to delete KB and mark dormant, then sign out).
-  - If no deep links: same as “Go dormant” path (save snapshot, dormant, sign out).
-- **Destroy:** There is no “Destroy account” dialog for passkey users in the current UI; account deletion would require a separate flow (e.g. settings or admin).
+1. **Classify the welcome state** into one of: **New User**, **Local User**, **Cloud User**.
+   - **New User:** No cookie and no local storage (`!welcomeStatus.tempCookieUserId && !welcomeLocalUserId`). Same as current `isNewClient`.
+   - **Local User:** Has an un-encrypted local copy and no passkey. That means: (a) we have `welcomeLocalUserId` and that user has no passkey (need `GET /api/passkey/check-user?userId=<welcomeLocalUserId>` when we only have local and no cookie), or (b) we have a cookie with `tempCookieHasPasskey === false` (and optionally local backup for the same user).
+   - **Cloud User:** Has passkey. That means: cookie with `tempCookieHasPasskey === true`, or we have `welcomeLocalUserId` and passkey check returns `hasPasskey: true` (e.g. returning passkey user who also has a local snapshot; “encrypted” backup is future, but we still show the green Cloud message).
 
----
+2. **User Status line (single line, replace current multi-line [AUTH] block for this behavior):**
+   - **New User:** One line in **black**: “Sign in with your passkey or create a new account.” This can be the existing subtitle text; no separate status block, or a single status line in default/black.
+   - **Local User:** One line in **orange**: “&lt;userId&gt; has X local files indexed to be restored. Click Get Started.” Use `welcomeLocalUserId` for userId and `welcomeLocalSnapshot.indexedCount` for X (from existing snapshot load).
+   - **Cloud User:** One line in **green**: “&lt;userId&gt; has an encrypted local backup available. Click More Choices instead of Get Started if your passkey does not work.” Use cookie userId or `welcomeLocalUserId` as appropriate. (Encryption is future; copy can stay as-is.)
 
-## 4. What happens when the user opens the app and local data is found
+3. **Rename** the secondary button from “Other Account Options” to **“More Choices”** (label and dialog title).
 
-- **Source of “local data”:** `localStorage` key `maia_last_snapshot_user` is set whenever a **local snapshot** is saved (on sign-out for both temporary and passkey users, unless shared-computer mode or deep-link).
-- **No session:** User is not authenticated (e.g. after sign-out). Welcome card is shown (unless deep link).
+4. **Secondary button [More Choices] – options by user type (already implemented; logic stays, naming aligned):**
+   - **New User:** Sign in with passkey; BACK UP LOCALLY and DELETE CLOUD ACCOUNT (account can be recovered); DELETE ACCOUNT without LOCAL BACKUP (a new account will be needed); CANCEL.
+   - **Local User** (cookie, no passkey): DELETE LOCAL STORAGE (destroys the account); CANCEL. Flow: restore session for that userId, then open Destroy Account dialog; on confirm, `POST /api/self/delete` and sign out.
+   - **Cloud User** (cookie, passkey): DELETE CLOUD ACCOUNT and KEEP LOCAL BACKUP; DELETE CLOUD ACCOUNT and LOCAL BACKUP; CANCEL. First option does not require passkey in this dialog (backup then delete cloud); second requires passkey auth then full delete.
 
-### 4.1 User clicks **Get Started**
-
-1. **Device privacy:** If `deviceChoiceResolved` is false, **“Is this computer private to you?”** dialog is shown (PRIVATE / SHARED). SHARED shows a warning then continues.
-2. **`lastSnapshotUserId = getLastSnapshotUserId()`** (from `maia_last_snapshot_user`).
-3. **If `lastSnapshotUserId` is set:**
-   - App calls **`GET /api/agent-exists?userId=<lastSnapshotUserId>`**.
-   - **If agent exists:** App calls **`POST /api/temporary/restore`** with `{ userId: lastSnapshotUserId }`. Server does **not** check whether that user has a passkey; it restores the session as a **temporary** user (same `userId`, `isTemporary: true`). So a **passkey user** (e.g. angela94) who had signed out will be restored as “local only” and will see “Local only user: angela94” and then the **Restore Local Backup?** dialog and the **file restoration wizard**.
-   - **If agent does not exist:** **“Local Backup Found” / Missing agent** dialog: “We found a local backup for &lt;userId&gt;, but no matching agent.” Options: **CLEAR LOCAL STORAGE** or **START THE WIZARD AGAIN** (new temp user).
-4. **If `lastSnapshotUserId` is not set:** App creates a **new** temporary session via **`POST /api/temporary/start`**. If the server finds an existing `maia_temp_user` cookie and that user has a passkey, it returns `requiresPasskey: true` and the app shows the error and opens Passkey sign-in prefilled.
-5. **After temporary session is established:** If `lastSnapshotUserId === effectiveUserId`, app loads **getUserSnapshot(lastSnapshotUserId)** and, if a snapshot exists, shows **“Restore Local Backup?”** (SKIP / RESTORE). RESTORE sets rehydration state and can trigger the setup wizard in ChatInterface.
-
-### 4.2 Resulting bug (passkey user returns and clicks Get Started)
-
-- Passkey user (e.g. angela94) signs out → local snapshot is saved and `maia_last_snapshot_user = angela94`.
-- On return, they see [Get Started] and [Use Passkey Instead]. If they click **Get Started**, the app restores angela94 as a **temporary** user (because agent exists and `/api/temporary/restore` does not check passkey). They then see “Local only user: angela94” and the file restoration wizard instead of being guided to sign in with passkey.
+(Current code already branches the dialog on `welcomeStatus.tempCookieUserId` and `welcomeStatus.tempCookieHasPasskey` and “new client”; the only behavioral gap is classifying “Local” when we have *only* local storage and no cookie—then we must call `/api/passkey/check-user` for that `welcomeLocalUserId` to decide Local vs Cloud for the status line and copy.)
 
 ---
 
-## 5. Auth-related modals and action buttons
+## 2. Welcome page: status and APIs
+
+### 2.1 Data sources
+
+- **Local storage:** `maia_last_snapshot_user` (set when a local snapshot is saved). Read via `getLastSnapshotUserId()`.
+- **Cookie:** `maia_temp_user` — set when a temporary user is created or restored; cleared on sign-out.
+- **API:** `GET /api/welcome-status` (called when welcome is shown, and after sign-out via `resetAuthState()`).
+
+### 2.2 GET /api/welcome-status
+
+- If **session exists** (`req.session.userId`): returns `{ authenticated: true, userId, isTemporary }`. No cookie/local used.
+- Else if **cookie** `maia_temp_user` is set: loads user doc, returns `{ tempCookieUserId, tempCookieHasPasskey }` (passkey = has `credentialID`). Optionally includes cloud file counts for status line.
+- Else: returns `{}`.
+
+### 2.3 Welcome status line ([AUTH])
+
+Shown only when there is something to show:
+
+- **A – Local storage:** “Local backup: &lt;userId&gt;” (and optionally # files indexed to restore, medications/summary verified).
+- **B – Valid cookie:** “Cookie: &lt;userId&gt; (Yes with Passkey)” or “Cookie: &lt;userId&gt; (Yes, but local only)” (and optionally # files in cloud, # indexed).
+- **Get Started will do:** Short line describing what the primary button will do (e.g. “Create new local-only account”, “Restore session (local only)”, “Sign in with passkey required”).
+
+If neither A nor B, the status block is hidden.
+
+### 2.4 New client
+
+- **isNewClient** = no `welcomeLocalUserId` and no `welcomeStatus.tempCookieUserId`.
+- New client sees: primary **[GET STARTED]** (after device privacy dialog: “Is this computer private?” → then create new local-only account), secondary **[OTHER ACCOUNT OPTIONS]** (sign in with userId + passkey, or create passkey).
+
+---
+
+## 3. GET STARTED and Other Account Options
+
+### 3.1 GET STARTED
+
+- **New client** (`isNewClient`): If device choice not resolved → show “Is this computer private to you?” (PRIVATE / SHARED). Then `startTemporarySession()` → new temp user.
+- **Has local backup and/or cookie:** `startTemporarySession()`:
+  - If server restores from cookie or from local userId (agent exists) → session restored; if local snapshot exists, **Restore Local Backup?** (SKIP / RESTORE).
+  - If server returns `requiresPasskey: true` (cookie user has passkey) → show message and open Passkey sign-in.
+- **Valid cookie (B) and user clicks GET STARTED:** Local only → start restore wizard; Passkey → ask for biometric (passkey auth).
+
+### 3.2 Other Account Options dialog
+
+Depends on cookie type and new client:
+
+- **Cookie + local only:** [DELETE LOCAL STORAGE (destroys the account)], [CANCEL].  
+  **DELETE LOCAL STORAGE:** Restore session for `tempCookieUserId` (`POST /api/temporary/restore`), then open **Destroy Account** dialog (confirm by typing userId → `POST /api/self/delete`, then sign out).
+- **Cookie + passkey:** [DELETE CLOUD ACCOUNT and KEEP LOCAL BACKUP], [DELETE CLOUD ACCOUNT and LOCAL BACKUP] (requires passkey), [CANCEL].
+- **New client:** Sign in with passkey; BACK UP LOCALLY and DELETE CLOUD ACCOUNT; DELETE ACCOUNT without LOCAL BACKUP; CANCEL.
+
+---
+
+## 4. How an anonymous user is offered a passkey
+
+- **Welcome:** **[Get Started]** and **[Other Account Options]** (or “Use Passkey Instead” depending on copy). Other Account Options opens PasskeyAuth: “Sign in with Passkey” or “Create New Passkey.”
+- **PasskeyAuth:** Sign in with Passkey → User ID → Continue → WebAuthn. Create New Passkey → User ID → check-user → register or error if already has passkey.
+- **Temp user “CREATE A PASSKEY”:** Prefills userId, opens PasskeyAuth (signin or register per check-user).
+
+**Server:** `/api/passkey/check-user?userId=...` returns `{ exists, hasPasskey, isAdminUser }`.
+
+---
+
+## 5. Account deletion and destruction
+
+### 5.1 Temporary user (no passkey)
+
+- **Sign out dialog:** **DESTROY ACCOUNT** → Destroy Account dialog (type userId) → `POST /api/self/delete` → `resetAuthState()`.
+- **SIGN OUT** → save local snapshot (if not shared computer), `POST /api/sign-out`; cookie cleared; account remains for restore.
+- **CREATE A PASSKEY** → upgrade to persistent.
+
+### 5.2 User with passkey
+
+- **Sign out:** If deep links: Dormant dialog (KEEP SERVER LIVE / GO DORMANT). Else: save snapshot, dormant, sign out.
+- **Destroy:** Via Other Account Options when not signed in (DELETE CLOUD ACCOUNT and LOCAL BACKUP, etc.); when signed in, no in-app destroy in current UI (would require separate flow).
+
+---
+
+## 6. Local backup and restore
+
+- **Snapshot:** Saved on sign-out (unless shared computer or deep-link). Stored in IndexedDB per userId; `maia_last_snapshot_user` points to last userId.
+- **Get Started with local backup:** If `getLastSnapshotUserId()` is set, app calls `GET /api/agent-exists?userId=...`. If agent exists → `POST /api/temporary/restore` with that userId → session restored (temporary). Then **Restore Local Backup?** (SKIP / RESTORE). If agent does not exist → “Local Backup Found” / Missing agent dialog: CLEAR LOCAL STORAGE or START THE WIZARD AGAIN.
+- **New session, no local:** `POST /api/temporary/start`. If cookie exists and that user has passkey, server returns `requiresPasskey: true` and app opens Passkey sign-in.
+
+---
+
+## 7. Auth-related modals and action buttons
 
 | Location | Modal / dialog | Action buttons |
 |----------|----------------|----------------|
-| **Welcome (no deep link)** | Main card | **[Get Started]** – start temporary/restore flow. **[Use Passkey Instead]** – show PasskeyAuth (sign in or create passkey). |
-| **PasskeyAuth** | (inline on welcome or in dialog) | **Sign in with Passkey** → userId → **Continue** → WebAuthn. **Create New Passkey** → userId → **Continue** → WebAuthn. **Back** / **Cancel**. |
-| **Device privacy** | “Is this computer private to you?” | **SHARED** / **PRIVATE**. |
-| **Shared computer warning** | “Shared Computer Notice” | **OK**. |
-| **Temp sign-out** | “Sign Out” (temporary user) | **DESTROY ACCOUNT**, **CANCEL**, **SIGN OUT**, **CREATE A PASSKEY**. |
-| **Dormant (passkey user with deep links)** | “Sign Out Options” | **KEEP SERVER LIVE**, **GO DORMANT**. |
-| **Restore local backup** | “Restore Local Backup?” | **SKIP**, **RESTORE**. |
-| **Missing agent** | “Local Backup Found” (no agent for snapshot userId) | **CLEAR LOCAL STORAGE**, **START THE WIZARD AGAIN**. |
-| **Destroy account** | “Destroy Account” (confirm userId) | **DESTROY** (enabled when input matches userId). |
-| **Add a Passkey** (dialog for authenticated user) | “Add a Passkey” | PasskeyAuth content; **Cancel** closes. |
-| **Deep link (unauthenticated)** | “Join a Shared MAIA Chat” | DeepLinkAccess (name/email, etc.). |
+| **Welcome** | Main card | **[Get Started]** – temporary/restore or new. **[Other Account Options]** – passkey sign-in/register, delete/backup options. |
+| **Welcome** | [AUTH] status line | Local backup userId; Cookie userId (Passkey / Local only); what Get Started will do. |
+| **Other Account Options** | (depends on cookie/new client) | Delete local storage; Delete cloud + keep local; Delete cloud + local; Sign in / Create passkey; Cancel. |
+| **PasskeyAuth** | Sign in / Create passkey | User ID → Continue → WebAuthn. Back / Cancel. |
+| **Device privacy** | “Is this computer private to you?” | SHARED / PRIVATE. |
+| **Temp sign-out** | Sign Out (temporary user) | DESTROY ACCOUNT, SIGN OUT, CREATE A PASSKEY, CANCEL. |
+| **Dormant (passkey, deep links)** | Sign Out Options | KEEP SERVER LIVE, GO DORMANT. |
+| **Restore local backup** | Restore Local Backup? | SKIP, RESTORE. |
+| **Missing agent** | Local Backup Found (no agent for snapshot userId) | CLEAR LOCAL STORAGE, START THE WIZARD AGAIN. |
+| **Destroy account** | Destroy Account (confirm userId) | DESTROY (when input matches userId). |
 
 ---
 
-## 6. Making the welcome page responsive to stored identity
+## 8. Summary
 
-**Problem:** The welcome page always shows the same primary action **[Get Started]** and secondary **[Use Passkey Instead]**. When the device has a stored snapshot for a user who **has a passkey** (e.g. angela94), clicking “Get Started” incorrectly runs the temporary-restore flow and shows “Local only user” and the file restoration wizard.
-
-**Recommendation:**
-
-1. **On load (or when showing welcome),** if not authenticated and not in a deep link:
-   - Read **`lastSnapshotUserId = getLastSnapshotUserId()`**.
-   - If present, call **`GET /api/passkey/check-user?userId=<lastSnapshotUserId>`**.
-2. **If the user exists and has a passkey:**
-   - Treat this as “returning passkey user.” Prefer **Sign in with Passkey** as the primary path for that userId.
-   - Options:
-     - **A)** Show welcome with primary **[Sign in with Passkey]** (e.g. “Welcome back, sign in for &lt;userId&gt;”) and secondary **[Get Started]** / **[Use a different account]**.
-     - **B)** Keep two buttons but swap order or label: e.g. **[Sign in with Passkey for &lt;userId&gt;]** and **[Get Started with a new or other account]**.
-     - **C)** When user clicks **[Get Started]** and we have `lastSnapshotUserId` with passkey, **do not** call `/api/temporary/restore`; instead open PasskeyAuth with `prefillUserId = lastSnapshotUserId` and `prefillAction = 'signin'` (and optionally show a short message: “This device has data for &lt;userId&gt;. Sign in with your passkey to continue.”).
-3. **If the user has no passkey** (or no user / no snapshot): keep current behavior: **[Get Started]** runs temporary/restore or new temp user; **[Use Passkey Instead]** for passkey sign-in or registration.
-
-**Cookie note:** Sign-out clears `maia_temp_user`, so the only “stored identity” on the client after sign-out is **localStorage** `maia_last_snapshot_user`. Using that plus `/api/passkey/check-user` is enough to make the welcome page responsive so passkey users are not sent into the restoration wizard when they intended to sign in.
-
----
-
-## 7. Summary
-
-- **Two user types:** With passkey (persistent, sign-in via passkey) and without (temporary, “local only,” cookie + optional local backup).
-- **Anonymous:** Can create passkey via “Use Passkey Instead” → Create New Passkey, or start temporary via “Get Started.”
-- **Account deletion:** Temporary users can DESTROY ACCOUNT (confirm userId). Passkey users get dormant/live sign-out; no destroy in current UI.
-- **Local data:** `maia_last_snapshot_user` drives “restore” when starting a temporary session; currently the app does not check passkey status for that userId, so passkey users who click “Get Started” are wrongly restored as temporary and see the file restoration wizard.
-- **Fix:** Use `lastSnapshotUserId` + `/api/passkey/check-user` on welcome to prefer “Sign in with Passkey” when the stored user has a passkey, and avoid calling `/api/temporary/restore` for that userId in that case.
+- **Two user types:** With passkey (persistent) and without (temporary, “local only,” cookie + optional local backup).
+- **Welcome:** Status line from `getLastSnapshotUserId()` + `GET /api/welcome-status` (cookie userId, passkey yes/no). GET STARTED branches on new client vs local/cookie; Other Account Options branches on cookie type (local only vs passkey) or new client.
+- **Account deletion:** Temporary users can DESTROY ACCOUNT (including via “Delete local storage” from Other Account Options after restore). Passkey users: dormant/live sign-out; delete options from Other Account Options when not signed in.
+- **Local data:** `maia_last_snapshot_user` + optional snapshot in IndexedDB drive restore when starting a temporary session; cookie `maia_temp_user` drives “valid cookie” on welcome.

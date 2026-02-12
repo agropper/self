@@ -1,5 +1,7 @@
 # KB Management Logic Inventory (Current)
 
+**→ Consolidated in [KB_AND_INDEXING.md](./KB_AND_INDEXING.md). The following is kept for reference.**
+
 This document summarizes the current KB management logic. Per‑file datasources are
 no longer used; the KB uses a **single folder datasource**.
 

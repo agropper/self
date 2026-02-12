@@ -1,5 +1,7 @@
 # Knowledge base after account restore and file re-import
 
+**→ Consolidated in [KB_AND_INDEXING.md](./KB_AND_INDEXING.md). The following is kept for reference.**
+
 This document explains **whether and how** the knowledge base (KB) is recreated after an account is restored and files are re-imported (rehydration). It is based on a trace through the code.
 
 ---

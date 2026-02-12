@@ -1,5 +1,7 @@
 ## KB Management Source of Truth (Current)
 
+**→ Consolidated in [KB_AND_INDEXING.md](./KB_AND_INDEXING.md). The following is kept for reference.**
+
 This document describes the **current** KB architecture.
 It supersedes prior per‑file datasource guidance.
 
