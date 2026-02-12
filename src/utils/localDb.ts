@@ -87,6 +87,30 @@ export const clearLastSnapshotUserId = () => {
   window.localStorage.removeItem(LAST_SNAPSHOT_KEY);
 };
 
+/** Remove local snapshot for a user (destroy IndexedDB, clear last-snapshot key if it was this user). */
+export const clearUserSnapshot = async (userId: string) => {
+  if (!userId) return;
+  const key = `maia-user-${userId}`;
+  const db = dbCache.get(key);
+  if (db) {
+    try {
+      await db.destroy();
+    } finally {
+      dbCache.delete(key);
+    }
+  } else {
+    const tempDb = new PouchDB(key);
+    try {
+      await tempDb.destroy();
+    } finally {
+      dbCache.delete(key);
+    }
+  }
+  if (typeof window !== 'undefined' && window.localStorage && window.localStorage.getItem(LAST_SNAPSHOT_KEY) === userId) {
+    window.localStorage.removeItem(LAST_SNAPSHOT_KEY);
+  }
+};
+
 export const getUserSnapshot = async (userId: string) => {
   if (!userId) return null;
   const db = getUserDb(userId);

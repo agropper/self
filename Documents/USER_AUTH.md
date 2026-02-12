@@ -14,7 +14,7 @@ This document describes the two kinds of users, the welcome page (status line, G
 
 ### 2.0 For New User it says: "Sign in with your passkey or create a new account" in black.
 ### 2.1 For Local User it says: "<userId> has X local files indexed to be restored. Click Get Started" in orange.
-### 2.2 For Cloud User it says: "<userId> has an encrypted local backup available. Click More Choices instead of Get Started if your passkey does not work." in green.
+### 2.2 For Cloud User it says: "<userId> has a local backup available. Click More Choices instead of Get Started if your passkey does not work." in green. (Encryption is not implemented; the backup is stored un-encrypted—see the subsection “What is actually saved locally”.)
 
 
 ## 3. How MAIA uses cookies
@@ -46,7 +46,7 @@ If you are on a **less-trusted** computer and browser, you must create and use a
 2. **User Status line (single line, replace current multi-line [AUTH] block for this behavior):**
    - **New User:** One line in **black**: “Sign in with your passkey or create a new account.” This can be the existing subtitle text; no separate status block, or a single status line in default/black.
    - **Local User:** One line in **orange**: “&lt;userId&gt; has X local files indexed to be restored. Click Get Started.” Use `welcomeLocalUserId` for userId and `welcomeLocalSnapshot.indexedCount` for X (from existing snapshot load).
-   - **Cloud User:** One line in **green**: “&lt;userId&gt; has an encrypted local backup available. Click More Choices instead of Get Started if your passkey does not work.” Use cookie userId or `welcomeLocalUserId` as appropriate. (Encryption is future; copy can stay as-is.)
+   - **Cloud User:** One line in **green**: “&lt;userId&gt; has a local backup available. Click More Choices instead of Get Started if your passkey does not work.” Use cookie userId or `welcomeLocalUserId` as appropriate. No encryption is implemented; see “What is actually saved locally” in §2 Welcome page.
 
 3. **Rename** the secondary button from “Other Account Options” to **“More Choices”** (label and dialog title).
 
@@ -67,13 +67,24 @@ If you are on a **less-trusted** computer and browser, you must create and use a
 - **Cookie:** `maia_temp_user` — set when a temporary user is created or restored; cleared on sign-out.
 - **API:** `GET /api/welcome-status` (called when welcome is shown, and after sign-out via `resetAuthState()`).
 
-### 2.2 GET /api/welcome-status
+### 2.2 What is actually saved locally (implementation detail)
+
+The app does **not** encrypt the local backup. No PIN or encryption key is set or used.
+
+- **localStorage:** One key only: `maia_last_snapshot_user`. Its value is the **userId** of the last user who saved a snapshot on this device. Used by `getLastSnapshotUserId()` to show “this device has a backup for &lt;userId&gt;”.
+- **IndexedDB (via PouchDB):** One database per user: **`maia-user-<userId>`**. Each DB holds a single snapshot document:
+  - **Document id:** `user_snapshot`; **type:** `user_snapshot`.
+  - **Fields:** `user` (userId, displayName, isTemporary, isAdmin), `files` (full `/api/user-files` response: file list, kbName, indexed keys), `savedChats` (from `/api/user-chats`), `currentChat`, `currentMedications`, `patientSummary`, `initialFile`, `fileStatusSummary` (per-file indexed/pending/not_in_kb), `updatedAt`.
+- **When it’s written:** On sign-out, if not a shared computer and not a deep-link user, `saveLocalSnapshot()` fetches user-files, user-chats, user-status, patient-summary and writes the combined snapshot to IndexedDB, then sets `maia_last_snapshot_user` to that userId.
+- **Why the status line previously said “encrypted”:** The doc and UI copy described a future encrypted backup feature; encryption has never been implemented, so the status line was updated to say “local backup” only.
+
+### 2.3 GET /api/welcome-status
 
 - If **session exists** (`req.session.userId`): returns `{ authenticated: true, userId, isTemporary }`. No cookie/local used.
 - Else if **cookie** `maia_temp_user` is set: loads user doc, returns `{ tempCookieUserId, tempCookieHasPasskey }` (passkey = has `credentialID`). Optionally includes cloud file counts for status line.
 - Else: returns `{}`.
 
-### 2.3 Welcome status line ([AUTH])
+### 2.4 Welcome status line ([AUTH])
 
 Shown only when there is something to show:
 
@@ -83,7 +94,7 @@ Shown only when there is something to show:
 
 If neither A nor B, the status block is hidden.
 
-### 2.4 New client
+### 2.5 New client
 
 - **isNewClient** = no `welcomeLocalUserId` and no `welcomeStatus.tempCookieUserId`.
 - New client sees: primary **[GET STARTED]** (after device privacy dialog: “Is this computer private?” → then create new local-only account), secondary **[OTHER ACCOUNT OPTIONS]** (sign in with userId + passkey, or create passkey).
@@ -100,14 +111,16 @@ If neither A nor B, the status block is hidden.
   - If server returns `requiresPasskey: true` (cookie user has passkey) → show message and open Passkey sign-in.
 - **Valid cookie (B) and user clicks GET STARTED:** Local only → start restore wizard; Passkey → ask for biometric (passkey auth).
 
-### 3.2 Other Account Options dialog
+### 3.2 More Choices dialog
 
-Depends on cookie type and new client:
+The dialog title is **More Choices**. A context line under the title identifies the user type so only relevant actions are offered:
 
-- **Cookie + local only:** [DELETE LOCAL STORAGE (destroys the account)], [CANCEL].  
-  **DELETE LOCAL STORAGE:** Restore session for `tempCookieUserId` (`POST /api/temporary/restore`), then open **Destroy Account** dialog (confirm by typing userId → `POST /api/self/delete`, then sign out).
-- **Cookie + passkey:** [DELETE CLOUD ACCOUNT and KEEP LOCAL BACKUP], [DELETE CLOUD ACCOUNT and LOCAL BACKUP] (requires passkey), [CANCEL].
-- **New client:** Sign in with passkey; BACK UP LOCALLY and DELETE CLOUD ACCOUNT; DELETE ACCOUNT without LOCAL BACKUP; CANCEL.
+- **Cloud User (cookie + passkey):** Heading: “&lt;userId&gt; is a cloud user with a passkey.” Buttons:
+  - **DELETE CLOUD ACCOUNT and KEEP LOCAL BACKUP (account can be recovered):** Closes dialog and opens Passkey sign-in. After successful passkey auth, the app saves a fresh local snapshot (`saveLocalSnapshot`), calls `POST /api/account/dormant`, then signs out. The cloud account is put dormant; the local backup remains so the user can recover later.
+  - **DELETE CLOUD ACCOUNT and LOCAL BACKUP (a new account will be needed):** Closes dialog and opens Passkey sign-in. After successful passkey auth, the app calls `POST /api/self/delete` (with userId) then signs out. No local snapshot is saved first; account and local data are both gone.
+  - **CANCEL:** Closes the dialog.
+- **Local User (cookie, no passkey):** Heading: “&lt;userId&gt; is a local-only user (no passkey).” [DELETE LOCAL STORAGE (destroys the account)], [CANCEL]. DELETE LOCAL STORAGE: restore session for `tempCookieUserId` (`POST /api/temporary/restore`), then open Destroy Account dialog (confirm by typing userId → `POST /api/self/delete`, then sign out).
+- **New client:** Heading: “No account on this device. Sign in with a passkey or manage an existing account.” Sign in with passkey; BACK UP LOCALLY and DELETE CLOUD ACCOUNT; DELETE ACCOUNT without LOCAL BACKUP; CANCEL.
 
 ---
 

@@ -5491,8 +5491,11 @@ app.get('/api/user-files', async (req, res) => {
     const kbFiles = files.filter(f => f.inKnowledgeBase);
     const allKbFilesIndexed = kbFiles.length === 0 || kbFiles.every(f => (f.bucketKey && indexedSet.has(f.bucketKey)));
     const userDocSaysIndexed = kbIndexedBucketKeys.length > 0 || !!userDoc.kbIndexingStatus?.backendCompleted;
-    const doSaysIndexed = typeof kbIndexedDataSourceCount === 'number' && kbIndexedDataSourceCount > 0;
-    const discrepancy = userDocSaysIndexed !== doSaysIndexed;
+    const hasDoState = typeof kbIndexedDataSourceCount === 'number';
+    const doSaysIndexed = hasDoState && kbIndexedDataSourceCount > 0;
+    // Only report discrepancy when we have DO state; when DO says 0 but user doc says indexed and we have a folder ds, trust user doc (eventual consistency)
+    const trustUserWhenDoSaysZero = userDocSaysIndexed && kbDataSourceCount === 1 && kbIndexedDataSourceCount === 0;
+    const discrepancy = hasDoState && (userDocSaysIndexed !== doSaysIndexed) && !trustUserWhenDoSaysZero;
     const indexingState = {
       allKbFilesIndexed,
       discrepancy,

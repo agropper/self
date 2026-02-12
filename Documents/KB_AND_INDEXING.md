@@ -45,7 +45,11 @@ The **Saved Files** tab (My Stuff → Saved Files) is the source of truth for in
 The response includes **`indexingState`** (computed from user doc + DO in the same request):
 
 - **`allKbFilesIndexed`** – `true` iff every file with `inKnowledgeBase` (bucketKey in KB folder) has `bucketKey` in `kbIndexedBucketKeys`. This is exactly the condition under which Saved Files would show **no** “To be added and indexed” for in-KB files.
-- **`discrepancy`** – `true` when (user doc says “we have indexed data”: `kbIndexedBucketKeys.length > 0` or `kbIndexingStatus?.backendCompleted`) differs from (DO says “indexing job completed”: `kbIndexedDataSourceCount > 0` from folder datasource’s `last_datasource_indexing_job`).
+- **`discrepancy`** – `true` only when we have a definitive DO response **and** it disagrees with the user doc:
+  - User doc says indexed: `kbIndexedBucketKeys.length > 0` or `kbIndexingStatus?.backendCompleted`.
+  - DO says indexed: `kbIndexedDataSourceCount > 0` (folder datasource has `last_datasource_indexing_job`).
+  - If DO state is unavailable (`kbIndexedDataSourceCount` is null, e.g. DO API failed), we do **not** report discrepancy (avoid showing the modal when the server is temporarily unavailable).
+  - If DO says 0 but the user doc says indexed and we have a folder datasource (`kbDataSourceCount === 1`), we trust the user doc and do **not** report discrepancy (handles DO eventual consistency or missing `last_datasource_indexing_job` after a completed run).
 - When `discrepancy` is true the response also includes **`discrepancyMessage`** and **`suggestedFix`** (e.g. re-run indexing from Saved Files or refresh the page).
 
 ---
@@ -57,6 +61,7 @@ The response includes **`indexingState`** (computed from user doc + DO in the sa
 - **When:** `indexingState.discrepancy === true` after loading file state.
 - **Where:** (1) **Saved Files** – after `loadFiles()` in MyStuffDialog. (2) **Wizard** – when the wizard is displayed and the `user-files` response (with `source=wizard`) has `indexingState.discrepancy`.
 - **Content:** Same message and suggested fix in both places (from `discrepancyMessage` and `suggestedFix`).
+- **Why it could appear after sign-out/sign-in:** The modal was previously shown when the user document said “indexed” but the DO API said “not indexed” (e.g. DO returned no `last_datasource_indexing_job` or the DO call failed). That can happen if: (1) DO is temporarily unavailable so `kbIndexedDataSourceCount` stayed null and we treated it as “DO says not indexed”, or (2) DO’s folder datasource doesn’t yet have `last_datasource_indexing_job` set (eventual consistency). The logic was updated so we only report discrepancy when we have a definitive DO response, and we trust the user doc when we have a folder datasource but DO reports 0.
 
 ### “Index your records” (needs-indexing) modal
 

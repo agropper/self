@@ -132,47 +132,97 @@
       </q-page>
     </q-page-container>
     
-    <!-- More Choices: content depends on cookie (local only / passkey) or new client -->
+    <!-- More Choices: one set of actions; visibility/disabled by welcomeUserType -->
     <q-dialog v-model="showOtherAccountOptionsDialog" persistent>
-      <q-card style="min-width: 420px; max-width: 520px">
+      <q-card class="more-choices-card" style="min-width: 420px; max-width: 520px">
         <q-card-section>
           <div class="text-h6">More Choices</div>
+          <p v-if="welcomeUserType === 'cloud'" class="text-body2 text-grey-8 q-mt-sm q-mb-none">
+            {{ welcomeDisplayUserId }} is a cloud user with a passkey.
+          </p>
+          <p v-else-if="welcomeUserType === 'local'" class="text-body2 text-grey-8 q-mt-sm q-mb-none">
+            {{ welcomeDisplayUserId }} is a local-only user (no passkey).
+          </p>
+          <p v-else class="text-body2 text-grey-8 q-mt-sm q-mb-none">
+            No account on this device. Sign in with a passkey or manage an existing account.
+          </p>
         </q-card-section>
-        <!-- Local-only cookie: DELETE LOCAL STORAGE or CANCEL -->
-        <q-card-actions v-if="welcomeStatus.tempCookieUserId && !welcomeStatus.tempCookieHasPasskey" vertical align="stretch" class="q-gutter-sm">
-          <q-btn
-            unelevated
-            color="negative"
-            label="DELETE LOCAL STORAGE (destroys the account)"
-            class="text-center"
-            @click="handleDeleteLocalStorageOnly"
-          />
-          <q-btn flat label="CANCEL" color="primary" @click="closeOtherAccountOptions" />
-        </q-card-actions>
-        <!-- Passkey cookie: DELETE CLOUD options (require passkey) or CANCEL -->
-        <q-card-actions v-else-if="welcomeStatus.tempCookieUserId && welcomeStatus.tempCookieHasPasskey" vertical align="stretch" class="q-gutter-sm">
-          <q-btn
-            unelevated
-            color="primary"
-            label="DELETE CLOUD ACCOUNT and KEEP LOCAL BACKUP (account can be recovered)"
-            class="text-center"
-            @click="startAccountClosure('backup-and-delete')"
-          />
-          <q-btn
-            flat
-            color="grey-8"
-            label="DELETE CLOUD ACCOUNT and LOCAL BACKUP (a new account will be needed)"
-            class="text-center"
-            @click="startAccountClosure('delete-only')"
-          />
-          <q-btn flat label="CANCEL" color="primary" @click="closeOtherAccountOptions" />
-        </q-card-actions>
-        <!-- New client: sign in with passkey or delete options (require sign-in) -->
-        <q-card-actions v-else vertical align="stretch" class="q-gutter-sm">
-          <q-btn flat color="primary" label="Sign in with passkey" class="text-center" @click="openPasskeyFromOtherOptions" />
-          <q-btn unelevated color="primary" label="BACK UP LOCALLY and DELETE CLOUD ACCOUNT (account can be recovered)" class="text-center" @click="startAccountClosure('backup-and-delete')" />
-          <q-btn flat color="grey-8" label="DELETE ACCOUNT without LOCAL BACKUP (a new account will be needed)" class="text-center" @click="startAccountClosure('delete-only')" />
-          <q-btn flat label="CANCEL" color="primary" @click="closeOtherAccountOptions" />
+        <q-card-section class="q-pt-none">
+          <div class="more-choices-actions column q-gutter-md">
+            <q-btn
+              unelevated
+              color="primary"
+              label="Sign-in as a different user"
+              class="full-width"
+              @click="openPasskeyFromOtherOptions"
+            />
+            <q-btn
+              unelevated
+              :color="welcomeDisplayUserId ? 'grey-8' : undefined"
+              :flat="!welcomeDisplayUserId"
+              :disable="!welcomeDisplayUserId"
+              :label="welcomeDisplayUserId ? `Delete Cloud Account for ${welcomeDisplayUserId}` : 'Delete Cloud Account (sign in first)'"
+              class="full-width"
+              @click="onMoreChoicesDeleteCloud"
+            />
+            <q-btn
+              unelevated
+              :color="welcomeDisplayUserId ? 'negative' : undefined"
+              :flat="!welcomeDisplayUserId"
+              :disable="!welcomeDisplayUserId"
+              :label="welcomeDisplayUserId ? `Delete Local Storage for ${welcomeDisplayUserId}` : 'Delete Local Storage (none on this device)'"
+              class="full-width"
+              @click="onMoreChoicesDeleteLocal"
+            />
+            <q-btn flat label="Cancel" color="primary" class="full-width q-mt-sm" @click="closeOtherAccountOptions" />
+          </div>
+        </q-card-section>
+      </q-card>
+    </q-dialog>
+
+    <!-- More Choices: confirmation before delete -->
+    <q-dialog v-model="showMoreChoicesConfirmDialog" persistent>
+      <q-card style="min-width: 360px; max-width: 480px">
+        <q-card-section>
+          <div class="text-h6">{{ moreChoicesConfirmTitle }}</div>
+          <p class="text-body2 q-mt-sm q-mb-none">{{ moreChoicesConfirmMessage }}</p>
+        </q-card-section>
+        <q-card-actions vertical align="stretch" class="q-gutter-sm">
+          <template v-if="moreChoicesConfirmKind === 'delete-cloud' && (welcomeUserType === 'cloud' || user?.userId)">
+            <q-btn
+              unelevated
+              color="primary"
+              label="Keep local backup and delete cloud account"
+              class="full-width"
+              @click="confirmDeleteCloudKeepLocal"
+            />
+            <q-btn
+              unelevated
+              color="negative"
+              label="Delete cloud account and local backup"
+              class="full-width"
+              @click="confirmDeleteCloudAndLocal"
+            />
+          </template>
+          <template v-else-if="moreChoicesConfirmKind === 'delete-cloud'">
+            <q-btn
+              unelevated
+              color="negative"
+              label="DELETE"
+              class="full-width"
+              @click="confirmDeleteCloudOnly"
+            />
+          </template>
+          <template v-else-if="moreChoicesConfirmKind === 'delete-local'">
+            <q-btn
+              unelevated
+              color="negative"
+              label="DELETE"
+              class="full-width"
+              @click="confirmDeleteLocalStorage"
+            />
+          </template>
+          <q-btn flat label="CANCEL" color="primary" class="full-width" @click="closeMoreChoicesConfirm" />
         </q-card-actions>
       </q-card>
     </q-dialog>
@@ -438,7 +488,7 @@ import DeepLinkAccess from './components/DeepLinkAccess.vue';
 import PrivacyDialog from './components/PrivacyDialog.vue';
 import AdminUsers from './components/AdminUsers.vue';
 import { useQuasar } from 'quasar';
-import { saveUserSnapshot, getLastSnapshotUserId, getUserSnapshot, clearLastSnapshotUserId } from './utils/localDb';
+import { saveUserSnapshot, getLastSnapshotUserId, getUserSnapshot, clearLastSnapshotUserId, clearUserSnapshot } from './utils/localDb';
 
 interface User {
   userId: string;
@@ -510,7 +560,9 @@ const showSharedDeviceWarning = ref(false);
 const deviceChoiceResolved = ref(false);
 const sharedComputerMode = ref(false);
 const showOtherAccountOptionsDialog = ref(false);
-const pendingAccountAction = ref<'backup-and-delete' | 'delete-only' | null>(null);
+const pendingAccountAction = ref<'backup-and-delete' | 'delete-only' | 'confirm-delete-cloud' | null>(null);
+const showMoreChoicesConfirmDialog = ref(false);
+const moreChoicesConfirmKind = ref<'delete-cloud' | 'delete-local' | null>(null);
 /** [AUTH] Welcome status: from /api/welcome-status and localStorage (for status line and flow branching). */
 const welcomeStatus = ref<{
   authenticated?: boolean;
@@ -560,11 +612,42 @@ const welcomeUserStatusLine = computed(() => {
     return `${userId} has ${X} local files indexed to be restored. Click Get Started.`;
   }
   const userId = ws.tempCookieUserId || localId || '';
-  return `${userId} has an encrypted local backup available. Click More Choices instead of Get Started if your passkey does not work.`;
+  return `${userId} has a local backup available. Click More Choices instead of Get Started if your passkey does not work.`;
 });
 
 /** [AUTH] New client = no local backup and no temp cookie. */
 const isNewClient = computed(() => !welcomeLocalUserId.value && !welcomeStatus.value.tempCookieUserId);
+
+/** [AUTH] userId to show in More Choices heading (cookie or local). */
+const welcomeDisplayUserId = computed(() => welcomeStatus.value.tempCookieUserId || welcomeLocalUserId.value || '');
+
+/** Confirmation dialog title for More Choices delete actions. */
+const moreChoicesConfirmTitle = computed(() => {
+  const uid = moreChoicesConfirmUserId.value || welcomeDisplayUserId.value;
+  if (moreChoicesConfirmKind.value === 'delete-cloud') return uid ? `Delete Cloud Account for ${uid}` : 'Delete Cloud Account';
+  if (moreChoicesConfirmKind.value === 'delete-local') return uid ? `Delete Local Storage for ${uid}` : 'Delete Local Storage';
+  return 'Confirm';
+});
+/** Confirmation dialog message for More Choices delete actions. */
+const moreChoicesConfirmMessage = computed(() => {
+  const uid = moreChoicesConfirmUserId.value || welcomeDisplayUserId.value;
+  if (moreChoicesConfirmKind.value === 'delete-cloud') {
+    const isCloudOrAuthenticated = welcomeUserType.value === 'cloud' || !!user.value?.userId;
+    if (isCloudOrAuthenticated) {
+      return 'You can keep a local backup on this device (account can be recovered later) or delete the cloud account and local backup.';
+    }
+    return uid
+      ? `This will permanently delete the cloud account for ${uid}. This device's local backup will remain until you delete it.`
+      : 'This will permanently delete your cloud account.';
+  }
+  if (moreChoicesConfirmKind.value === 'delete-local') {
+    return uid
+      ? `This will remove the local backup for ${uid} from this device. The cloud account (if any) is not affected.`
+      : 'This will remove the local backup from this device.';
+  }
+  return '';
+});
+const moreChoicesConfirmUserId = ref<string | null>(null);
 
 /** [AUTH] Load welcome-status and localStorage for status line and branching. */
 const loadWelcomeStatus = async () => {
@@ -728,10 +811,140 @@ const openPasskeyFromOtherOptions = () => {
   showAuth.value = true;
 };
 
+/** Open confirmation for Delete Cloud Account; if no userId, require passkey first. */
+const onMoreChoicesDeleteCloud = () => {
+  const uid = welcomeDisplayUserId.value;
+  if (!uid) {
+    pendingAccountAction.value = 'confirm-delete-cloud';
+    showOtherAccountOptionsDialog.value = false;
+    passkeyPrefillUserId.value = null;
+    passkeyPrefillAction.value = 'signin';
+    showAuth.value = true;
+    return;
+  }
+  if (welcomeUserType.value === 'cloud') {
+    moreChoicesConfirmUserId.value = uid;
+    moreChoicesConfirmKind.value = 'delete-cloud';
+    showMoreChoicesConfirmDialog.value = true;
+    showOtherAccountOptionsDialog.value = false;
+    return;
+  }
+  if (welcomeUserType.value === 'local') {
+    moreChoicesConfirmUserId.value = uid;
+    moreChoicesConfirmKind.value = 'delete-cloud';
+    showMoreChoicesConfirmDialog.value = true;
+    showOtherAccountOptionsDialog.value = false;
+    return;
+  }
+  showOtherAccountOptionsDialog.value = false;
+  passkeyPrefillUserId.value = uid || null;
+  pendingAccountAction.value = 'confirm-delete-cloud';
+  passkeyPrefillAction.value = 'signin';
+  showAuth.value = true;
+};
+
+/** Open confirmation for Delete Local Storage. */
+const onMoreChoicesDeleteLocal = () => {
+  const uid = welcomeDisplayUserId.value;
+  if (!uid) return;
+  moreChoicesConfirmUserId.value = uid;
+  moreChoicesConfirmKind.value = 'delete-local';
+  showMoreChoicesConfirmDialog.value = true;
+  showOtherAccountOptionsDialog.value = false;
+};
+
+const closeMoreChoicesConfirm = () => {
+  showMoreChoicesConfirmDialog.value = false;
+  moreChoicesConfirmKind.value = null;
+  moreChoicesConfirmUserId.value = null;
+};
+
+const confirmDeleteCloudKeepLocal = () => {
+  closeMoreChoicesConfirm();
+  pendingAccountAction.value = 'backup-and-delete';
+  if (user.value?.userId) {
+    void runPendingAccountClosure();
+  } else {
+    const uid = moreChoicesConfirmUserId.value || welcomeDisplayUserId.value;
+    passkeyPrefillUserId.value = uid || null;
+    passkeyPrefillAction.value = 'signin';
+    showAuth.value = true;
+  }
+};
+const confirmDeleteCloudAndLocal = () => {
+  closeMoreChoicesConfirm();
+  pendingAccountAction.value = 'delete-only';
+  if (user.value?.userId) {
+    void runPendingAccountClosure();
+  } else {
+    const uid = moreChoicesConfirmUserId.value || welcomeDisplayUserId.value;
+    passkeyPrefillUserId.value = uid || null;
+    passkeyPrefillAction.value = 'signin';
+    showAuth.value = true;
+  }
+};
+const confirmDeleteCloudOnly = async () => {
+  const uid = moreChoicesConfirmUserId.value || welcomeDisplayUserId.value;
+  closeMoreChoicesConfirm();
+  if (welcomeUserType.value === 'local' && uid) {
+    showOtherAccountOptionsDialog.value = false;
+    tempStartLoading.value = true;
+    tempStartError.value = '';
+    try {
+      const res = await fetch('/api/temporary/restore', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ userId: uid })
+      });
+      const data = await res.json();
+      if (!res.ok || !data.authenticated || !data.user) throw new Error(data.error || 'Could not restore session');
+      setAuthenticatedUser(data.user, null);
+      const response = await fetch('/api/self/delete', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ userId: uid })
+      });
+      if (!response.ok) {
+        const err = await response.json().catch(() => ({}));
+        throw new Error(err.error || 'Failed to delete account');
+      }
+      await performSignOut();
+      void loadWelcomeStatus();
+    } catch (e) {
+      tempStartError.value = e instanceof Error ? e.message : 'Failed';
+      if (typeof console !== 'undefined' && console.warn) console.warn('[AUTH] Delete cloud failed:', e);
+    } finally {
+      tempStartLoading.value = false;
+    }
+    return;
+  }
+  passkeyPrefillUserId.value = uid || null;
+  pendingAccountAction.value = 'delete-only';
+  passkeyPrefillAction.value = 'signin';
+  showAuth.value = true;
+};
+
+const confirmDeleteLocalStorage = async () => {
+  const uid = moreChoicesConfirmUserId.value || welcomeDisplayUserId.value;
+  closeMoreChoicesConfirm();
+  if (!uid) return;
+  try {
+    await clearUserSnapshot(uid);
+    void loadWelcomeStatus();
+  } catch (e) {
+    if (typeof console !== 'undefined' && console.warn) console.warn('[AUTH] Clear local snapshot failed:', e);
+    if (typeof $q?.notify === 'function') {
+      $q.notify({ type: 'negative', message: 'Failed to clear local storage', timeout: 3000 });
+    }
+  }
+};
+
 const startAccountClosure = (action: 'backup-and-delete' | 'delete-only') => {
   pendingAccountAction.value = action;
   showOtherAccountOptionsDialog.value = false;
-  passkeyPrefillUserId.value = null;
+  passkeyPrefillUserId.value = welcomeDisplayUserId.value || null;
   passkeyPrefillAction.value = 'signin';
   showAuth.value = true;
 };
@@ -772,7 +985,17 @@ const runPendingAccountClosure = async () => {
 };
 
 const handleAuthenticated = (userData: any) => {
-  if (pendingAccountAction.value) {
+  const pending = pendingAccountAction.value;
+  if (pending === 'confirm-delete-cloud') {
+    setAuthenticatedUser(userData, null);
+    showAuth.value = false;
+    pendingAccountAction.value = null;
+    moreChoicesConfirmUserId.value = userData?.userId || null;
+    moreChoicesConfirmKind.value = 'delete-cloud';
+    showMoreChoicesConfirmDialog.value = true;
+    return;
+  }
+  if (pending) {
     setAuthenticatedUser(userData, null);
     void runPendingAccountClosure();
     return;
@@ -827,6 +1050,9 @@ const resetAuthState = () => {
   pendingAccountAction.value = null;
   showPasskeyDialog.value = false;
   showDeepLinkAccess.value = !!deepLinkShareId.value;
+  showMoreChoicesConfirmDialog.value = false;
+  moreChoicesConfirmKind.value = null;
+  moreChoicesConfirmUserId.value = null;
 
   if (typeof document !== 'undefined') {
     document.title = DEFAULT_TITLE;
@@ -1635,6 +1861,10 @@ onMounted(async () => {
 
 .welcome-caption hr:last-child {
   display: none;
+}
+
+.more-choices-card .more-choices-actions .q-btn {
+  min-height: 44px;
 }
 
 @media (max-width: 768px) {
