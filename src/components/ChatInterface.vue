@@ -458,7 +458,14 @@
               Files: {{ stage2StatusDisplay.files }} • Tokens: {{ stage2StatusDisplay.tokens }}
             </span>
           </div>
-            <div v-if="stage2StatusDisplay.show" class="text-caption q-mt-xs wizard-status-row" :class="wizardCurrentMedications ? 'text-grey-7' : 'text-orange-8'">
+            <div
+              v-if="stage2StatusDisplay.show"
+              class="text-caption q-mt-xs wizard-status-row q-pa-xs rounded-borders"
+              :class="[
+                wizardCurrentMedications ? 'text-grey-7' : 'text-orange-8',
+                { 'wizard-medications-not-verified-outline': !wizardCurrentMedications && wizardStage1Complete && stage2StatusDisplay.completed }
+              ]"
+            >
             Current Medications are {{ wizardCurrentMedications ? 'verified' : 'not verified' }}.
             <q-btn
               v-if="!wizardCurrentMedications"
@@ -571,7 +578,6 @@
       v-model="showMyStuffDialog"
       :userId="props.user?.userId || ''"
       :initial-tab="myStuffInitialTab"
-      :trigger-index-now-on-open="triggerIndexNowOnOpen"
       :request-summary-on-open="wizardRequestSummaryOnOpen"
       :messages="messages"
       :original-messages="trulyOriginalMessages.length > 0 ? trulyOriginalMessages : originalMessages"
@@ -592,7 +598,6 @@
       @request-summary-done="wizardRequestSummaryOnOpen = false"
       @rehydration-file-removed="handleRehydrationFileRemoved"
       @rehydration-complete="handleRehydrationComplete"
-      @index-now-triggered="triggerIndexNowOnOpen = false"
       v-if="canAccessMyStuff"
     />
 
@@ -617,28 +622,6 @@
             label="INDEX NOW"
             color="primary"
             @click="handleNeedsIndexingIndexNow"
-          />
-        </q-card-actions>
-      </q-card>
-    </q-dialog>
-
-    <!-- Indexing discrepancy: same as Saved Files (user doc vs DO); shown when wizard is displayed -->
-    <q-dialog v-model="showIndexingDiscrepancyModal" persistent>
-      <q-card style="min-width: 420px; max-width: 560px">
-        <q-card-section>
-          <div class="text-h6">Indexing state mismatch</div>
-        </q-card-section>
-        <q-card-section class="q-pt-none text-body2">
-          <p class="q-ma-none">{{ indexingDiscrepancyMessage }}</p>
-          <p class="q-mt-sm q-mb-none text-weight-medium">Suggested fix:</p>
-          <p class="q-ma-none">{{ indexingDiscrepancySuggestedFix }}</p>
-        </q-card-section>
-        <q-card-actions align="right">
-          <q-btn
-            unelevated
-            label="INDEX NOW"
-            color="primary"
-            @click="handleDiscrepancyIndexNowInChat"
           />
         </q-card-actions>
       </q-card>
@@ -836,7 +819,6 @@ const showSavedChatsModal = ref(false);
 const savedChatCount = ref(0);
 const showMyStuffDialog = ref(false);
 const myStuffInitialTab = ref<string>('files');
-const triggerIndexNowOnOpen = ref(false);
 const wizardRequestSummaryOnOpen = ref(false);
 const contextualTip = ref('Loading...');
 const editingMessageIdx = ref<number[]>([]);
@@ -853,9 +835,6 @@ const showAgentSetupDialog = ref(false);
 const showNeedsIndexingPrompt = ref(false);
 /** Once the user dismisses "Index your records" with NOT YET, do not show it again this session. */
 const needsIndexingPromptDismissedThisSession = ref(false);
-const showIndexingDiscrepancyModal = ref(false);
-const indexingDiscrepancyMessage = ref('');
-const indexingDiscrepancySuggestedFix = ref('');
 const agentSetupStatus = ref('');
 const agentSetupElapsed = ref(0);
 const agentSetupTimedOut = ref(false);
@@ -1199,7 +1178,7 @@ const startRestoreIndexing = async () => {
 /**
  * Saved Files is the source of truth. Show "Index your records" only when Saved Files would show
  * at least one file "To be added and indexed" (i.e. !allKbFilesIndexed from /api/user-files indexingState).
- * Never show when indexingState.discrepancy (user doc vs DO); dismissed with NOT YET stays until reload.
+ * Dismissed with NOT YET stays until reload.
  */
 const checkAndShowNeedsIndexingPrompt = async () => {
   if (!props.user?.userId || props.rehydrationActive || isDeepLink.value || needsIndexingPromptDismissedThisSession.value) return;
@@ -1213,8 +1192,7 @@ const checkAndShowNeedsIndexingPrompt = async () => {
     const statusData = await statusRes.json();
     const indexingState = filesData?.indexingState;
     const allKbFilesIndexed = !!indexingState?.allKbFilesIndexed;
-    const discrepancy = !!indexingState?.discrepancy;
-    if (discrepancy || allKbFilesIndexed) return;
+    if (allKbFilesIndexed) return;
     const hasAgent = !!statusData?.hasAgent;
     const fileCount = Number(statusData?.fileCount) || 0;
     const kbStatus = statusData?.kbStatus || 'none';
@@ -1237,14 +1215,6 @@ const handleNeedsIndexingIndexNow = async () => {
   showAgentSetupDialog.value = true;
   await nextTick();
   await startRestoreIndexing();
-};
-
-/** INDEX NOW from discrepancy modal: open Saved Files tab and trigger indexing in MyStuffDialog. */
-const handleDiscrepancyIndexNowInChat = () => {
-  showIndexingDiscrepancyModal.value = false;
-  myStuffInitialTab.value = 'files';
-  triggerIndexNowOnOpen.value = true;
-  showMyStuffDialog.value = true;
 };
 
 const handleRehydrationComplete = async (payload: { hasInitialFile: boolean }) => {
@@ -2015,11 +1985,6 @@ const refreshWizardState = async () => {
 
     if (filesResponse.ok) {
       const filesResult = await filesResponse.json();
-      if (filesResult?.indexingState?.discrepancy) {
-        indexingDiscrepancyMessage.value = filesResult.indexingState.discrepancyMessage || 'Your indexing state does not match the server.';
-        indexingDiscrepancySuggestedFix.value = filesResult.indexingState.suggestedFix || 'Open Saved Files and click INDEX NOW to re-run indexing, or refresh the page.';
-        showIndexingDiscrepancyModal.value = true;
-      }
       const files = Array.isArray(filesResult?.files) ? filesResult.files : [];
       const kbIndexedCount = typeof filesResult?.kbIndexedDataSourceCount === 'number'
         ? filesResult.kbIndexedDataSourceCount
@@ -5180,6 +5145,11 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
+}
+
+.wizard-medications-not-verified-outline {
+  outline: 2px solid var(--q-color-orange-8, #e65100);
+  outline-offset: 2px;
 }
 
 .wizard-verify-btn.q-btn--disabled {

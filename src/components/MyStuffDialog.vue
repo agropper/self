@@ -1091,29 +1091,6 @@
       </q-card>
     </q-dialog>
 
-    <!-- Indexing discrepancy: user doc and DO API disagree (Saved Files source of truth) -->
-    <q-dialog v-model="showIndexingDiscrepancyModal" persistent>
-      <q-card style="min-width: 420px; max-width: 560px">
-        <q-card-section>
-          <div class="text-h6">Indexing state mismatch</div>
-        </q-card-section>
-        <q-card-section class="q-pt-none text-body2">
-          <p class="q-ma-none">{{ indexingDiscrepancyMessage }}</p>
-          <p class="q-mt-sm q-mb-none text-weight-medium">Suggested fix:</p>
-          <p class="q-ma-none">{{ indexingDiscrepancySuggestedFix }}</p>
-        </q-card-section>
-        <q-card-actions align="right">
-          <q-btn
-            unelevated
-            label="INDEX NOW"
-            color="primary"
-            :loading="indexingKB"
-            :disable="indexingKB"
-            @click="handleDiscrepancyIndexNow"
-          />
-        </q-card-actions>
-      </q-card>
-    </q-dialog>
   </q-dialog>
 </template>
 
@@ -1171,8 +1148,6 @@ interface Props {
   wizardActive?: boolean;
   /** When true and dialog opens on summary tab, trigger one requestNewSummary() then clear (avoids duplicate with wizard). */
   requestSummaryOnOpen?: boolean;
-  /** When true and dialog opens, switch to Saved Files and run updateAndIndexKB (e.g. from discrepancy modal INDEX NOW). */
-  triggerIndexNowOnOpen?: boolean;
 }
 
 const props = withDefaults(defineProps<Props>(), {
@@ -1297,10 +1272,6 @@ const summaryNeedsVerify = ref(false);
 const showSummaryAttention = computed(() => showWizardSummaryActions.value || summaryNeedsVerify.value);
 const kbDataSourceCount = ref<number | null>(null);
 const kbIndexedDataSourceCount = ref<number | null>(null);
-const showIndexingDiscrepancyModal = ref(false);
-const indexingDiscrepancyMessage = ref('');
-const indexingDiscrepancySuggestedFix = ref('');
-
 // Rehydration flow (temporary account restore)
 const rehydrationQueue = ref<Array<{ fileName?: string; bucketKey?: string; fileSize?: number; uploadedAt?: string; chipStatus?: string; kbName?: string | null; isInitial?: boolean }>>([]);
 const rehydrationCompleted = ref<Set<string>>(new Set());
@@ -1643,11 +1614,6 @@ const loadFiles = async () => {
       }
     }
 
-    if (result.indexingState?.discrepancy && !props.triggerIndexNowOnOpen) {
-      indexingDiscrepancyMessage.value = result.indexingState.discrepancyMessage || 'Your indexing state does not match the server.';
-      indexingDiscrepancySuggestedFix.value = result.indexingState.suggestedFix || 'Open Saved Files and click INDEX NOW to re-run indexing, or refresh the page.';
-      showIndexingDiscrepancyModal.value = true;
-    }
   } catch (err) {
     filesError.value = err instanceof Error ? err.message : 'Failed to load files';
   } finally {
@@ -2240,14 +2206,6 @@ const deleteFile = async (file: UserFile) => {
   } finally {
     updatingFiles.value.delete(file.bucketKey);
   }
-};
-
-/** INDEX NOW from discrepancy modal: switch to Saved Files tab and start indexing. */
-const handleDiscrepancyIndexNow = async () => {
-  showIndexingDiscrepancyModal.value = false;
-  currentTab.value = 'files';
-  await nextTick();
-  await updateAndIndexKB();
 };
 
 const updateAndIndexKB = async () => {
@@ -5162,12 +5120,6 @@ watch(() => props.modelValue, async (newValue) => {
       });
     }
 
-    if (props.triggerIndexNowOnOpen) {
-      currentTab.value = 'files';
-      await nextTick();
-      await updateAndIndexKB();
-      emit('index-now-triggered');
-    }
   }
 });
 

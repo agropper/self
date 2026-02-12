@@ -5486,26 +5486,11 @@ app.get('/api/user-files', async (req, res) => {
       }
     }
 
-    // Canonical indexing state for Saved Files as source of truth (INDEXING_SAVED_FILES_SOURCE_OF_TRUTH.md)
+    // Canonical indexing state for Saved Files (INDEXING_SAVED_FILES_SOURCE_OF_TRUTH.md)
     const indexedSet = new Set(kbIndexedBucketKeys);
     const kbFiles = files.filter(f => f.inKnowledgeBase);
     const allKbFilesIndexed = kbFiles.length === 0 || kbFiles.every(f => (f.bucketKey && indexedSet.has(f.bucketKey)));
-    const userDocSaysIndexed = kbIndexedBucketKeys.length > 0 || !!userDoc.kbIndexingStatus?.backendCompleted;
-    const hasDoState = typeof kbIndexedDataSourceCount === 'number';
-    const doSaysIndexed = hasDoState && kbIndexedDataSourceCount > 0;
-    // Only report discrepancy when we have DO state; when DO says 0 but user doc says indexed and we have a folder ds, trust user doc (eventual consistency)
-    const trustUserWhenDoSaysZero = userDocSaysIndexed && kbDataSourceCount === 1 && kbIndexedDataSourceCount === 0;
-    const discrepancy = hasDoState && (userDocSaysIndexed !== doSaysIndexed) && !trustUserWhenDoSaysZero;
-    const indexingState = {
-      allKbFilesIndexed,
-      discrepancy,
-      ...(discrepancy ? {
-        discrepancyMessage: userDocSaysIndexed && !doSaysIndexed
-          ? 'Your saved indexing state does not match the server. The server may be temporarily unavailable or out of sync.'
-          : 'The server reports indexed content but your account does not. Your list may be out of date.',
-        suggestedFix: 'Open Saved Files and click INDEX NOW to re-run indexing, or refresh the page to reload state.'
-      } : {})
-    };
+    const indexingState = { allKbFilesIndexed };
 
     const response = {
       success: true,
