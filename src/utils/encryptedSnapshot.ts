@@ -7,8 +7,8 @@ const SALT_BYTES = 16;
 const IV_BYTES = 12;
 const KEY_LENGTH = 256;
 
-function toBase64(bytes: ArrayBuffer): string {
-  const b = new Uint8Array(bytes);
+function toBase64(bytes: ArrayBuffer | Uint8Array): string {
+  const b = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
   let binary = '';
   for (let i = 0; i < b.length; i++) binary += String.fromCharCode(b[i]);
   return btoa(binary);
@@ -33,7 +33,7 @@ async function deriveKey(pin: string, salt: Uint8Array): Promise<CryptoKey> {
   return crypto.subtle.deriveKey(
     {
       name: 'PBKDF2',
-      salt,
+      salt: salt as BufferSource,
       iterations: PBKDF2_ITERATIONS,
       hash: 'SHA-256'
     },
@@ -51,12 +51,12 @@ export async function encryptSnapshot(payload: object, pin: string): Promise<{ e
   const enc = new TextEncoder();
   const plaintext = enc.encode(JSON.stringify(payload));
   const ciphertext = await crypto.subtle.encrypt(
-    { name: 'AES-GCM', iv },
+    { name: 'AES-GCM', iv: iv as BufferSource },
     key,
     plaintext
   );
   return {
-    encrypted: toBase64(ciphertext),
+    encrypted: toBase64(ciphertext as ArrayBuffer),
     iv: toBase64(iv),
     salt: toBase64(salt)
   };
@@ -67,9 +67,9 @@ export async function decryptSnapshot(encrypted: string, iv: string, salt: strin
   const ciphertext = fromBase64(encrypted);
   const ivBytes = fromBase64(iv);
   const plaintext = await crypto.subtle.decrypt(
-    { name: 'AES-GCM', iv: ivBytes },
+    { name: 'AES-GCM', iv: ivBytes as BufferSource },
     key,
-    ciphertext
+    ciphertext as BufferSource
   );
   const dec = new TextDecoder();
   return JSON.parse(dec.decode(plaintext)) as object;

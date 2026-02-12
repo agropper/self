@@ -839,40 +839,6 @@ const closeOtherAccountOptions = () => {
   showOtherAccountOptionsDialog.value = false;
 };
 
-/** [AUTH] Local-only cookie: restore session then show destroy dialog. */
-const handleDeleteLocalStorageOnly = async () => {
-  const uid = welcomeStatus.value.tempCookieUserId;
-  if (!uid) return;
-  showOtherAccountOptionsDialog.value = false;
-  tempStartLoading.value = true;
-  tempStartError.value = '';
-  try {
-    const res = await fetch('/api/temporary/restore', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      credentials: 'include',
-      body: JSON.stringify({ userId: uid })
-    });
-    const data = await res.json();
-    if (!res.ok || !data.authenticated || !data.user) {
-      throw new Error(data.error || 'Could not restore session');
-    }
-    setAuthenticatedUser(data.user, null);
-    destroyConfirm.value = '';
-    showDestroyDialog.value = true;
-    if (typeof console !== 'undefined' && console.log) {
-      console.log('[AUTH] Restored local-only session for destroy:', uid);
-    }
-  } catch (e) {
-    tempStartError.value = e instanceof Error ? e.message : 'Failed to restore session';
-    if (typeof console !== 'undefined' && console.warn) {
-      console.warn('[AUTH] Delete local storage restore failed:', e);
-    }
-  } finally {
-    tempStartLoading.value = false;
-  }
-};
-
 const openPasskeyFromOtherOptions = () => {
   showOtherAccountOptionsDialog.value = false;
   passkeyPrefillUserId.value = null;
@@ -1009,14 +975,6 @@ const confirmDeleteLocalStorage = async () => {
       $q.notify({ type: 'negative', message: 'Failed to clear local storage', timeout: 3000 });
     }
   }
-};
-
-const startAccountClosure = (action: 'backup-and-delete' | 'delete-only') => {
-  pendingAccountAction.value = action;
-  showOtherAccountOptionsDialog.value = false;
-  passkeyPrefillUserId.value = welcomeDisplayUserId.value || null;
-  passkeyPrefillAction.value = 'signin';
-  showAuth.value = true;
 };
 
 const runPendingAccountClosure = async () => {

@@ -512,7 +512,6 @@ const showVerifyPrompt = ref(false);
 const needsVerifyAction = ref(false);
 const verifyPromptPending = ref(false);
 const verifyStorageKey = computed(() => props.userId ? `verify-meds-${props.userId}` : null);
-const wizardCompletionKey = computed(() => props.userId ? `wizard-completion-${props.userId}` : null);
 const waitForAgentReady = async () => {
   for (let attempt = 0; attempt < 6; attempt += 1) {
     try {
@@ -533,18 +532,6 @@ const waitForAgentReady = async () => {
   }
   return false;
 };
-const stage3Complete = computed(() => {
-  if (!wizardCompletionKey.value) return false;
-  try {
-    const stored = sessionStorage.getItem(wizardCompletionKey.value);
-    if (!stored) return false;
-    const parsed = JSON.parse(stored);
-    return !!parsed.stage3Complete;
-  } catch (error) {
-    return false;
-  }
-});
-
 const autoProcessAttempts = ref(0);
 
 const checkInitialFile = async () => {
