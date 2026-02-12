@@ -844,6 +844,7 @@ const wizardOtherFilesCount = ref(0);
 const wizardSlideIndex = ref(0);
 const wizardSlides = [
   { lines: [] },
+  { image: '/wizard-slides/slide-1.png', alt: 'Wizard slide 1' },
   { image: '/wizard-slides/slide-2.png', alt: 'Wizard slide 2' },
   { image: '/wizard-slides/slide-3.png', alt: 'Wizard slide 3' },
   { image: '/wizard-slides/slide-4.png', alt: 'Wizard slide 4' }
