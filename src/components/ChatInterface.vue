@@ -53,7 +53,7 @@
                 style="display: inline-block; max-width: 80%;"
                 @click="handlePageLinkClick"
               >
-                <div v-html="processPageReferences(msg.content)"></div>
+                <div v-html="messageDisplayHtml[idx]"></div>
                 <div class="q-mt-sm">
                   <q-btn
                     flat
@@ -3069,6 +3069,22 @@ const processPageReferences = (content: string): string => {
   return markdownParser.render(processedContent);
 };
 
+// Processed message HTML (reactive to file lists so Saved Files links become direct after preload).
+// During streaming, skip heavy processPageReferences for the growing message so the UI stays responsive.
+const messageDisplayHtml = computed(() => {
+  const _ = availableUserFiles.value;
+  const __ = uploadedFiles.value;
+  const list = messages.value;
+  const n = list.length;
+  const streaming = isStreaming.value;
+  if (streaming && n > 0) {
+    return list.map((msg, idx) =>
+      idx === n - 1 ? markdownParser.render(msg.content) : processPageReferences(msg.content)
+    );
+  }
+  return list.map(msg => processPageReferences(msg.content));
+});
+
 // Handle click on page link
 const handlePageLinkClick = async (event: Event) => {
   event.preventDefault();
@@ -5053,6 +5069,11 @@ onMounted(async () => {
   // On load/reload: if agent + files but no KB indexed, show needs-indexing prompt after a short delay
   if (!isDeepLink.value && props.user?.userId) {
     setTimeout(() => checkAndShowNeedsIndexingPrompt(), 1200);
+  }
+
+  // Preload Saved Files so page-## links in AI responses can be direct links (not just chooser)
+  if (canAccessMyStuff.value && props.user?.userId && availableUserFiles.value.length === 0) {
+    loadUserFilesForChooser(false);
   }
 });
 
