@@ -13,7 +13,7 @@ This document describes the two kinds of users, the welcome page (status line, G
 ## 2. The line below the "Welcome to MAIA" title is the **User Status** line.
 
 ### 2.0 For New User it says: "Sign in with your passkey or create a new account" in black.
-### 2.1 For Local User it says: "<userId> has X local files indexed to be restored. Click Get Started" in orange.
+### 2.1 For Local User it says: "<userId> has a local backup but # files will need to be restored and re-indexed." in orange. (# is the number of files in the backup.)
 ### 2.2 For Cloud User it says: "<userId> has a local backup available. Click More Choices instead of Get Started if your passkey does not work." in green. (Encryption is not implemented; the backup is stored un-encrypted—see the subsection “What is actually saved locally”.)
 
 
@@ -45,7 +45,7 @@ If you are on a **less-trusted** computer and browser, you must create and use a
 
 2. **User Status line (single line, replace current multi-line [AUTH] block for this behavior):**
    - **New User:** One line in **black**: “Sign in with your passkey or create a new account.” This can be the existing subtitle text; no separate status block, or a single status line in default/black.
-   - **Local User:** One line in **orange**: “&lt;userId&gt; has X local files indexed to be restored. Click Get Started.” Use `welcomeLocalUserId` for userId and `welcomeLocalSnapshot.indexedCount` for X (from existing snapshot load).
+   - **Local User:** One line in **orange**: “&lt;userId&gt; has a local backup but # files will need to be restored and re-indexed.” Use `welcomeLocalUserId` for userId and `welcomeLocalSnapshot.fileCount` for #. (Previously we used `indexedCount`, which could be 0 even when the user had a backup with files.)
    - **Cloud User:** One line in **green**: “&lt;userId&gt; has a local backup available. Click More Choices instead of Get Started if your passkey does not work.” Use cookie userId or `welcomeLocalUserId` as appropriate. No encryption is implemented; see “What is actually saved locally” in §2 Welcome page.
 
 3. **Rename** the secondary button from “Other Account Options” to **“More Choices”** (label and dialog title).
@@ -117,7 +117,7 @@ The dialog title is **More Choices**. A context line under the title identifies 
 
 - **Cloud User (cookie + passkey):** Heading: “&lt;userId&gt; is a cloud user with a passkey.” Buttons:
   - **DELETE CLOUD ACCOUNT and KEEP LOCAL BACKUP (account can be recovered):** Closes dialog and opens Passkey sign-in. After successful passkey auth, the app saves a fresh local snapshot (`saveLocalSnapshot`), calls `POST /api/account/dormant`, then signs out. The cloud account is put dormant; the local backup remains so the user can recover later.
-  - **DELETE CLOUD ACCOUNT and LOCAL BACKUP (a new account will be needed):** Closes dialog and opens Passkey sign-in. After successful passkey auth, the app calls `POST /api/self/delete` (with userId) then signs out. No local snapshot is saved first; account and local data are both gone.
+  - **DELETE CLOUD ACCOUNT and LOCAL BACKUP (a new account will be needed):** Closes dialog and opens Passkey sign-in. After successful passkey auth, the app calls `POST /api/self/delete` (with userId), then clears the local snapshot on this device (`clearUserSnapshot(userId)`: destroys IndexedDB for that user and clears `maia_last_snapshot_user`), then signs out. So the welcome page no longer shows that user; the server clears the cookie and the client removes all local traces.
   - **CANCEL:** Closes the dialog.
 - **Local User (cookie, no passkey):** Heading: “&lt;userId&gt; is a local-only user (no passkey).” [DELETE LOCAL STORAGE (destroys the account)], [CANCEL]. DELETE LOCAL STORAGE: restore session for `tempCookieUserId` (`POST /api/temporary/restore`), then open Destroy Account dialog (confirm by typing userId → `POST /api/self/delete`, then sign out).
 - **New client:** Heading: “No account on this device. Sign in with a passkey or manage an existing account.” Sign in with passkey; BACK UP LOCALLY and DELETE CLOUD ACCOUNT; DELETE ACCOUNT without LOCAL BACKUP; CANCEL.

@@ -53,14 +53,22 @@
                 </div>
 
                 <div v-if="!showAuth">
-                  <!-- Get Started Button - positioned right after title/subtitle -->
+                  <!-- Get Started: No Password (blue) and Passkey (green) -->
                   <q-btn
-                    label="Get Started"
+                    label="GET STARTED with a No Password account"
                     color="primary"
                     size="lg"
-                    class="full-width q-mb-lg"
+                    class="full-width q-mb-sm"
                     :loading="tempStartLoading"
-                    @click="handleGetStarted"
+                    @click="handleGetStartedNoPassword"
+                  />
+                  <q-btn
+                    label="GET STARTED with a Passkey account"
+                    color="green"
+                    size="lg"
+                    outline
+                    class="full-width q-mb-lg"
+                    @click="handleGetStartedPasskey"
                   />
                   <div v-if="tempStartError" class="text-negative text-center q-mb-md">
                     {{ tempStartError }}
@@ -271,6 +279,57 @@
             color="primary"
             @click="handleSharedWarningOk"
           />
+        </q-card-actions>
+      </q-card>
+    </q-dialog>
+
+    <!-- Passkey sign-out: offer local backup (encrypted with PIN) -->
+    <q-dialog v-model="showPasskeyBackupPromptModal" persistent>
+      <q-card style="min-width: 420px; max-width: 520px">
+        <q-card-section>
+          <div class="text-h6">Local backup</div>
+          <p class="text-body2 q-mt-sm q-mb-md">
+            Would you like to keep a local backup on this computer and browser?
+          </p>
+          <q-toggle
+            v-model="passkeyBackupDoNotAskAgain"
+            label="Do not ask again"
+            color="primary"
+          />
+        </q-card-section>
+        <q-card-actions align="right">
+          <q-btn flat label="NO" color="primary" @click="onPasskeyBackupNo" />
+          <q-btn unelevated label="YES" color="primary" @click="onPasskeyBackupYes" />
+        </q-card-actions>
+      </q-card>
+    </q-dialog>
+
+    <!-- Passkey backup: 4-digit PIN to encrypt -->
+    <q-dialog v-model="showPasskeyBackupPinDialog" persistent>
+      <q-card style="min-width: 360px; max-width: 440px">
+        <q-card-section>
+          <div class="text-h6">Encrypt local backup</div>
+          <p class="text-body2 q-mt-sm q-mb-md">
+            Enter a 4-digit PIN to encrypt your local backup. You will need this PIN to restore on this device.
+          </p>
+          <q-input
+            v-model="passkeyBackupPin"
+            type="password"
+            inputmode="numeric"
+            pattern="[0-9]*"
+            maxlength="4"
+            placeholder="4-digit PIN"
+            dense
+            outlined
+            :error="!!passkeyBackupPinError"
+            :error-message="passkeyBackupPinError"
+            autocomplete="off"
+            @keyup.enter="submitPasskeyBackupPin"
+          />
+        </q-card-section>
+        <q-card-actions align="right">
+          <q-btn flat label="CANCEL" color="primary" @click="closePasskeyBackupPinDialog" />
+          <q-btn unelevated label="SAVE" color="primary" :loading="passkeyBackupPinLoading" :disable="(passkeyBackupPin || '').length !== 4" @click="submitPasskeyBackupPin" />
         </q-card-actions>
       </q-card>
     </q-dialog>
@@ -488,7 +547,7 @@ import DeepLinkAccess from './components/DeepLinkAccess.vue';
 import PrivacyDialog from './components/PrivacyDialog.vue';
 import AdminUsers from './components/AdminUsers.vue';
 import { useQuasar } from 'quasar';
-import { saveUserSnapshot, getLastSnapshotUserId, getUserSnapshot, clearLastSnapshotUserId, clearUserSnapshot } from './utils/localDb';
+import { saveUserSnapshot, getLastSnapshotUserId, getUserSnapshot, clearLastSnapshotUserId, clearUserSnapshot, getPasskeyBackupPromptSkip, setPasskeyBackupPromptSkip, saveUserSnapshotEncrypted } from './utils/localDb';
 
 interface User {
   userId: string;
@@ -541,6 +600,12 @@ const passkeyPrefillAction = ref<'signin' | 'register' | null>(null);
 /** When set, we showed PasskeyAuth for a returning passkey user (from Get Started + local snapshot). */
 const welcomeBackPasskeyUserId = ref<string | null>(null);
 const showPasskeyDialog = ref(false);
+const showPasskeyBackupPromptModal = ref(false);
+const passkeyBackupDoNotAskAgain = ref(false);
+const showPasskeyBackupPinDialog = ref(false);
+const passkeyBackupPin = ref('');
+const passkeyBackupPinError = ref('');
+const passkeyBackupPinLoading = ref(false);
 const showDormantDialog = ref(false);
 const dormantDeepLinkCount = ref(0);
 const dormantLoading = ref(false);
@@ -608,8 +673,8 @@ const welcomeUserStatusLine = computed(() => {
   if (type === 'new') return 'Sign in with your passkey or create a new account';
   if (type === 'local') {
     const userId = ws.tempCookieUserId || localId || '';
-    const X = snap?.indexedCount ?? 0;
-    return `${userId} has ${X} local files indexed to be restored. Click Get Started.`;
+    const fileCount = snap?.fileCount ?? 0;
+    return `${userId} has a local backup but ${fileCount} file${fileCount === 1 ? '' : 's'} will need to be restored and re-indexed.`;
   }
   const userId = ws.tempCookieUserId || localId || '';
   return `${userId} has a local backup available. Click More Choices instead of Get Started if your passkey does not work.`;
@@ -910,6 +975,7 @@ const confirmDeleteCloudOnly = async () => {
         const err = await response.json().catch(() => ({}));
         throw new Error(err.error || 'Failed to delete account');
       }
+      await clearUserSnapshot(uid);
       await performSignOut();
       void loadWelcomeStatus();
     } catch (e) {
@@ -960,16 +1026,18 @@ const runPendingAccountClosure = async () => {
       await fetch('/api/account/dormant', { method: 'POST', credentials: 'include' });
       await performSignOut();
     } else if (action === 'delete-only') {
+      const userIdToDelete = user.value.userId;
       const response = await fetch('/api/self/delete', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
-        body: JSON.stringify({ userId: user.value.userId })
+        body: JSON.stringify({ userId: userIdToDelete })
       });
       if (!response.ok) {
         const data = await response.json().catch(() => ({}));
         throw new Error(data.error || 'Failed to delete account');
       }
+      await clearUserSnapshot(userIdToDelete);
       await performSignOut();
     }
   } catch (error) {
@@ -1049,6 +1117,12 @@ const resetAuthState = () => {
   welcomeBackPasskeyUserId.value = null;
   pendingAccountAction.value = null;
   showPasskeyDialog.value = false;
+  showPasskeyBackupPromptModal.value = false;
+  showPasskeyBackupPinDialog.value = false;
+  passkeyBackupPin.value = '';
+  passkeyBackupPinError.value = '';
+  passkeyBackupPinLoading.value = false;
+  passkeyBackupDoNotAskAgain.value = false;
   showDeepLinkAccess.value = !!deepLinkShareId.value;
   showMoreChoicesConfirmDialog.value = false;
   moreChoicesConfirmKind.value = null;
@@ -1062,6 +1136,7 @@ const resetAuthState = () => {
 
 const saveLocalSnapshot = async (snapshot?: SignOutSnapshot | null) => {
   if (!user.value?.userId || user.value.isDeepLink || sharedComputerMode.value) return;
+  if (user.value.isTemporary === false) return;
   try {
     const [filesResponse, chatsResponse, statusResponse, summaryResponse] = await Promise.all([
       fetch(`/api/user-files?userId=${encodeURIComponent(user.value.userId)}`, {
@@ -1140,12 +1215,12 @@ const handleSharedDevice = () => {
 
 const handleSharedWarningOk = () => {
   showSharedDeviceWarning.value = false;
-  startTemporarySession();
+  deviceChoiceResolved.value = false;
 };
 
-const handleGetStarted = () => {
+const handleGetStartedNoPassword = () => {
   if (typeof console !== 'undefined' && console.log) {
-    console.log('[AUTH] Get Started: newClient=', isNewClient.value, 'deviceResolved=', deviceChoiceResolved.value);
+    console.log('[AUTH] Get Started (No Password): newClient=', isNewClient.value, 'deviceResolved=', deviceChoiceResolved.value);
   }
   if (isNewClient.value) {
     if (!deviceChoiceResolved.value) {
@@ -1156,6 +1231,13 @@ const handleGetStarted = () => {
     return;
   }
   startTemporarySession();
+};
+
+const handleGetStartedPasskey = () => {
+  showOtherAccountOptionsDialog.value = false;
+  passkeyPrefillUserId.value = null;
+  passkeyPrefillAction.value = null;
+  showAuth.value = true;
 };
 
 const performSignOut = async () => {
@@ -1510,7 +1592,109 @@ const handleSignOut = async (snapshot?: SignOutSnapshot) => {
     console.warn('Unable to check deep links for sign-out:', error);
   }
 
+  const hasLocalBackup = getLastSnapshotUserId() === user.value?.userId;
+  if (!hasLocalBackup && !getPasskeyBackupPromptSkip()) {
+    passkeyBackupDoNotAskAgain.value = false;
+    showPasskeyBackupPromptModal.value = true;
+    return;
+  }
   await handleDormantSignOut();
+};
+
+const onPasskeyBackupNo = () => {
+  if (passkeyBackupDoNotAskAgain.value) {
+    setPasskeyBackupPromptSkip(true);
+  }
+  showPasskeyBackupPromptModal.value = false;
+  void handleDormantSignOut();
+};
+
+const onPasskeyBackupYes = () => {
+  showPasskeyBackupPromptModal.value = false;
+  passkeyBackupPin.value = '';
+  passkeyBackupPinError.value = '';
+  showPasskeyBackupPinDialog.value = true;
+};
+
+const closePasskeyBackupPinDialog = () => {
+  showPasskeyBackupPinDialog.value = false;
+  passkeyBackupPin.value = '';
+  passkeyBackupPinError.value = '';
+  passkeyBackupPinLoading.value = false;
+  void handleDormantSignOut();
+};
+
+const buildSnapshotPayloadForUser = async (): Promise<{
+  user: { userId: string; displayName?: string; isTemporary?: boolean; isAdmin?: boolean };
+  files: any;
+  savedChats: any;
+  currentChat: any;
+  currentMedications: any;
+  initialFile: any;
+  fileStatusSummary: any[];
+  patientSummary: any;
+} | null> => {
+  if (!user.value?.userId) return null;
+  const [filesResponse, chatsResponse, statusResponse, summaryResponse] = await Promise.all([
+    fetch(`/api/user-files?userId=${encodeURIComponent(user.value.userId)}`, { credentials: 'include' }),
+    fetch(`/api/user-chats?userId=${encodeURIComponent(user.value.userId)}`, { credentials: 'include' }),
+    fetch(`/api/user-status?userId=${encodeURIComponent(user.value.userId)}`, { credentials: 'include' }),
+    fetch(`/api/patient-summary?userId=${encodeURIComponent(user.value.userId)}`, { credentials: 'include' })
+  ]);
+  const files = filesResponse.ok ? await filesResponse.json() : null;
+  const savedChats = chatsResponse.ok ? await chatsResponse.json() : null;
+  const status = statusResponse.ok ? await statusResponse.json() : null;
+  const summary = summaryResponse.ok ? await summaryResponse.json() : null;
+  const filesList = Array.isArray(files?.files) ? files.files : [];
+  const indexedSet = new Set(Array.isArray(files?.indexedFiles) ? files.indexedFiles : []);
+  const kbName = files?.kbName || null;
+  const fileStatusSummary = filesList.map((file: any) => {
+    const bucketKey = file.bucketKey || '';
+    const kbFolderPrefix = kbName ? `${user.value?.userId}/${kbName}/` : null;
+    const inKnowledgeBase = kbFolderPrefix ? (file.bucketKey || '').startsWith(kbFolderPrefix) : false;
+    let chipStatus: 'indexed' | 'pending' | 'not_in_kb' = 'not_in_kb';
+    if (inKnowledgeBase && indexedSet.has(bucketKey)) chipStatus = 'indexed';
+    else if (inKnowledgeBase && !indexedSet.has(bucketKey)) chipStatus = 'pending';
+    return { fileName: file.fileName, bucketKey, chipStatus };
+  });
+  return {
+    user: {
+      userId: user.value.userId,
+      displayName: user.value.displayName,
+      isTemporary: user.value.isTemporary,
+      isAdmin: user.value.isAdmin
+    },
+    files,
+    savedChats,
+    currentChat: signOutSnapshot.value?.currentChat || null,
+    currentMedications: status?.currentMedications || null,
+    initialFile: status?.initialFile || null,
+    fileStatusSummary,
+    patientSummary: summary?.summary || null
+  };
+};
+
+const submitPasskeyBackupPin = async () => {
+  const pin = (passkeyBackupPin.value || '').trim();
+  if (pin.length !== 4 || !/^\d{4}$/.test(pin)) {
+    passkeyBackupPinError.value = 'Enter a 4-digit PIN';
+    return;
+  }
+  passkeyBackupPinError.value = '';
+  passkeyBackupPinLoading.value = true;
+  try {
+    const payload = await buildSnapshotPayloadForUser();
+    if (!payload) throw new Error('Could not build backup');
+    await saveUserSnapshotEncrypted(payload, pin);
+    showPasskeyBackupPinDialog.value = false;
+    passkeyBackupPin.value = '';
+    passkeyBackupPinError.value = '';
+    passkeyBackupPinLoading.value = false;
+    await handleDormantSignOut();
+  } catch (e) {
+    passkeyBackupPinError.value = e instanceof Error ? e.message : 'Failed to save encrypted backup';
+    passkeyBackupPinLoading.value = false;
+  }
 };
 
 const handleTemporarySignOut = async () => {
@@ -1630,20 +1814,21 @@ const destroyTemporaryAccount = async () => {
     return;
   }
   destroyLoading.value = true;
+  const userIdToDelete = user.value.userId;
   try {
-    await saveLocalSnapshot(signOutSnapshot.value);
     const response = await fetch('/api/self/delete', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json'
       },
       credentials: 'include',
-      body: JSON.stringify({ userId: user.value.userId })
+      body: JSON.stringify({ userId: userIdToDelete })
     });
     if (!response.ok) {
       const data = await response.json().catch(() => ({}));
       throw new Error(data.error || 'Failed to delete temporary account');
     }
+    await clearUserSnapshot(userIdToDelete);
     resetAuthState();
     showDestroyDialog.value = false;
   } catch (error) {
