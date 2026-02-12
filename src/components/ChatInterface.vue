@@ -3072,8 +3072,9 @@ const processPageReferences = (content: string): string => {
 // Processed message HTML (reactive to file lists so Saved Files links become direct after preload).
 // During streaming, skip heavy processPageReferences for the growing message so the UI stays responsive.
 const messageDisplayHtml = computed(() => {
-  const _ = availableUserFiles.value;
-  const __ = uploadedFiles.value;
+  // Depend on file lists so we re-run when Saved Files load (processPageReferences uses them)
+  void availableUserFiles.value;
+  void uploadedFiles.value;
   const list = messages.value;
   const n = list.length;
   const streaming = isStreaming.value;
