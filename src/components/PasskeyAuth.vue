@@ -16,6 +16,9 @@
         class="full-width"
         @click="startRegistrationFlow"
       />
+      <p class="text-caption text-grey-7 q-mt-sm q-mb-none">
+        No Touch ID? You can create or sign in with a passkey on your smartphone when prompted.
+      </p>
     </div>
 
     <!-- Step 2: User ID Input -->
