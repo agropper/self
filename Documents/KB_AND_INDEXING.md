@@ -45,11 +45,12 @@ The **Saved Files** tab (My Stuff → Saved Files) is the source of truth for in
 The response includes **`indexingState`** (computed from user doc + DO in the same request):
 
 - **`allKbFilesIndexed`** – `true` iff every file with `inKnowledgeBase` (bucketKey in KB folder) has `bucketKey` in `kbIndexedBucketKeys`. This is exactly the condition under which Saved Files would show **no** “To be added and indexed” for in-KB files.
-- **`discrepancy`** – `true` only when we have a definitive DO response **and** it disagrees with the user doc:
+- **`discrepancy`** – `true` only when the user doc has a KB (`userDoc.kbId` set), we have a definitive DO response, **and** it disagrees with the user doc:
   - User doc says indexed: `kbIndexedBucketKeys.length > 0` or `kbIndexingStatus?.backendCompleted`.
   - DO says indexed: `kbIndexedDataSourceCount > 0` (folder datasource has `last_datasource_indexing_job`).
-  - If DO state is unavailable (`kbIndexedDataSourceCount` is null, e.g. DO API failed), we do **not** report discrepancy (avoid showing the modal when the server is temporarily unavailable).
-  - If DO says 0 but the user doc says indexed and we have a folder datasource (`kbDataSourceCount === 1`), we trust the user doc and do **not** report discrepancy (handles DO eventual consistency or missing `last_datasource_indexing_job` after a completed run).
+  - If the user doc has **no** `kbId` (e.g. new or different user who has not set up a KB in their doc), we do **not** report discrepancy.
+  - If DO state is unavailable (`kbIndexedDataSourceCount` is null, e.g. DO API failed), we do **not** report discrepancy.
+  - If DO says 0 and the user doc says indexed, we trust the user doc and do **not** report discrepancy (eventual consistency, folder not found—e.g. after sign-in as a different user).
 - When `discrepancy` is true the response also includes **`discrepancyMessage`** and **`suggestedFix`** (e.g. re-run indexing from Saved Files or refresh the page).
 
 ---

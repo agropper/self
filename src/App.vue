@@ -53,13 +53,14 @@
                 </div>
 
                 <div v-if="!showAuth">
-                  <!-- Get Started: No Password (blue) and Passkey (green) -->
+                  <!-- Get Started: No Password (blue) and Passkey (green). No Password disabled when status is cloud (passkey user). -->
                   <q-btn
                     label="GET STARTED with a No Password account"
                     color="primary"
                     size="lg"
                     class="full-width q-mb-sm"
                     :loading="tempStartLoading"
+                    :disable="welcomeUserType === 'cloud'"
                     @click="handleGetStartedNoPassword"
                   />
                   <q-btn
@@ -677,7 +678,10 @@ const welcomeUserStatusLine = computed(() => {
     return `${userId} has a local backup but ${fileCount} file${fileCount === 1 ? '' : 's'} will need to be restored and re-indexed.`;
   }
   const userId = ws.tempCookieUserId || localId || '';
-  return `${userId} has a local backup available. Click More Choices instead of Get Started if your passkey does not work.`;
+  const hasLocalBackup = !!welcomeLocalUserId.value;
+  return hasLocalBackup
+    ? `${userId} has a passkey and local backup available.`
+    : `${userId} has a passkey and no local backup available.`;
 });
 
 /** [AUTH] New client = no local backup and no temp cookie. */
@@ -1235,8 +1239,14 @@ const handleGetStartedNoPassword = () => {
 
 const handleGetStartedPasskey = () => {
   showOtherAccountOptionsDialog.value = false;
-  passkeyPrefillUserId.value = null;
-  passkeyPrefillAction.value = null;
+  // When status line shows a cloud user (passkey), bring that userId directly to WebAuthn
+  if (welcomeUserType.value === 'cloud' && welcomeDisplayUserId.value) {
+    passkeyPrefillUserId.value = welcomeDisplayUserId.value;
+    passkeyPrefillAction.value = 'signin';
+  } else {
+    passkeyPrefillUserId.value = null;
+    passkeyPrefillAction.value = null;
+  }
   showAuth.value = true;
 };
 
