@@ -18,7 +18,7 @@
     <!-- Current Medications - Always visible -->
     <q-card class="q-mb-md">
       <q-card-section>
-        <div class="text-h6 q-mb-md">Current Medications</div>
+        <div class="text-h6 q-mb-md">{{ currentMedicationsBlockTitle }}</div>
         
         <!-- Loading State with Progress Messages -->
         <div v-if="isLoadingCurrentMedications" class="q-pa-md">
@@ -490,6 +490,8 @@ const currentMedications = ref<string | null>(null);
 const isLoadingCurrentMedications = ref(false);
 const isEditingCurrentMedications = ref(false);
 const editingCurrentMedications = ref('');
+/** When no Medication Records category is found, show this title and open block for editing. */
+const currentMedicationsBlockTitle = ref('Current Medications');
 const editingOriginalCurrentMedications = ref('');
 const isSavingCurrentMedications = ref(false);
 const isCurrentMedicationsEdited = ref(false);
@@ -978,15 +980,6 @@ const loadWizardAutoFlow = () => {
   if (wizardAutoFlow.value) {
     logWizardEvent('lists_wizard_auto_flag', { value: wizardAutoFlow.value });
     wizardAutoStartPending.value = true;
-    try {
-      const autoProcess = sessionStorage.getItem('autoProcessInitialFile');
-      if (autoProcess === 'true' && !currentMedications.value) {
-        isLoadingCurrentMedications.value = true;
-        currentMedicationsStatus.value = 'consulting';
-      }
-    } catch (error) {
-      // ignore
-    }
   }
 };
 
@@ -1869,13 +1862,18 @@ const countObservationsByPageRange = (markedMarkdown: string): void => {
     };
   });
   
-  // After processing categories, load current medications if Medication Records exist (only if not already edited)
+  // After processing categories: if Medication Records exist, load current medications from file; otherwise open block for editing with user-reported title
   if (!isCurrentMedicationsEdited.value) {
-    const medicationCategory = categoriesList.value.find(cat => 
+    const medicationCategory = categoriesList.value.find(cat =>
       cat.name.toLowerCase().includes('medication')
     );
     if (medicationCategory && medicationCategory.observations && medicationCategory.observations.length > 0) {
       loadCurrentMedications();
+    } else {
+      isLoadingCurrentMedications.value = false;
+      currentMedicationsStatus.value = '';
+      currentMedicationsBlockTitle.value = 'Current Medications as reported by the user';
+      startEditingCurrentMedications();
     }
   }
   
@@ -2181,7 +2179,10 @@ const loadCurrentMedications = async (forceRefresh = false) => {
   );
 
   if (!medicationCategory || !medicationCategory.observations || medicationCategory.observations.length === 0) {
-    currentMedications.value = null;
+    isLoadingCurrentMedications.value = false;
+    currentMedicationsStatus.value = '';
+    currentMedicationsBlockTitle.value = 'Current Medications as reported by the user';
+    startEditingCurrentMedications();
     logWizardEvent('current_meds_no_records');
     return;
   }
@@ -2287,9 +2288,20 @@ const cancelEditingCurrentMedications = () => {
   isEditingCurrentMedications.value = false;
   editingCurrentMedications.value = '';
   editingOriginalCurrentMedications.value = '';
+  currentMedicationsBlockTitle.value = 'Current Medications';
 };
 
 const saveCurrentMedicationsValue = async (value: string, markEdited: boolean, clearVerify = false) => {
+  if (!props.userId) {
+    if ($q && typeof $q.notify === 'function') {
+      $q.notify({
+        type: 'negative',
+        message: 'Cannot save: user not identified.',
+        timeout: 3000
+      });
+    }
+    return;
+  }
   isSavingCurrentMedications.value = true;
   try {
     const response = await fetch('/api/user-current-medications', {
@@ -2314,16 +2326,15 @@ const saveCurrentMedicationsValue = async (value: string, markEdited: boolean, c
     isEditingCurrentMedications.value = false;
     editingCurrentMedications.value = '';
     editingOriginalCurrentMedications.value = '';
+    currentMedicationsBlockTitle.value = 'Current Medications';
     if (clearVerify) {
       clearVerifyRequirement();
     }
 
     emit('current-medications-saved', { value, edited: markEdited });
-    
-    // Show dialog about Patient Summary update only after Stage 3 is complete
-    if (stage3Complete.value) {
-      showSummaryDialog.value = true;
-    }
+
+    // Always show dialog so user can update Patient Summary (include new medications)
+    showSummaryDialog.value = true;
   } catch (err) {
     console.error('Error saving current medications:', err);
     if ($q && typeof $q.notify === 'function') {

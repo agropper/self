@@ -5899,11 +5899,12 @@ app.get('/api/user-settings', async (req, res) => {
 // Save current medications to user document
 app.post('/api/user-current-medications', async (req, res) => {
   try {
-    const { userId, currentMedications } = req.body;
-    
+    const userId = req.body.userId || req.session?.userId;
+    const currentMedications = req.body.currentMedications;
+
     if (!userId || currentMedications === undefined) {
-      return res.status(400).json({ 
-        success: false, 
+      return res.status(400).json({
+        success: false,
         message: 'User ID and currentMedications are required',
         error: 'MISSING_REQUIRED_FIELDS'
       });
