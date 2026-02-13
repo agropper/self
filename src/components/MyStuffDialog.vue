@@ -3443,31 +3443,42 @@ const createPseudonymMapping = async (responseText: string) => {
       randomNamesList = [];
     }
     
-    // Parse names from Privacy Filter response
-    // Split by newlines and extract names (one per line, may have notes in parentheses)
-    const responseLines = responseText.split(/\r?\n/)
-      .map(line => line.trim())
-      .filter(line => line && !line.startsWith('#') && !line.startsWith('*'));
-    
-    const extractedNames: string[] = [];
-    for (const line of responseLines) {
-      // Remove notes in parentheses
-      const cleanLine = line.replace(/\s*\([^)]*\)/g, '').trim();
-      
-      // Extract names with optional titles (Dr, Dr., Mr., Ms., Mrs., etc.)
-      // All variants (First Last, Dr First Last, Dr. Last, Last) are later normalized to canonical "First Last" for one mapping per person
-      const namePatterns = [
-        /^(?:Dr\.?|Mr\.?|Mrs\.?|Ms\.?|Prof\.?|RN|CNP|OD)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)/, // Title + full name
-        /^([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)/, // Full name without title
-        /^(?:Dr\.?|Mr\.?|Mrs\.?|Ms\.?|Prof\.?)\s+([A-Z][a-z]+)/, // Title + single name (last name)
-        /^([A-Z][a-z]+)$/ // Single capitalized word (last name)
-      ];
+    // Parse names from Privacy Filter response (robust to formatting: bullets, tables, headers)
+    // 1) Normalize: strip markdown list/header prefixes, then collect line content and table cells
+    const rawLines = responseText.split(/\r?\n/).map(line => line.trim()).filter(Boolean);
+    const nameCandidates: string[] = [];
+    for (const line of rawLines) {
+      const stripped = line
+        .replace(/^\s*#+\s*/, '')           // ## Header
+        .replace(/^\s*[-*]\s*/, '')        // - or * bullet
+        .replace(/^\s*\d+[.)]\s*/, '')     // 1. or 1) numbered list
+        .trim();
+      if (!stripped) continue;
+      if (stripped.includes('|')) {
+        const cells = stripped.split('|').map(c => c.trim()).filter(Boolean);
+        nameCandidates.push(...cells);
+      } else {
+        nameCandidates.push(stripped);
+      }
+    }
 
+    const namePatterns = [
+      /^(?:Dr\.?|Mr\.?|Mrs\.?|Ms\.?|Prof\.?|RN|CNP|OD)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)/,
+      /^([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)/,
+      /^(?:Dr\.?|Mr\.?|Mrs\.?|Ms\.?|Prof\.?)\s+([A-Z][a-z]+)/,
+      /^([A-Z][a-z]+)$/
+    ];
+
+    const skipWords = new Set(['name', 'role', 'patient', 'column']);
+    const extractedNames: string[] = [];
+    for (const candidate of nameCandidates) {
+      const cleanLine = candidate.replace(/\s*\([^)]*\)/g, '').trim();
+      if (!cleanLine) continue;
       for (const pattern of namePatterns) {
         const match = cleanLine.match(pattern);
         if (match) {
           const name = match[1] || match[0];
-          if (name && name.length > 1) {
+          if (name && name.length > 1 && !skipWords.has(name.toLowerCase())) {
             extractedNames.push(name);
             if (pattern === namePatterns[0] && match[0] !== name) {
               extractedNames.push(match[0]);
