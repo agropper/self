@@ -3470,6 +3470,7 @@ const createPseudonymMapping = async (responseText: string) => {
     ];
 
     const skipWords = new Set(['name', 'role', 'patient', 'column']);
+    const titleWords = new Set(['dr', 'mr', 'mrs', 'ms', 'prof', 'rn', 'cnp', 'od']);
     const extractedNames: string[] = [];
     const initialLastNamePattern = /\b([A-Z])\.\s+([A-Z][a-z]+)(?:\s|$|,)/g; // "C. Pasinski" or "X. LastName,"
     for (const candidate of nameCandidates) {
@@ -3488,12 +3489,19 @@ const createPseudonymMapping = async (responseText: string) => {
           }
         }
       }
-      // Also extract last names after middle initial (e.g. "Dr Ethan Ward C. Pasinski" -> add "Pasinski")
+      // Also extract last names after middle initial; if a first name precedes "X. LastName", use full name to avoid separate mappings
       let initialMatch;
       initialLastNamePattern.lastIndex = 0;
       while ((initialMatch = initialLastNamePattern.exec(cleanLine)) !== null) {
         const lastName = initialMatch[2];
-        if (lastName && lastName.length > 1 && !skipWords.has(lastName.toLowerCase())) {
+        if (!lastName || lastName.length <= 1 || skipWords.has(lastName.toLowerCase())) continue;
+        const beforeInitial = cleanLine.substring(0, initialMatch.index).trim();
+        const wordsBefore = beforeInitial.split(/\s+/).filter(Boolean);
+        const lastWord = wordsBefore.length > 0 ? wordsBefore[wordsBefore.length - 1] : '';
+        const looksLikeFirstName = lastWord && /^[A-Z][a-z]+$/.test(lastWord) && !titleWords.has(lastWord.toLowerCase()) && !skipWords.has(lastWord.toLowerCase());
+        if (looksLikeFirstName) {
+          extractedNames.push(`${lastWord} ${lastName}`);
+        } else {
           extractedNames.push(lastName);
         }
       }
@@ -3790,6 +3798,14 @@ const filterCurrentChat = () => {
         escapedOriginal !== escapedOriginalWithUnicode
           ? new RegExp(`\\b${escapedOriginalWithUnicode}\\b`, 'gi')
           : null;
+
+      // Pattern 1b: FirstName X. LastName (middle initial) so "Roger C. Pasinski" matches mapping "Roger Pasinski"
+      if (nameParts.length >= 2) {
+        const escapedFirst = nameParts[0].replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const escapedRest = nameParts.slice(1).map((p) => p.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('\\s+');
+        const middleInitialPattern = new RegExp(`\\b${escapedFirst}\\s+[A-Z]\\.\\s+${escapedRest}\\b`, 'gi');
+        filteredContent = filteredContent.replace(middleInitialPattern, () => mapping.pseudonym);
+      }
       
       // Try both patterns (normalized and with Unicode spaces)
       filteredContent = filteredContent.replace(exactPattern, (match, offset) => {
