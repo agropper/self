@@ -3232,6 +3232,24 @@ const deduplicateMapping = (
   return { deduplicated: deduplicatedMapping, removed: duplicatesRemoved };
 };
 
+// Remove single-word mappings that are the first name of a full-name mapping (e.g. keep "Roger Pasinski", remove "Roger").
+const dropOrphanFirstNames = (
+  mappings: Array<{ original: string; pseudonym: string }>
+): Array<{ original: string; pseudonym: string }> => {
+  const firstNamesOfFullNames = new Set(
+    mappings
+      .filter((m) => m.original.split(/\s+/).length >= 2)
+      .map((m) => m.original.split(/\s+/)[0].toLowerCase())
+  );
+  return mappings.filter((m) => {
+    const parts = m.original.split(/\s+/);
+    if (parts.length === 1 && firstNamesOfFullNames.has(parts[0].toLowerCase())) {
+      return false;
+    }
+    return true;
+  });
+};
+
 const loadPrivacyFilter = async () => {
   loadingPrivacyFilter.value = true;
   privacyFilterError.value = '';
@@ -3256,25 +3274,26 @@ const loadPrivacyFilter = async () => {
         const loadData = await loadResponse.json();
         if (loadData.mapping && loadData.mapping.length > 0) {
           const { deduplicated, removed } = deduplicateMapping(loadData.mapping, getCanonicalFromMapping(loadData.mapping));
+          const cleaned = dropOrphanFirstNames(deduplicated);
 
-          if (removed.length > 0) {
+          if (removed.length > 0 || cleaned.length !== deduplicated.length) {
             try {
               await fetch('/api/privacy-filter-mapping', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 credentials: 'include',
-                body: JSON.stringify({ mapping: deduplicated })
+                body: JSON.stringify({ mapping: cleaned })
               });
             } catch (saveErr) {
               // Silently handle save errors
             }
           }
 
-          privacyFilterMapping.value = deduplicated;
+          privacyFilterMapping.value = cleaned;
         } else {
           const mapping = loadData.mapping || [];
           const { deduplicated } = deduplicateMapping(mapping, getCanonicalFromMapping(mapping));
-          privacyFilterMapping.value = deduplicated;
+          privacyFilterMapping.value = dropOrphanFirstNames(deduplicated);
         }
       }
     } catch (loadErr) {
@@ -3285,14 +3304,15 @@ const loadPrivacyFilter = async () => {
     if (privacyFilterMapping.value.length > 0) {
       const current = privacyFilterMapping.value;
       const { deduplicated, removed } = deduplicateMapping(current, getCanonicalFromMapping(current));
-      if (removed.length > 0 || deduplicated.length !== privacyFilterMapping.value.length) {
-        privacyFilterMapping.value = deduplicated;
+      const cleaned = dropOrphanFirstNames(deduplicated);
+      if (removed.length > 0 || cleaned.length !== privacyFilterMapping.value.length) {
+        privacyFilterMapping.value = cleaned;
         try {
           await fetch('/api/privacy-filter-mapping', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             credentials: 'include',
-            body: JSON.stringify({ mapping: deduplicated })
+            body: JSON.stringify({ mapping: cleaned })
           });
         } catch (saveErr) {
           // Silently handle save errors
@@ -3608,11 +3628,13 @@ const createPseudonymMapping = async (responseText: string) => {
       allMappings,
       getCanonicalForMerge
     );
+
+    const mappingWithoutOrphanFirstNames = dropOrphanFirstNames(deduplicatedMapping);
     
-    privacyFilterMapping.value = deduplicatedMapping;
+    privacyFilterMapping.value = mappingWithoutOrphanFirstNames;
     
     // Always save the deduplicated mapping to ensure storage is clean
-    if (duplicateRemoved.length > 0 || newMappings.length > 0) {
+    if (duplicateRemoved.length > 0 || newMappings.length > 0 || mappingWithoutOrphanFirstNames.length !== deduplicatedMapping.length) {
       try {
         await fetch('/api/privacy-filter-mapping', {
           method: 'POST',
@@ -3620,7 +3642,7 @@ const createPseudonymMapping = async (responseText: string) => {
             'Content-Type': 'application/json'
           },
           credentials: 'include',
-          body: JSON.stringify({ mapping: deduplicatedMapping })
+          body: JSON.stringify({ mapping: mappingWithoutOrphanFirstNames })
         });
         // Silently handle save errors
       } catch (saveErr) {
@@ -3636,7 +3658,7 @@ const createPseudonymMapping = async (responseText: string) => {
           'Content-Type': 'application/json'
         },
         credentials: 'include',
-        body: JSON.stringify({ mapping: deduplicatedMapping })
+        body: JSON.stringify({ mapping: mappingWithoutOrphanFirstNames })
       });
       
         // Silently handle save errors
@@ -5179,14 +5201,15 @@ watch(currentTab, async (newTab) => {
       const getCanonical = (orig: string) =>
         toCanonical(orig, buildLastNameToFullNameFromFullNames(current.map(m => m.original)));
       const { deduplicated, removed } = deduplicateMapping(current, getCanonical);
-      if (removed.length > 0) {
-        privacyFilterMapping.value = deduplicated;
+      const cleaned = dropOrphanFirstNames(deduplicated);
+      if (removed.length > 0 || cleaned.length !== current.length) {
+        privacyFilterMapping.value = cleaned;
         try {
           await fetch('/api/privacy-filter-mapping', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             credentials: 'include',
-            body: JSON.stringify({ mapping: deduplicated })
+            body: JSON.stringify({ mapping: cleaned })
           });
         } catch (saveErr) {
           // Silently handle save errors
