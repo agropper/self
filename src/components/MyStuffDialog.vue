@@ -3471,6 +3471,7 @@ const createPseudonymMapping = async (responseText: string) => {
 
     const skipWords = new Set(['name', 'role', 'patient', 'column']);
     const extractedNames: string[] = [];
+    const initialLastNamePattern = /\b([A-Z])\.\s+([A-Z][a-z]+)(?:\s|$|,)/g; // "C. Pasinski" or "X. LastName,"
     for (const candidate of nameCandidates) {
       const cleanLine = candidate.replace(/\s*\([^)]*\)/g, '').trim();
       if (!cleanLine) continue;
@@ -3485,6 +3486,15 @@ const createPseudonymMapping = async (responseText: string) => {
             }
             break;
           }
+        }
+      }
+      // Also extract last names after middle initial (e.g. "Dr Ethan Ward C. Pasinski" -> add "Pasinski")
+      let initialMatch;
+      initialLastNamePattern.lastIndex = 0;
+      while ((initialMatch = initialLastNamePattern.exec(cleanLine)) !== null) {
+        const lastName = initialMatch[2];
+        if (lastName && lastName.length > 1 && !skipWords.has(lastName.toLowerCase())) {
+          extractedNames.push(lastName);
         }
       }
     }
