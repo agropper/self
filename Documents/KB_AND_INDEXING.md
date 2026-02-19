@@ -103,7 +103,53 @@ The response includes **`indexingState`** (computed from user doc + DO in the sa
 
 ---
 
-## 7. Future simplifications and refactors
+## 7. Wizard: how files are chosen for indexing and what happens when indexing completes
+
+### Choosing files in the wizard
+
+- **File list:** The wizard’s “Files to be indexed” list comes from **`refreshWizardState()`**, which calls `GET /api/user-files?source=wizard`. The server returns all user files; the response is mapped into **`wizardStage3Files`** (name, bucketKey, inKnowledgeBase, isAppleHealth, pendingKbAdd). The UI shows **`stage3DisplayFiles`** (derived from that list with pending/restore state).
+- **“Add a file”:** Clicking **Add a file** (or “Add file: …” during restore) runs **`handleStage3Action()`**, which sets `wizardUploadIntent` and opens the file picker (`triggerWizardFileInput()`). The user selects a file from disk.
+- **After selection:** **`handleFileSelect()`** runs:
+  - For a **restore** file: uploads via `uploadRestoreFile()`, then clears intent.
+  - For a **normal** wizard file: stores the chosen filename in **localStorage** (`wizardKbPendingFileName-${userId}`) and sets **`stage3PendingUploadName`**, then uploads the file (PDF or text) via **`uploadPDFFile()`** or **`uploadTextFile()`**.
+- **Upload path:** Upload uses **`/api/files/parse-pdf`** (PDF) or direct read + **`/api/files/upload`**, then **`/api/user-file-metadata`** to add the file to the user document. **`refreshWizardState()`** is called so the new file appears in the list. If the uploaded file matches the pending name, the client can auto-toggle it into the KB (toggle-file-knowledge-base) so it’s marked “in KB” for indexing.
+- **Checkboxes:** Files already in the KB folder show as checked. The user can change membership with the checkbox, which calls **`/api/toggle-file-knowledge-base`** (same as Saved Files): that **moves** the object in the bucket (root ↔ archived ↔ `userId/<kbName>/`). No re-upload; the file is just moved into the KB folder so it will be included in the next indexing job.
+
+So in the wizard, “choosing” a file means either (1) **adding** a new file (upload → user doc → optional auto-add to KB), or (2) **toggling** an existing file into the KB folder via the checkbox. The list is always sourced from `GET /api/user-files` and the KB folder is `userId/<kbName>/`.
+
+### Clicking “No more files to add – Index now”
+
+**`handleStage3Index()`** runs:
+
+1. **Resolve names:** Uses **`overrideNames`** if provided (e.g. restore), otherwise the names from **`wizardStage3Files`**.
+2. **Fetch current files:** Calls **`GET /api/user-files?source=wizard`** to get the latest file list with bucketKeys.
+3. **Ensure all selected files are in the KB folder:** For each name that isn’t already `inKnowledgeBase`, it calls **`POST /api/toggle-file-knowledge-base`** with `inKnowledgeBase: true` so those files are moved into `userId/<kbName>/`.
+4. **Start indexing:** Calls **`POST /api/update-knowledge-base`** with `userId`. The server ensures the KB and its folder datasource exist, starts (or reuses) a single DO indexing job, persists **`kbIndexingStatus`** (jobId, phase, etc.), and starts **server-side polling** (`runPoll` every 15s) until the job completes or times out.
+5. **Frontend state:** The wizard sets **`stage3IndexingStartedAt`** (and persists it to sessionStorage for elapsed time across reloads), starts the elapsed timer, and (if the API returns a **jobId**) starts a **client-side poll** (e.g. `GET /api/user-files`) every 10s to update **`indexingStatus`** (phase, tokens, filesIndexed) and the status tip.
+
+So the **files** are not sent again on “Index now”; they’re already in the bucket. “Index now” only ensures every file in the wizard list that should be in the KB is in the KB folder, then triggers one KB-level indexing job on that folder.
+
+### When indexing completes (server)
+
+- **`completeIndexing()`** (in the server’s polling loop) runs when the DO job status is completed (or inferred):
+  - Updates **`userDoc.workflowStage`** if it was `'indexing'` (e.g. to `'files_archived'` or `'agent_deployed'`).
+  - Computes **`kbIndexedBucketKeys`**: all **`userDoc.files`** whose **`bucketKey`** is under **`userId/<kbName>/`** (i.e. in the KB folder). That list is written to **`userDoc.kbIndexedBucketKeys`** and **`userDoc.kbIndexedAt`**.
+  - Persists **`kbIndexingStatus`** with **`backendCompleted: true`**, **`phase: 'complete'`**, and final tokens/files.
+  - **Attaches the KB to the agent** (DO API) if the user has an agent endpoint.
+  - Runs **`cleanupEphemeralIndexing('completed')`** (ephemeral bucket cleanup if used).
+
+So when indexing completes, **files are not moved or deleted**. They stay in **`userId/<kbName>/`**. The server simply records that **every file in that folder** is now indexed by setting **`kbIndexedBucketKeys`** to that list. The **user document** is the source of truth for “which bucket keys are indexed”; the UI (wizard and Saved Files) uses **`kbIndexedBucketKeys`** and **`kbIndexingStatus`** from **`GET /api/user-files`** to show “Indexed” and completion state.
+
+### When indexing completes (client)
+
+- **Wizard:** The client poll (or SSE/event, if used) sees **`kbIndexingStatus.backendCompleted === true`**. Then **`handleIndexingFinished()`** (or the polling completion path) sets **`stage3IndexingCompletedAt`**, clears the elapsed timer and sessionStorage key, updates **`indexingStatus.phase`** to `'complete'`, and calls **`refreshWizardState()`**. The wizard then shows the “Create and Verify your Patient Summary” (or Medications) step; the “Files to be indexed” list still shows the same files, now reflected as indexed in **`kbIndexedBucketKeys`**.
+- **Saved Files:** Uses the same **`GET /api/user-files`** response; the “Indexed in Knowledge Base” chip is driven by **`kbIndexedBucketKeys`**. So once the server has set **`kbIndexedBucketKeys`** and **`backendCompleted`**, both the wizard and Saved Files show completion and indexed state without moving or re-uploading any files.
+
+**Summary:** Wizard files are uploaded and/or toggled into the KB folder; “Index now” only ensures KB membership and starts one indexing job. When indexing completes, the server writes **`kbIndexedBucketKeys`** and **`backendCompleted`**; files stay in the KB folder and are not moved or removed.
+
+---
+
+## 8. Future simplifications and refactors
 
 - **Single “indexing state” endpoint (optional):** If other callers only need `indexingState` (allKbFilesIndexed, discrepancy, message, fix) and not the full file list, a lightweight `GET /api/indexing-state?userId=...` could return just that. Today everything goes through `GET /api/user-files`, which is fine; a separate endpoint would only be useful if we want to avoid transferring the file list when only state is needed.
 - **Deduplicate discrepancy modal copy:** The same “Indexing state mismatch” dialog (message + suggested fix + OK) exists in MyStuffDialog and ChatInterface. Could be one shared component (e.g. a small composable or a shared dialog component) to avoid drift.

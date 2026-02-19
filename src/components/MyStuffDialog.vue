@@ -1964,6 +1964,9 @@ const formatNumber = (value: string | number) => {
 const getWizardPendingKey = () =>
   props.userId ? `wizardKbPendingFileName-${props.userId}` : 'wizardKbPendingFileName';
 
+const wizardStage3IndexingStartedKey = () =>
+  props.userId ? `wizard_stage3_indexing_started_${props.userId}` : null;
+
 const clearWizardPendingStorage = () => {
   try {
     localStorage.removeItem(getWizardPendingKey());
@@ -2485,8 +2488,25 @@ const pollIndexingProgress = async (jobId: string) => {
     clearInterval(pollingInterval.value);
   }
   
-  // Set start time for timeout tracking
-  indexingStartTime.value = Date.now();
+  // Use persisted start time if indexing was started from wizard (survives reload / opening Saved Files mid-indexing)
+  const storageKey = wizardStage3IndexingStartedKey();
+  try {
+    const stored = storageKey ? sessionStorage.getItem(storageKey) : null;
+    if (stored) {
+      const startedAt = parseInt(stored, 10);
+      const maxAgeMs = 24 * 60 * 60 * 1000;
+      if (!Number.isNaN(startedAt) && Date.now() - startedAt < maxAgeMs) {
+        indexingStartTime.value = startedAt;
+      } else {
+        if (storageKey) sessionStorage.removeItem(storageKey);
+        indexingStartTime.value = Date.now();
+      }
+    } else {
+      indexingStartTime.value = Date.now();
+    }
+  } catch {
+    indexingStartTime.value = Date.now();
+  }
   elapsedTimeUpdate.value = 0;
   
   // Start interval to update elapsed time display every second
@@ -2510,6 +2530,13 @@ const pollIndexingProgress = async (jobId: string) => {
   // Poll every 10 seconds for indexing status
   const POLL_INTERVAL_MS = 10000; // 10 seconds
   pollingInterval.value = setInterval(async () => {
+    if (!isOpen.value) {
+      if (pollingInterval.value) clearInterval(pollingInterval.value);
+      pollingInterval.value = null;
+      if (elapsedTimeInterval.value) clearInterval(elapsedTimeInterval.value);
+      elapsedTimeInterval.value = null;
+      return;
+    }
     try {
       // Check for timeout
       const elapsed = indexingStartTime.value ? (Date.now() - indexingStartTime.value) : 0;
@@ -2544,6 +2571,7 @@ const pollIndexingProgress = async (jobId: string) => {
       }
 
       const result = await response.json();
+      if (!isOpen.value) return;
       const statusResult = result.kbIndexingStatus || {};
       if (statusResult.jobId && statusResult.jobId !== jobId) {
         return;
@@ -5190,6 +5218,16 @@ watch(() => props.initialTab, (newTab) => {
 
 watch(isOpen, (newValue) => {
   emit('update:modelValue', newValue);
+  if (!newValue) {
+    if (pollingInterval.value) {
+      clearInterval(pollingInterval.value);
+      pollingInterval.value = null;
+    }
+    if (elapsedTimeInterval.value) {
+      clearInterval(elapsedTimeInterval.value);
+      elapsedTimeInterval.value = null;
+    }
+  }
 });
 
 const listsComponentRef = ref<InstanceType<typeof Lists> | null>(null);

@@ -2,6 +2,12 @@
   <div class="chat-interface">
     <q-card class="full-height">
       <q-card-section class="q-pa-none full-height flex column">
+        <!-- Initial load: show only spinner until wizard/chat is ready (avoids "Private AI unavailable" before wizard) -->
+        <div v-if="!initialLoadComplete" class="full-height flex flex-center column" style="min-height: 280px;">
+          <q-spinner size="3em" color="primary" />
+          <div class="text-body2 text-grey-7 q-mt-md">Setting up...</div>
+        </div>
+        <template v-else>
         <!-- File Info Bar -->
         <div v-if="uploadedFiles.length > 0" class="q-px-md q-pt-md q-pb-sm" style="flex-shrink: 0; border-bottom: 1px solid #eee;">
           <div class="row items-center q-gutter-xs">
@@ -297,6 +303,7 @@
             </div>
           </div>
         </div>
+        </template>
       </q-card-section>
     </q-card>
 
@@ -416,6 +423,7 @@
                     size="sm"
                     color="primary"
                     label="No more files to add - Index now"
+                    :class="{ 'wizard-index-now-highlight': !isUploadingFile && stage3DisplayFiles.length > 0 && !stage3IndexingActive && wizardNeedsIndexing }"
                     :disable="!wizardNeedsIndexing || stage3IndexingActive || stage3PendingUploadActive"
                     @click="() => handleStage3Index(wizardRestoreActive ? stage3DisplayFiles.map(f => f.name) : undefined, wizardRestoreActive)"
                   />
@@ -443,6 +451,14 @@
               </div>
             </div>
           </div>
+
+            <div
+              v-if="isUploadingFile || (stage3DisplayFiles.length > 0 && !stage3IndexingActive)"
+              class="text-caption q-mt-sm"
+              :class="isUploadingFile ? 'text-primary' : 'text-grey-7'"
+            >
+              {{ isUploadingFile ? 'Uploading...' : 'Add more files or begin indexing.' }}
+            </div>
 
             <div class="text-caption q-mt-md" :class="wizardStage1Complete ? 'text-green-7' : (wizardStage1TimerActive ? 'text-green-7' : 'text-grey-7')">
             Private AI agent deployment status: {{ wizardStage1StatusLine }}
@@ -866,6 +882,8 @@ const stage3Checked = computed(() =>
   !wizardRestoreActive.value && (wizardStage2Complete.value || wizardCurrentMedications.value || wizardStage2NoDevice.value)
 );
 const showPrivateUnavailableDialog = ref(false);
+/** Becomes true after first refreshWizardState (or immediately for deep-link). Gates spinner and "Private AI unavailable" modal. */
+const initialLoadComplete = ref(false);
 const wizardStage2Complete = ref(false);
 const wizardStage3Complete = ref(false);
 const wizardStage2Pending = ref(false);
@@ -909,6 +927,8 @@ const positionWizardInlineDots = async () => {
 };
 const wizardUserStorageKey = computed(() => props.user?.userId ? `wizard-completion-${props.user.userId}` : null);
 const wizardStage2NoDeviceKey = computed(() => props.user?.userId ? `wizardStage2NoDevice-${props.user.userId}` : null);
+const wizardAgentSetupStartedKey = (userId: string | undefined) => userId ? `wizard_agent_setup_started_${userId}` : null;
+const wizardStage3IndexingStartedKey = (userId: string | undefined) => userId ? `wizard_stage3_indexing_started_${userId}` : null;
 const wizardRestoreActive = computed(() => !!props.rehydrationActive && (Array.isArray(props.rehydrationFiles) ? props.rehydrationFiles.length > 0 : false));
 const firstUnrestoredFileName = computed(() => {
   if (!wizardRestoreActive.value) return null;
@@ -1132,6 +1152,23 @@ watch(
       wizardSlideIndex.value = 0;
       void loadWizardMessages();
       void positionWizardInlineDots();
+      if (agentSetupPollingActive.value) {
+        const key = wizardAgentSetupStartedKey(props.user?.userId);
+        try {
+          const stored = key ? sessionStorage.getItem(key) : null;
+          if (stored) {
+            const startedAt = parseInt(stored, 10);
+            const maxAgeMs = 20 * 60 * 1000;
+            if (!isNaN(startedAt) && (Date.now() - startedAt) < maxAgeMs) {
+              agentSetupElapsed.value = Math.max(0, Math.floor((Date.now() - startedAt) / 1000));
+            }
+          }
+        } catch { /* ignore */ }
+        stopAgentSetupTimer();
+        agentSetupTimer = setInterval(() => {
+          agentSetupElapsed.value += 1;
+        }, 1000);
+      }
     } else if (wasOpen) {
       nextTick(() => void checkAndShowNeedsIndexingPrompt());
     }
@@ -1194,6 +1231,13 @@ const checkAndShowNeedsIndexingPrompt = async () => {
     const indexingState = filesData?.indexingState;
     const allKbFilesIndexed = !!indexingState?.allKbFilesIndexed;
     if (allKbFilesIndexed) return;
+    const kbIndexing = filesData?.kbIndexingStatus;
+    const indexingInProgress = !!(
+      kbIndexing &&
+      kbIndexing.backendCompleted !== true &&
+      (kbIndexing.phase === 'indexing' || kbIndexing.phase === 'indexing_started')
+    );
+    if (indexingInProgress) return;
     const hasAgent = !!statusData?.hasAgent;
     const fileCount = Number(statusData?.fileCount) || 0;
     const kbStatus = statusData?.kbStatus || 'none';
@@ -1526,7 +1570,9 @@ const loadProviders = async () => {
         selectedProvider.value = providerLabels.digitalocean;
         showPrivateUnavailableDialog.value = false; // clear in case it was shown before refetch
       } else {
-        showPrivateUnavailableDialog.value = true;
+        if (initialLoadComplete.value && !showAgentSetupDialog.value) {
+          showPrivateUnavailableDialog.value = true;
+        }
         selectFirstNonPrivateProvider();
       }
     }
@@ -1542,7 +1588,9 @@ const loadProviders = async () => {
       selectedProvider.value = providerLabels.digitalocean;
       showPrivateUnavailableDialog.value = false;
     } else {
-      showPrivateUnavailableDialog.value = true;
+      if (initialLoadComplete.value && !showAgentSetupDialog.value) {
+        showPrivateUnavailableDialog.value = true;
+      }
       selectFirstNonPrivateProvider();
     }
   }
@@ -1573,7 +1621,9 @@ watch(
       return;
     }
     if (getProviderKey(selectedProvider.value) === 'digitalocean') {
-      showPrivateUnavailableDialog.value = true;
+      if (initialLoadComplete.value && !showAgentSetupDialog.value) {
+        showPrivateUnavailableDialog.value = true;
+      }
       selectFirstNonPrivateProvider();
     }
   },
@@ -2072,7 +2122,26 @@ const refreshWizardState = async () => {
       if (indexingActiveFromFiles === true) {
         wizardStage3Complete.value = false;
         if (!indexingStatus.value || indexingStatus.value.phase !== 'indexing') {
-          stage3IndexingStartedAt.value = Date.now();
+          const stage3Key = wizardStage3IndexingStartedKey(props.user?.userId);
+          try {
+            const stored = stage3Key ? sessionStorage.getItem(stage3Key) : null;
+            if (stored) {
+              const startedAt = parseInt(stored, 10);
+              const maxAgeMs = 24 * 60 * 60 * 1000;
+              if (!isNaN(startedAt) && (Date.now() - startedAt) < maxAgeMs) {
+                stage3IndexingStartedAt.value = startedAt;
+              } else {
+                if (stage3Key) sessionStorage.removeItem(stage3Key);
+                stage3IndexingStartedAt.value = Date.now();
+                if (stage3Key) sessionStorage.setItem(stage3Key, String(stage3IndexingStartedAt.value));
+              }
+            } else {
+              stage3IndexingStartedAt.value = Date.now();
+              if (stage3Key) sessionStorage.setItem(stage3Key, String(stage3IndexingStartedAt.value));
+            }
+          } catch {
+            stage3IndexingStartedAt.value = Date.now();
+          }
           stage3IndexingCompletedAt.value = null;
           indexingStatus.value = {
             active: true,
@@ -2117,6 +2186,10 @@ const refreshWizardState = async () => {
                   }
                   stage3IndexingCompletedAt.value = Date.now();
                   stopStage3ElapsedTimer();
+                  try {
+                    const k = wizardStage3IndexingStartedKey(props.user?.userId);
+                    if (k) sessionStorage.removeItem(k);
+                  } catch { /* ignore */ }
                   refreshWizardState();
                 }
               } catch (_error) {
@@ -2247,6 +2320,8 @@ const toggleWizardKbCheckbox = async (file: { bucketKey?: string | null; inKnowl
     wizardStage3Files.value = wizardStage3Files.value.map(entry =>
       entry.bucketKey === bucketKey ? { ...entry, inKnowledgeBase: nextValue } : entry
     );
+    // File moved to/from KB folder or archived — remove from chat badges and context
+    handleFilesArchived([bucketKey]);
     await refreshWizardState();
   } catch (error) {
     console.error('Failed to toggle KB selection:', error);
@@ -2293,6 +2368,10 @@ const dismissWizard = () => {
   wizardDismissed.value = true;
   showAgentSetupDialog.value = false;
   stopAgentSetupTimer();
+  if (initialLoadComplete.value && providers.value.length > 0 && !providers.value.includes('digitalocean')) {
+    showPrivateUnavailableDialog.value = true;
+    selectFirstNonPrivateProvider();
+  }
 };
 
 const stage3IndexingPoll = ref<ReturnType<typeof setInterval> | null>(null);
@@ -2385,6 +2464,7 @@ const handleStage3Index = async (overrideNames?: string[], fromRestore = false) 
         throw new Error(`Missing bucket keys for: ${missingTargets.join(', ')}`);
       }
 
+      const movedToKbBucketKeys: string[] = [];
       for (const name of stage3Names) {
         const file = byName.get(name);
         const bucketKey = file?.bucketKey;
@@ -2410,6 +2490,10 @@ const handleStage3Index = async (overrideNames?: string[], fromRestore = false) 
           const errorData = await toggleResponse.json().catch(() => ({}));
           throw new Error(errorData.message || `Failed to move ${name} to KB folder`);
         }
+        movedToKbBucketKeys.push(bucketKey);
+      }
+      if (movedToKbBucketKeys.length > 0) {
+        handleFilesArchived(movedToKbBucketKeys);
       }
 
       const verifyResponse = await fetch(`/api/user-files?userId=${encodeURIComponent(props.user.userId)}`, {
@@ -2444,6 +2528,10 @@ const handleStage3Index = async (overrideNames?: string[], fromRestore = false) 
     stage3LastImportedName.value = null;
     stage3IndexingStartedAt.value = Date.now();
     stage3IndexingCompletedAt.value = null;
+    try {
+      const k = wizardStage3IndexingStartedKey(props.user?.userId);
+      if (k) sessionStorage.setItem(k, String(stage3IndexingStartedAt.value));
+    } catch { /* ignore */ }
     indexingStatus.value = {
       active: true,
       phase: 'indexing',
@@ -2490,6 +2578,10 @@ const handleStage3Index = async (overrideNames?: string[], fromRestore = false) 
             }
             stage3IndexingCompletedAt.value = Date.now();
             stopStage3ElapsedTimer();
+            try {
+              const k = wizardStage3IndexingStartedKey(props.user?.userId);
+              if (k) sessionStorage.removeItem(k);
+            } catch { /* ignore */ }
             await refreshWizardState();
             if (restoreIndexingActive.value) {
               restoreIndexingActive.value = false;
@@ -4552,23 +4644,51 @@ watch(() => [messages.value.length, messages.value[messages.value.length - 1]?.c
 }, { flush: 'post' });
 
 const startSetupWizardPolling = () => {
-  if (!props.user?.userId) return;
+  if (!props.user?.userId) {
+    initialLoadComplete.value = true;
+    return;
+  }
+  const userId = props.user.userId;
+  const agentSetupKey = wizardAgentSetupStartedKey(userId);
   const maxAttempts = 60; // 15 minutes at 15s
   let attempts = 0;
   agentSetupTimedOut.value = false;
   agentSetupPollingActive.value = true;
   wizardStage1Complete.value = false;
-  agentSetupElapsed.value = 0;
-
-  refreshWizardState().then(() => {
-    if (!shouldHideSetupWizard.value && !showAgentSetupDialog.value && !wizardDismissed.value) {
-      showAgentSetupDialog.value = true;
-      stopAgentSetupTimer();
-      agentSetupTimer = setInterval(() => {
-        agentSetupElapsed.value += 1;
-      }, 1000);
+  try {
+    const stored = agentSetupKey ? sessionStorage.getItem(agentSetupKey) : null;
+    if (stored) {
+      const startedAt = parseInt(stored, 10);
+      const maxAgeMs = 20 * 60 * 1000;
+      if (!isNaN(startedAt) && (Date.now() - startedAt) < maxAgeMs) {
+        agentSetupElapsed.value = Math.max(0, Math.floor((Date.now() - startedAt) / 1000));
+      } else {
+        if (agentSetupKey) sessionStorage.removeItem(agentSetupKey);
+        agentSetupElapsed.value = 0;
+        if (agentSetupKey) sessionStorage.setItem(agentSetupKey, String(Date.now()));
+      }
+    } else {
+      agentSetupElapsed.value = 0;
+      if (agentSetupKey) sessionStorage.setItem(agentSetupKey, String(Date.now()));
     }
-  });
+  } catch {
+    agentSetupElapsed.value = 0;
+  }
+
+  refreshWizardState()
+    .then(() => {
+      if (!shouldHideSetupWizard.value && !showAgentSetupDialog.value && !wizardDismissed.value) {
+        showAgentSetupDialog.value = true;
+        stopAgentSetupTimer();
+        agentSetupTimer = setInterval(() => {
+          agentSetupElapsed.value += 1;
+        }, 1000);
+      }
+      initialLoadComplete.value = true;
+    })
+    .catch(() => {
+      initialLoadComplete.value = true;
+    });
 
   const poll = async () => {
     attempts += 1;
@@ -4599,6 +4719,9 @@ const startSetupWizardPolling = () => {
         wizardStage1Complete.value = true;
         agentSetupPollingActive.value = false;
         stopAgentSetupTimer();
+        try {
+          if (agentSetupKey) sessionStorage.removeItem(agentSetupKey);
+        } catch { /* ignore */ }
         updateContextualTip();
         // Refetch providers so Private AI appears without page reload (await so UI updates before we return)
         await loadProviders();
@@ -4622,6 +4745,9 @@ const startSetupWizardPolling = () => {
       agentSetupTimedOut.value = true;
       agentSetupPollingActive.value = false;
       stopAgentSetupTimer();
+      try {
+        if (agentSetupKey) sessionStorage.removeItem(agentSetupKey);
+      } catch { /* ignore */ }
     }
   };
 
@@ -4645,6 +4771,10 @@ const stage3IndexingActive = computed(() =>
 const handleIndexingStarted = (data: { jobId: string; phase: string }) => {
   stage3IndexingStartedAt.value = Date.now();
   stage3IndexingCompletedAt.value = null;
+  try {
+    const k = wizardStage3IndexingStartedKey(props.user?.userId);
+    if (k) sessionStorage.setItem(k, String(stage3IndexingStartedAt.value));
+  } catch { /* ignore */ }
   indexingStatus.value = {
     active: true,
     phase: data.phase,
@@ -4670,14 +4800,19 @@ const handleIndexingFinished = (_data: { jobId: string; phase: string; error?: s
   stage3IndexingCompletedAt.value = Date.now();
   indexingStatus.value = null;
   stopStage3ElapsedTimer();
+  try {
+    const k = wizardStage3IndexingStartedKey(props.user?.userId);
+    if (k) sessionStorage.removeItem(k);
+  } catch { /* ignore */ }
   // Update status tip to show normal status
   updateContextualTip();
   refreshWizardState();
 };
 
 const handleFilesArchived = (archivedBucketKeys: string[]) => {
-  // Remove files from uploadedFiles that match archived bucketKeys
-  // Files are archived when SAVED FILES dialog opens, so they're now saved and accessible
+  // Remove files from uploadedFiles that match the given bucketKeys so they no longer show as
+  // chat badges or get included in chat context. Used when files are moved to archived, or to
+  // the KB folder (userId/<kbName>/) from the wizard or Saved Files.
   uploadedFiles.value = uploadedFiles.value.filter(file => {
     if (!file.bucketKey) return true; // Keep files without bucketKey (text files)
     // Remove files whose bucketKey matches any archived key
@@ -4693,7 +4828,9 @@ const handleFilesArchived = (archivedBucketKeys: string[]) => {
     viewingFile.value = null;
   }
   
-  console.log(`[Files] Cleared ${archivedBucketKeys.length} archived file badge(s) from chat`);
+  if (archivedBucketKeys.length > 0) {
+    console.log(`[Files] Cleared ${archivedBucketKeys.length} file badge(s) from chat (moved to archived or KB)`);
+  }
   
   // Update status tip immediately after files are archived
   updateContextualTip();
@@ -5008,6 +5145,7 @@ onMounted(async () => {
   } else {
     contextualTip.value = 'Ready to chat';
     loadDeepLinkChat();
+    initialLoadComplete.value = true;
   }
 
   nextTick(() => {
@@ -5172,6 +5310,11 @@ onUnmounted(() => {
 
 .wizard-medications-not-verified-outline {
   outline: 2px solid var(--q-color-orange-8, #e65100);
+  outline-offset: 2px;
+}
+
+.wizard-index-now-highlight {
+  outline: 2px solid var(--q-color-negative, #c62828);
   outline-offset: 2px;
 }
 

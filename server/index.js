@@ -6841,9 +6841,9 @@ app.post('/api/update-knowledge-base', async (req, res) => {
         console.warn(`[KB Update] ⚠️ Could not verify job before polling:`, verifyError.message);
         // Continue with polling if verification fails (might be a transient error)
       }
-    
+      console.log(`[KB Status] Polling started in this terminal — you will see status here every 15s until indexing completes.`);
     // Start polling for indexing jobs in background (non-blocking)
-      // Poll every 30 seconds for max 60 minutes (120 polls)
+      // Poll every 15 seconds for max 60 minutes
     let startTime = Date.now();
     const pollDelayMs = 15000; // 15 seconds
     const maxPolls = Math.ceil((60 * 60 * 1000) / pollDelayMs);
@@ -6957,8 +6957,6 @@ app.post('/api/update-knowledge-base', async (req, res) => {
 const runPoll = async () => {
       if (finished) return;
       pollCount += 1;
-      if (pollCount === 1) {
-      }
 
       try {
         // Always get fresh user document to ensure we have current state
@@ -7064,10 +7062,11 @@ const runPoll = async () => {
              return;
            }
           const statusKey = `${status}|${fileCount}|${tokens}`;
-          if (statusKey !== lastKbStatusKey) {
-            lastKbStatusKey = statusKey;
-            console.log(`[KB Status] job=${activeJobId} poll=${pollCount}/${maxPolls} status=${status} files=${fileCount} tokens=${tokens}`);
-          }
+          if (statusKey !== lastKbStatusKey) lastKbStatusKey = statusKey;
+          const elapsedMs = Date.now() - startTime;
+          const em = Math.floor(elapsedMs / 60000);
+          const es = Math.floor((elapsedMs % 60000) / 1000);
+          console.log(`[KB Status] job=${activeJobId} poll=${pollCount}/${maxPolls} (every ${pollDelayMs / 1000}s) elapsed ${em}m ${es}s status=${status} files=${fileCount} tokens=${tokens}`);
         } else {
           if (!notFoundLogged) {
             console.log(`[KB AUTO] ⚠️ Job ${activeJobId} not found in list (reason=not_found jobs=${jobsArray.length})`);
@@ -7128,7 +7127,10 @@ const runPoll = async () => {
        } catch (error) {
         if (!errorPollLogged) {
           errorPollLogged = true;
-          console.log(`[KB Status] job=${activeJobId} poll=${pollCount}/${maxPolls} status=error files=? tokens=? error=${error.message}`);
+          const errElapsedMs = Date.now() - startTime;
+          const errEm = Math.floor(errElapsedMs / 60000);
+          const errEs = Math.floor((errElapsedMs % 60000) / 1000);
+          console.log(`[KB Status] job=${activeJobId} poll=${pollCount}/${maxPolls} (every ${pollDelayMs / 1000}s) elapsed ${errEm}m ${errEs}s status=error error=${error.message}`);
           console.error(`[KB AUTO] ❌ Error polling indexing status (poll ${pollCount}):`, error.message);
         }
          if (isRateLimitError(error) && pollCount > 0) {
