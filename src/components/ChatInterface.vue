@@ -1349,33 +1349,6 @@ watch(
   }
 );
 
-// Log when indexing completes (watch indexingStatus phase transition to 'complete')
-watch(
-  () => indexingStatus.value?.phase,
-  (phase, oldPhase) => {
-    if (phase === 'complete' && oldPhase !== 'complete' && localFolderHandle.value) {
-      const tokens = indexingStatus.value?.tokens || '0';
-      const filesIndexed = indexingStatus.value?.filesIndexed || 0;
-      const elapsed = stage3IndexingStartedAt.value
-        ? Math.round((Date.now() - stage3IndexingStartedAt.value) / 1000)
-        : 0;
-      addSetupLogLine('Indexing Complete', `${filesIndexed} file(s) indexed, ${tokens} tokens, ${elapsed}s elapsed`, true);
-      void generateSetupLogPdf();
-    }
-  }
-);
-
-// Log when Current Medications becomes verified
-watch(
-  () => wizardCurrentMedications.value,
-  (verified, was) => {
-    if (verified && !was && localFolderHandle.value) {
-      addSetupLogLine('Current Medications', 'Current Medications verified', true);
-      void generateSetupLogPdf();
-    }
-  }
-);
-
 const startRestoreIndexing = async () => {
   if (!props.user?.userId) {
     restoreIndexingQueued.value = false;
@@ -5265,6 +5238,34 @@ const stage3IndexingActive = computed(() =>
   stage3IndexingPending.value ||
   indexingStatus.value?.phase === 'indexing' ||
   !!stage3IndexingPoll.value
+);
+
+// Log when indexing completes (watch indexingStatus phase transition to 'complete')
+// Placed here because indexingStatus must be declared before the watcher.
+watch(
+  () => indexingStatus.value?.phase,
+  (phase, oldPhase) => {
+    if (phase === 'complete' && oldPhase !== 'complete' && localFolderHandle.value) {
+      const tokens = indexingStatus.value?.tokens || '0';
+      const filesIndexed = indexingStatus.value?.filesIndexed || 0;
+      const elapsed = stage3IndexingStartedAt.value
+        ? Math.round((Date.now() - stage3IndexingStartedAt.value) / 1000)
+        : 0;
+      addSetupLogLine('Indexing Complete', `${filesIndexed} file(s) indexed, ${tokens} tokens, ${elapsed}s elapsed`, true);
+      void generateSetupLogPdf();
+    }
+  }
+);
+
+// Log when Current Medications becomes verified
+watch(
+  () => wizardCurrentMedications.value,
+  (verified, was) => {
+    if (verified && !was && localFolderHandle.value) {
+      addSetupLogLine('Current Medications', 'Current Medications verified', true);
+      void generateSetupLogPdf();
+    }
+  }
 );
 
 const handleIndexingStarted = (data: { jobId: string; phase: string }) => {
