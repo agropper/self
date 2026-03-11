@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git checkout claude/cool-payne)",
+      "Bash(grep -rn \"timeout\\\\|TIMEOUT\\\\|timeoutMs\" server/utils/digitalocean*.js)"
+    ]
+  }
+}
