@@ -165,8 +165,12 @@ export async function reconnectLocalFolder(
   try {
     const handle = await getStoredHandle(userId);
     if (!handle) return null;
-    const granted = await verifyPermission(handle);
-    if (!granted) return null;
+    // Use queryPermission only — requestPermission requires a user gesture and
+    // throws SecurityError when called during page load without user interaction.
+    // If the browser has persistent permission (Chrome 122+) queryPermission
+    // returns 'granted' silently; otherwise we defer until a user gesture.
+    const perm = await handle.queryPermission({ mode: 'readwrite' });
+    if (perm !== 'granted') return null;
     return { handle, folderName: handle.name };
   } catch (e) {
     console.warn('[localFolder] reconnectLocalFolder failed:', e);
