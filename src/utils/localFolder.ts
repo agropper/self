@@ -165,6 +165,28 @@ export async function reconnectLocalFolder(
 }
 
 /**
+ * Reconnect using requestPermission (requires active user gesture).
+ * Use this when a user action (e.g. clicking paperclip) provides the gesture context
+ * that queryPermission-only reconnect can't use.
+ */
+export async function reconnectLocalFolderWithGesture(
+  userId: string
+): Promise<{ handle: FileSystemDirectoryHandle; folderName: string } | null> {
+  if (!isFileSystemAccessSupported()) return null;
+  try {
+    const handle = await getStoredHandle(userId);
+    if (!handle) return null;
+    // requestPermission works here because we're in a user gesture context
+    const perm = await handle.requestPermission({ mode: 'readwrite' });
+    if (perm !== 'granted') return null;
+    return { handle, folderName: handle.name };
+  } catch (e) {
+    console.warn('[localFolder] reconnectLocalFolderWithGesture failed:', e);
+    return null;
+  }
+}
+
+/**
  * Check folder connection status without requesting permission.
  */
 export async function getLocalFolderStatus(

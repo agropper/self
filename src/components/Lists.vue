@@ -20,8 +20,14 @@
       <q-card-section>
         <div class="text-h6 q-mb-md">{{ currentMedicationsBlockTitle }}</div>
         
+        <!-- Initial loading spinner (covers flash before medications state is known) -->
+        <div v-if="isInitialMedsLoading && !isEditingCurrentMedications" class="q-pa-md text-center">
+          <q-spinner-dots color="primary" size="2em" />
+          <div class="text-caption text-grey-7 q-mt-sm">Loading medications...</div>
+        </div>
+
         <!-- Loading State with Progress Messages -->
-        <div v-if="isLoadingCurrentMedications" class="q-pa-md">
+        <div v-else-if="isLoadingCurrentMedications" class="q-pa-md">
           <div class="text-center q-mb-md">
             <q-spinner color="primary" size="2em" />
           </div>
@@ -183,22 +189,10 @@
           <div class="text-h6">Please verify or edit your Current Medications</div>
         </q-card-section>
         <q-card-actions align="right">
-          <q-btn flat label="OK" color="primary" @click="showVerifyPrompt = false" />
+          <q-btn flat label="OK" color="primary" @click="handleVerifyDismissed" />
         </q-card-actions>
       </q-card>
     </q-dialog>
-
-  <!-- Verify Current Medications Dialog -->
-  <q-dialog v-model="showVerifyPrompt" persistent>
-    <q-card style="min-width: 380px">
-      <q-card-section>
-        <div class="text-h6">Please verify or edit your Current Medications</div>
-      </q-card-section>
-      <q-card-actions align="right">
-        <q-btn flat label="OK" color="primary" @click="showVerifyPrompt = false" />
-      </q-card-actions>
-    </q-card>
-  </q-dialog>
 
     <!-- Error State -->
     <q-banner v-if="error" rounded class="bg-negative text-white q-mb-md">
@@ -511,6 +505,10 @@ const isReplacingFile = ref(false);
 const showVerifyPrompt = ref(false);
 const needsVerifyAction = ref(false);
 const verifyPromptPending = ref(false);
+/** Once the user dismisses the verify prompt this session, don't show it again until page reload. */
+const medsDismissedThisSession = ref(false);
+/** True until the initial medications fetch from the server completes (covers UI flash). */
+const isInitialMedsLoading = ref(true);
 const verifyStorageKey = computed(() => props.userId ? `verify-meds-${props.userId}` : null);
 const waitForAgentReady = async () => {
   for (let attempt = 0; attempt < 6; attempt += 1) {
@@ -937,6 +935,13 @@ const handleVerifyCurrentMedications = async () => {
     return;
   }
   await saveCurrentMedicationsValue(currentMedications.value, true, true);
+};
+
+/** User dismisses the verify prompt without verifying — don't show again until page reload. */
+const handleVerifyDismissed = () => {
+  medsDismissedThisSession.value = true;
+  showVerifyPrompt.value = false;
+  clearVerifyRequirement();
 };
 
 const logWizardEvent = async (event: string, details?: Record<string, unknown>) => {
@@ -1864,12 +1869,13 @@ const countObservationsByPageRange = (markedMarkdown: string): void => {
       loadCurrentMedications();
     } else {
       isLoadingCurrentMedications.value = false;
+      isInitialMedsLoading.value = false;
       currentMedicationsStatus.value = '';
       currentMedicationsBlockTitle.value = 'Current Medications as reported by the user';
       startEditingCurrentMedications();
     }
   }
-  
+
   // Category files are built once during Apple Health processing (server-side)
 };
 
@@ -2083,6 +2089,8 @@ onMounted(async () => {
   // trigger loadCurrentMedications() at the right time.
   if (wizardAutoFlow.value && !hasSavedResults.value) {
     // Wizard mode, first run — defer to processInitialFile flow
+    // Clear the initial loading spinner; the AI progress spinner will show later
+    isInitialMedsLoading.value = false;
   } else {
     loadCurrentMedications();
   }
@@ -2119,7 +2127,7 @@ onMounted(async () => {
 
 watch([currentMedications, hasSavedResults, isProcessing], ([meds, saved, processing], [prevMeds]) => {
   if (processing) return;
-  if (!saved || !meds || isCurrentMedicationsEdited.value || needsVerifyAction.value) {
+  if (!saved || !meds || isCurrentMedicationsEdited.value || needsVerifyAction.value || medsDismissedThisSession.value) {
     return;
   }
   if (!prevMeds) {
@@ -2132,14 +2140,14 @@ watch([currentMedications, hasSavedResults, isProcessing], ([meds, saved, proces
 
 onActivated(() => {
   loadWizardAutoFlow();
-  if (verifyPromptPending.value && needsVerifyAction.value) {
+  if (verifyPromptPending.value && needsVerifyAction.value && !medsDismissedThisSession.value) {
     showVerifyPrompt.value = true;
     verifyPromptPending.value = false;
   }
 });
 
 onDeactivated(() => {
-  if (needsVerifyAction.value && !isEditingCurrentMedications.value) {
+  if (needsVerifyAction.value && !isEditingCurrentMedications.value && !medsDismissedThisSession.value) {
     showVerifyPrompt.value = true;
     verifyPromptPending.value = true;
   }
@@ -2149,6 +2157,7 @@ onDeactivated(() => {
 const loadCurrentMedications = async (forceRefresh = false) => {
   // If already edited and not forcing refresh, don't overwrite
   if (isCurrentMedicationsEdited.value && !forceRefresh) {
+    isInitialMedsLoading.value = false;
     return;
   }
 
@@ -2164,12 +2173,14 @@ const loadCurrentMedications = async (forceRefresh = false) => {
         if (statusResult.currentMedications) {
           currentMedications.value = statusResult.currentMedications;
           isCurrentMedicationsEdited.value = true; // Mark as edited since it came from user doc
+          isInitialMedsLoading.value = false;
           logWizardEvent('current_meds_loaded_from_user_doc', { length: statusResult.currentMedications.length });
           return;
         }
       }
     } catch (err) {
       console.warn('Error loading current medications from user document:', err);
+      isInitialMedsLoading.value = false;
     }
   }
 
@@ -2180,6 +2191,7 @@ const loadCurrentMedications = async (forceRefresh = false) => {
 
   if (!medicationCategory || !medicationCategory.observations || medicationCategory.observations.length === 0) {
     isLoadingCurrentMedications.value = false;
+    isInitialMedsLoading.value = false;
     currentMedicationsStatus.value = '';
     currentMedicationsBlockTitle.value = 'Current Medications as reported by the user';
     startEditingCurrentMedications();
@@ -2187,6 +2199,7 @@ const loadCurrentMedications = async (forceRefresh = false) => {
     return;
   }
 
+  isInitialMedsLoading.value = false; // Initial loading done — switch to the AI progress spinner
   currentMedicationsStatus.value = 'waiting';
   const agentReady = await waitForAgentReady();
   if (!agentReady) {
@@ -2305,6 +2318,7 @@ const saveCurrentMedicationsValue = async (value: string, markEdited: boolean, c
     }
     return;
   }
+  const previousMedications = currentMedications.value;
   isSavingCurrentMedications.value = true;
   try {
     const response = await fetch('/api/user-current-medications', {
@@ -2336,8 +2350,10 @@ const saveCurrentMedicationsValue = async (value: string, markEdited: boolean, c
 
     emit('current-medications-saved', { value, edited: markEdited });
 
-    // Always show dialog so user can update Patient Summary (include new medications)
-    showSummaryDialog.value = true;
+    // Only offer to update Patient Summary if the medications text actually changed
+    if (value !== previousMedications) {
+      showSummaryDialog.value = true;
+    }
   } catch (err) {
     console.error('Error saving current medications:', err);
     if ($q && typeof $q.notify === 'function') {
