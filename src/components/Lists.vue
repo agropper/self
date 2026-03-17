@@ -58,6 +58,7 @@
         <!-- Empty State -->
         <div v-else-if="!isEditingCurrentMedications && !currentMedications" class="text-body2 text-grey-7 q-pa-md text-center">
           <div v-if="wizardPreparingMeds">
+            <q-spinner color="primary" size="1.5em" class="q-mr-sm" />
             Current medications are being prepared...
           </div>
           <div v-else-if="hasMedicationRecords">
@@ -66,7 +67,7 @@
           <div v-else>
             No medication records found. Upload a health record file to extract medication information.
           </div>
-          <div v-if="appleHealthFileInfo" class="q-mt-md">
+          <div v-if="appleHealthFileInfo && !wizardPreparingMeds" class="q-mt-md">
             <q-btn
               color="primary"
               icon="create"
@@ -1006,6 +1007,17 @@ const attemptAutoProcessInitialFile = async () => {
     }
     logWizardEvent('lists_auto_start_begin', { hasInitialFile: true });
     processInitialFile();
+    return;
+  }
+
+  // Fallback: if no initialFile in user-status but appleHealthFileInfo was found
+  // (e.g. new user from local folder — file is uploaded but not yet in user doc as initialFile)
+  if (appleHealthFileInfo.value) {
+    if (autoProcess === 'true') {
+      sessionStorage.removeItem('autoProcessInitialFile');
+    }
+    logWizardEvent('lists_auto_start_begin', { hasInitialFile: false, appleHealthFallback: true });
+    processInitialFile(appleHealthFileInfo.value);
     return;
   }
 
