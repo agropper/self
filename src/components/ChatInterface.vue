@@ -410,8 +410,68 @@
               </div>
             </div>
 
-            <!-- Local Folder mode: scrolling activity log (replaces file list/checkboxes) -->
-            <div v-if="localFolderHandle" class="q-mt-md">
+            <!-- Safari Folder: webkitdirectory one-time folder read -->
+            <div v-else-if="props.folderAccessTier === 'safari'" class="q-mt-md q-mb-sm">
+              <input
+                ref="safariFolderInputRef"
+                type="file"
+                webkitdirectory
+                multiple
+                style="display: none"
+                @change="handleSafariFolderSelected"
+              />
+              <div v-if="!safariFolderName" class="wizard-slide-box q-pa-md">
+                <div class="text-subtitle2 text-weight-bold q-mb-xs">Local Folder</div>
+                <div class="text-caption text-grey-7 q-mb-sm">
+                  Select your MAIA health records folder. This browser can read the folder once;
+                  future updates will require you to re-select the folder when prompted at sign-out.
+                </div>
+                <q-btn
+                  unelevated
+                  color="primary"
+                  label="Select your MAIA folder"
+                  icon="folder_open"
+                  :disable="localFolderAutoRunActive"
+                  @click="handlePickSafariFolder"
+                />
+              </div>
+              <div v-else class="wizard-slide-box q-pa-md">
+                <div class="text-subtitle2 text-weight-bold q-mb-xs">
+                  <q-icon name="folder" color="primary" class="q-mr-xs" />
+                  {{ safariFolderName }}
+                </div>
+                <!-- Recovered session: folder name from localStorage but no live files -->
+                <div v-if="safariNeedsReselect && !wizardStage3Complete && !stage3IndexingActive" class="q-mt-sm">
+                  <div class="text-caption text-orange-8 q-mb-sm">
+                    Page was reloaded. Please re-select your folder to continue uploading files.
+                  </div>
+                  <q-btn
+                    dense unelevated
+                    color="primary"
+                    label="Re-select folder"
+                    icon="folder_open"
+                    size="sm"
+                    @click="handlePickSafariFolder"
+                  />
+                </div>
+                <div v-else-if="safariNeedsReselect" class="text-caption text-green-7 q-mt-xs">
+                  Session recovered — files already uploaded
+                </div>
+                <div v-else-if="localFolderAutoRunActive" class="text-caption text-primary q-mt-xs">
+                  <q-spinner size="14px" class="q-mr-xs" />
+                  {{ localFolderAutoRunPhase }}
+                </div>
+                <div v-else-if="safariFolderFiles.length > 0" class="text-caption text-grey-7 q-mt-xs">
+                  {{ safariFolderFiles.length }} PDF file(s) imported
+                </div>
+                <div v-if="setupLogLines.length > 0 && !localFolderAutoRunActive" class="text-caption text-green-7 q-mt-xs">
+                  ✓ Setup complete
+                </div>
+              </div>
+            </div>
+
+            <!-- Folder/Safari mode: scrolling activity log -->
+            <div v-if="localFolderHandle || safariFolderName" class="q-mt-md">
               <div class="wizard-slide-box q-pa-sm" style="max-height: 260px; overflow-y: auto; font-family: monospace; font-size: 12px; background: #f5f5f5; border-radius: 6px;">
                 <div v-if="setupLogLines.length === 0" class="text-grey-6 text-center q-pa-md">
                   Waiting for setup to begin...
@@ -452,8 +512,8 @@
               </div>
             </div>
 
-            <!-- Non-local-folder fallback: original file list, checkboxes, buttons (only when local folder API not supported) -->
-            <template v-else-if="!localFolderSupported">
+            <!-- Non-local-folder fallback: original file list, checkboxes, buttons (only when local folder API not supported and no Safari folder access) -->
+            <template v-else-if="!localFolderSupported && props.folderAccessTier !== 'safari'">
             <div class="q-mt-lg">
             <div class="wizard-slide-box">
               <div class="text-subtitle1 text-weight-bold q-mb-sm">Files to be indexed</div>
@@ -709,6 +769,7 @@
       @request-summary-done="wizardRequestSummaryOnOpen = false"
       @rehydration-file-removed="handleRehydrationFileRemoved"
       @rehydration-complete="handleRehydrationComplete"
+      @file-added-to-kb="handleFileAddedToKb"
       v-if="canAccessMyStuff"
     />
 
@@ -822,11 +883,38 @@
         </q-card-actions>
       </q-card>
     </q-dialog>
+
+    <!-- Post-Indexing: Offer to update Patient Summary -->
+    <q-dialog v-model="showPostIndexingSummaryPrompt" persistent>
+      <q-card style="min-width: 420px; max-width: 540px">
+        <q-card-section>
+          <div class="text-h6">Knowledge Base Updated</div>
+        </q-card-section>
+        <q-card-section class="q-pt-none text-body2">
+          You have changed the files in your knowledge base. Would you like to update the Patient Summary?
+        </q-card-section>
+        <q-card-actions align="right" class="q-gutter-sm">
+          <q-btn
+            flat
+            label="Not yet"
+            color="grey-8"
+            @click="showPostIndexingSummaryPrompt = false; postIndexingSummaryDismissedThisSession = true"
+          />
+          <q-btn
+            unelevated
+            label="Update the Patient Summary"
+            color="primary"
+            @click="handlePostIndexingUpdateSummary"
+          />
+        </q-card-actions>
+      </q-card>
+    </q-dialog>
   </div>
 </template>
 
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted, computed, watch, nextTick } from 'vue';
+import { useQuasar } from 'quasar';
 import PdfViewerModal from './PdfViewerModal.vue';
 import TextViewerModal from './TextViewerModal.vue';
 import SavedChatsModal from './SavedChatsModal.vue';
@@ -837,9 +925,11 @@ import {
   isFileSystemAccessSupported,
   pickLocalFolder,
   reconnectLocalFolder,
+  reconnectLocalFolderWithGesture,
   listFolderFiles,
   readFileFromFolder,
   writeFileToFolder,
+  readStateFile,
   writeStateFile,
   writeWeblocFile,
   type MaiaFileEntry,
@@ -900,6 +990,7 @@ interface Props {
   rehydrationFiles?: any[] | null;
   rehydrationActive?: boolean;
   suppressWizard?: boolean;
+  folderAccessTier?: 'chrome' | 'safari' | 'basic';
 }
 
 interface SignOutSnapshot {
@@ -924,6 +1015,8 @@ const emit = defineEmits<{
   'update:deepLinkInfo': [DeepLinkInfo | null];
   'local-folder-connected': [payload: { handle: FileSystemDirectoryHandle; folderName: string }];
 }>();
+
+const $q = useQuasar();
 
 const providers = ref<string[]>([]);
 const selectedProvider = ref<string>('Private AI');
@@ -957,6 +1050,9 @@ const availableUserFiles = ref<Array<{ fileName: string; bucketKey: string; file
 const loadingUserFiles = ref(false);
 const showAgentSetupDialog = ref(false);
 const showNeedsIndexingPrompt = ref(false);
+const showPostIndexingSummaryPrompt = ref(false);
+/** Once the user dismisses the post-indexing "Update Patient Summary?" prompt, do not show again this session. */
+const postIndexingSummaryDismissedThisSession = ref(false);
 /** Once the user dismisses "Index your records" with NOT YET, do not show it again this session. */
 const needsIndexingPromptDismissedThisSession = ref(false);
 const agentSetupStatus = ref('');
@@ -1062,7 +1158,19 @@ const setupLogLines = ref<Array<{ time: string; step: string; detail: string; ok
 /** 60-minute timeout — show failure modal asking user to email setup log to tech support. */
 const wizardTimeoutModalVisible = ref(false);
 let wizardTimeoutTimer: ReturnType<typeof setTimeout> | null = null;
-const wizardFlowPhase = ref<'running' | 'medications' | 'summary' | 'done'>('running');
+/** Guided wizard flow phase. Starts 'done' to avoid re-entering guided flow on reload;
+ *  set to 'running' only when the wizard is actively running for the first time. */
+const wizardFlowPhase = ref<'running' | 'medications' | 'summary' | 'done'>('done');
+
+// ── Safari / basic fallback folder state ────────────────────────
+/** Files collected via webkitdirectory input (Safari) or single-file input (basic). */
+const safariFolderFiles = ref<File[]>([]);
+const safariFolderInputRef = ref<HTMLInputElement | null>(null);
+/** Name of the folder selected via webkitdirectory (extracted from webkitRelativePath). */
+const safariFolderName = ref<string | null>(null);
+/** True when we recovered safariFolderName from localStorage but have no live folder handle/files.
+ *  Shows a prompt asking the user to re-select the folder to continue. */
+const safariNeedsReselect = ref(false);
 
 const wizardStage1StatusLine = computed(() => {
   if (wizardStage1Complete.value) return 'Ready to chat';
@@ -1392,14 +1500,18 @@ const handleRehydrationComplete = async (payload: { hasInitialFile: boolean }) =
   emit('rehydration-complete', payload);
   let shouldAutoProcess = !!payload?.hasInitialFile;
   let hasCurrentMedications = false;
-  if (!shouldAutoProcess && props.user?.userId) {
+  // Always check user-status so we can suppress auto-open when medications are already saved,
+  // regardless of whether the rehydration payload already indicated an initial file.
+  if (props.user?.userId) {
     try {
       const statusResponse = await fetch(`/api/user-status?userId=${encodeURIComponent(props.user.userId)}`, {
         credentials: 'include'
       });
       if (statusResponse.ok) {
         const statusResult = await statusResponse.json();
-        shouldAutoProcess = !!statusResult?.initialFile;
+        if (!shouldAutoProcess) {
+          shouldAutoProcess = !!statusResult?.initialFile;
+        }
         hasCurrentMedications = !!statusResult?.currentMedications;
       }
     } catch (error) {
@@ -2231,7 +2343,12 @@ const refreshWizardState = async () => {
     }
 
     if (summaryResponse.ok) {
-      await summaryResponse.json();
+      const summaryData = await summaryResponse.json();
+      // If server already has a patient summary, mark wizard as complete
+      // (covers passkey sign-in from a different browser where localStorage is empty)
+      if (summaryData?.summary && summaryData.summary.trim()) {
+        wizardPatientSummary.value = true;
+      }
     }
 
     if (wizardStage2NoDevice.value && (wizardStage2FileName.value || wizardCurrentMedications.value)) {
@@ -2504,6 +2621,30 @@ const dismissWizard = () => {
 
 const SETUP_LOG_JSON = 'maia-setup-log.json';
 
+/** Parse navigator.userAgent into a human-readable string, e.g. "Chrome 145 on macOS". */
+const parseUserAgent = (): string => {
+  if (typeof navigator === 'undefined') return 'unknown';
+  const ua = navigator.userAgent;
+  // Detect browser
+  let browser = 'Unknown browser';
+  const chromeMatch = ua.match(/Chrome\/(\d+)/);
+  const firefoxMatch = ua.match(/Firefox\/(\d+)/);
+  const safariMatch = ua.match(/Version\/(\d+).*Safari/);
+  const edgeMatch = ua.match(/Edg\/(\d+)/);
+  if (edgeMatch) browser = `Edge ${edgeMatch[1]}`;
+  else if (chromeMatch) browser = `Chrome ${chromeMatch[1]}`;
+  else if (firefoxMatch) browser = `Firefox ${firefoxMatch[1]}`;
+  else if (safariMatch) browser = `Safari ${safariMatch[1]}`;
+  // Detect OS
+  let os = 'Unknown OS';
+  if (ua.includes('Mac OS X') || ua.includes('Macintosh')) os = 'macOS';
+  else if (ua.includes('Windows')) os = 'Windows';
+  else if (ua.includes('Linux')) os = 'Linux';
+  else if (ua.includes('Android')) os = 'Android';
+  else if (ua.includes('iPhone') || ua.includes('iPad')) os = 'iOS';
+  return `${browser} on ${os}`;
+};
+
 const addSetupLogLine = (step: string, detail: string, ok: boolean) => {
   setupLogLines.value.push({
     time: new Date().toISOString(),
@@ -2540,8 +2681,16 @@ const handlePickLocalFolder = async () => {
   emit('local-folder-connected', { handle: result.handle, folderName: result.folderName });
   // Restore previous session history before adding new entries
   await restoreSetupLogFromJson();
+
+  // Detect user change — if the log has entries from a different user, insert a divider
+  const prevUserEntry = [...setupLogLines.value].reverse().find(l => l.step === 'Session Info' && l.detail?.startsWith('User: '));
+  const prevUserId = prevUserEntry ? prevUserEntry.detail.replace('User: ', '') : null;
+  if (prevUserId && prevUserId !== props.user.userId) {
+    addSetupLogLine('Session Change', `--- Account changed from ${prevUserId} to ${props.user.userId} ---`, true);
+  }
+
   addSetupLogLine('Session Info', `User: ${props.user.userId}`, true);
-  addSetupLogLine('Session Info', `Browser: ${navigator.userAgent}`, true);
+  addSetupLogLine('Session Info', `Browser: ${parseUserAgent()}`, true);
   addSetupLogLine('Session Info', `App URL: ${window.location.origin}`, true);
   addSetupLogLine('Folder Selected', `Folder: ${result.folderName}`, true);
 
@@ -2572,8 +2721,172 @@ const handlePickLocalFolder = async () => {
     }
   }, 60 * 60 * 1000);
 
-  // Start auto-run wizard
+  // Start auto-run wizard — set guided flow phase to 'running'
+  wizardFlowPhase.value = 'running';
   await runAutoWizard();
+};
+
+/** Safari: user clicks "Select your MAIA folder" — opens webkitdirectory input, scans files, starts auto-run. */
+const handlePickSafariFolder = () => {
+  safariFolderInputRef.value?.click();
+};
+
+/** Safari: files selected via webkitdirectory input */
+const handleSafariFolderSelected = async (event: Event) => {
+  const input = event.target as HTMLInputElement;
+  if (!input.files || input.files.length === 0) return;
+  if (!props.user?.userId) return;
+
+  // Collect PDF files from the folder
+  const allFiles = Array.from(input.files);
+  const pdfs = allFiles.filter(f => f.name.toLowerCase().endsWith('.pdf') && !f.name.startsWith('.'));
+
+  // Extract folder name from webkitRelativePath (e.g. "MAIA/file.pdf" → "MAIA")
+  const firstPath = allFiles[0]?.webkitRelativePath || '';
+  const folderName = firstPath.split('/')[0] || 'Selected Folder';
+  safariFolderName.value = folderName;
+  safariNeedsReselect.value = false;
+  safariFolderFiles.value = pdfs;
+
+  // Persist safari folder name so we can recover wizard state on reload
+  try {
+    const sfKey = `safariFolderName-${props.user.userId}`;
+    localStorage.setItem(sfKey, folderName);
+  } catch { /* ignore */ }
+
+  // Populate localFolderFiles with compatible entries (no fileHandle — Safari doesn't provide one)
+  localFolderFiles.value = pdfs.map(f => ({
+    name: f.name,
+    size: f.size,
+    lastModified: f.lastModified,
+    fileHandle: null as any, // Not available in Safari
+  }));
+
+  localFolderName.value = folderName;
+  addSetupLogLine('Session Info', `User: ${props.user.userId}`, true);
+  addSetupLogLine('Session Info', `Browser: ${parseUserAgent()} (folder read-only mode)`, true);
+  addSetupLogLine('Folder Selected', `Folder: ${folderName} (${pdfs.length} PDF files)`, true);
+
+  // Start 60-minute timeout
+  wizardTimeoutTimer = setTimeout(async () => {
+    if (showAgentSetupDialog.value) {
+      addSetupLogLine('Timeout', 'Wizard timed out after 60 minutes', false);
+      wizardTimeoutModalVisible.value = true;
+    }
+  }, 60 * 60 * 1000);
+
+  wizardFlowPhase.value = 'running';
+  await runSafariFolderWizard(pdfs);
+};
+
+/** Safari auto-wizard: upload files from webkitdirectory → deploy agent → index KB.
+ *  Same flow as Chrome wizard but files come from File objects, not FileSystemFileHandle. */
+const runSafariFolderWizard = async (files: File[]) => {
+  if (!props.user?.userId) return;
+  localFolderAutoRunActive.value = true;
+  addSetupLogLine('Session Start', '--- New Session (folder read-only mode) ---', true);
+
+  try {
+    // Phase 1: Upload PDFs
+    localFolderAutoRunPhase.value = 'Uploading files...';
+    const MAIA_GENERATED_FILES = ['maia-setup-log.pdf', 'maia-setup-log.json'];
+    const filesToUpload = files.filter(f => !MAIA_GENERATED_FILES.includes(f.name.toLowerCase()));
+    addSetupLogLine('Upload Phase', `Starting upload of ${filesToUpload.length} PDF file(s)`, true);
+
+    let uploadedCount = 0;
+    let appleHealthCount = 0;
+    for (const file of filesToUpload) {
+      try {
+        const maxSize = 50 * 1024 * 1024;
+        if (file.size > maxSize) {
+          addSetupLogLine('Upload Skip', `${file.name}: too large (${(file.size / 1024 / 1024).toFixed(1)}MB)`, false);
+          continue;
+        }
+        localFolderAutoRunPhase.value = `Uploading ${file.name}...`;
+        const uploadFormData = new FormData();
+        uploadFormData.append('file', file);
+        const uploadResponse = await fetch('/api/files/upload', {
+          method: 'POST',
+          credentials: 'include',
+          body: uploadFormData
+        });
+        if (!uploadResponse.ok) {
+          const errorData = await uploadResponse.json().catch(() => ({}));
+          addSetupLogLine('Upload Failed', `${file.name}: ${errorData.message || errorData.error || 'Upload error'}`, false);
+          continue;
+        }
+        const uploadResult = await uploadResponse.json();
+
+        // Detect Apple Health
+        let isAppleHealth = false;
+        try {
+          isAppleHealth = await detectAppleHealthFromBucket(uploadResult.fileInfo.bucketKey);
+          if (isAppleHealth) appleHealthCount++;
+        } catch { /* ignore detection errors */ }
+
+        // Save file metadata
+        await fetch('/api/user-file-metadata', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: 'include',
+          body: JSON.stringify({
+            userId: props.user!.userId,
+            fileMetadata: {
+              fileName: uploadResult.fileInfo.fileName,
+              bucketKey: uploadResult.fileInfo.bucketKey,
+              bucketPath: uploadResult.fileInfo.userFolder,
+              fileSize: uploadResult.fileInfo.size,
+              fileType: 'pdf',
+              uploadedAt: uploadResult.fileInfo.uploadedAt,
+              isAppleHealth
+            },
+            updateInitialFile: false
+          })
+        });
+
+        uploadedCount++;
+        addSetupLogLine('File Uploaded', `${file.name} (${(file.size / 1024).toFixed(0)} KB)${isAppleHealth ? ' [Apple Health]' : ''}`, true);
+      } catch (e) {
+        addSetupLogLine('Upload Error', `${file.name}: ${e instanceof Error ? e.message : 'Unknown'}`, false);
+      }
+    }
+    addSetupLogLine('Upload Complete', `${uploadedCount} of ${filesToUpload.length} file(s) uploaded${appleHealthCount > 0 ? `, ${appleHealthCount} Apple Health` : ''}`, uploadedCount > 0);
+
+    // Refresh wizard state and proceed with indexing (same as Chrome path)
+    await refreshWizardState();
+    addSetupLogLine('State Refreshed', `Server knows about ${wizardStage3Files.value.length} file(s)`, true);
+
+    // Phase 2: Check agent
+    localFolderAutoRunPhase.value = 'Checking agent deployment...';
+    addSetupLogLine('Agent Status', wizardStage1Complete.value ? 'Agent ready' : 'Agent deployment in progress', true);
+
+    // Phase 3: Index KB
+    if (uploadedCount > 0) {
+      localFolderAutoRunPhase.value = 'Starting knowledge base indexing...';
+      try {
+        const fileNames = wizardStage3Files.value.map(f => f.name);
+        if (fileNames.length > 0) {
+          addSetupLogLine('Indexing Start', `Sending ${fileNames.length} file(s) for indexing: ${fileNames.join(', ')}`, true);
+          await handleStage3Index(fileNames, false);
+          addSetupLogLine('Indexing Started', `KB indexing kicked off for ${fileNames.length} file(s)`, true);
+          localFolderAutoRunPhase.value = 'Knowledge base indexing in progress...';
+        }
+      } catch (e) {
+        addSetupLogLine('Indexing Error', `${e instanceof Error ? e.message : 'Unknown'}`, false);
+      }
+    }
+
+    if (uploadedCount > 0) {
+      localFolderAutoRunPhase.value = 'Knowledge base indexing in progress...';
+    } else {
+      localFolderAutoRunPhase.value = 'Setup complete';
+    }
+  } catch (e) {
+    addSetupLogLine('Auto-Run Error', `${e instanceof Error ? e.message : 'Unknown error'}`, false);
+    localFolderAutoRunPhase.value = 'Setup completed with errors';
+  } finally {
+    localFolderAutoRunActive.value = false;
+  }
 };
 
 /** Try to silently reconnect to a previously chosen local folder. */
@@ -2742,13 +3055,9 @@ const generateSetupLogPdf = async () => {
   y += 6;
   doc.text(`Folder: ${localFolderName.value || 'unknown'}`, margin, y);
   y += 6;
-  const ua = typeof navigator !== 'undefined' ? navigator.userAgent : 'unknown';
-  const uaLines = doc.splitTextToSize(`Browser: ${ua}`, maxWidth);
-  for (const ul of uaLines) {
-    doc.text(ul, margin, y);
-    y += 5;
-  }
-  y += 4;
+  const ua = parseUserAgent();
+  doc.text(`Browser: ${ua}`, margin, y);
+  y += 8;
 
   // Summary section
   doc.setFontSize(11);
@@ -2783,6 +3092,19 @@ const generateSetupLogPdf = async () => {
     if (y > 270) {
       doc.addPage();
       y = 20;
+    }
+    // Session Change divider — draw a horizontal rule and bold heading
+    if (line.step === 'Session Change') {
+      y += 3;
+      doc.setDrawColor(100);
+      doc.line(margin, y, pageWidth - margin, y);
+      y += 6;
+      doc.setFontSize(10);
+      const timestamp = new Date(line.time).toLocaleTimeString();
+      doc.text(`[${timestamp}] ${line.detail}`, margin, y);
+      y += 8;
+      doc.setFontSize(9);
+      continue;
     }
     const statusIcon = line.ok ? '[OK]' : '[FAIL]';
     const timestamp = new Date(line.time).toLocaleTimeString();
@@ -3076,8 +3398,23 @@ const handleStage3Action = () => {
 const handleFileSelect = async (event: Event) => {
   const input = event.target as HTMLInputElement;
   const file = input.files?.[0];
-  
+
   if (!file) return;
+
+  // Reconnect local folder NOW while we still have user-gesture context
+  // (requestPermission requires an active gesture; it'll be lost after the first await)
+  if (!localFolderHandle.value && props.user?.userId) {
+    try {
+      const result = await reconnectLocalFolderWithGesture(props.user.userId);
+      if (result) {
+        localFolderHandle.value = result.handle;
+        localFolderName.value = result.folderName;
+        console.log(`[localFolder] Reconnected to "${result.folderName}" during file select gesture`);
+      }
+    } catch (e) {
+      // Not critical — file will still upload to cloud
+    }
+  }
 
   if (wizardUploadIntent.value === 'restore') {
     isUploadingFile.value = true;
@@ -3301,6 +3638,35 @@ const uploadPDFFile = async (file: File) => {
         })
       });
       await refreshWizardState();
+
+      // Copy file to local MAIA folder so it's available for offline restore
+      // (localFolderHandle was reconnected at file-select time while gesture was active)
+      if (localFolderHandle.value) {
+        try {
+          await writeFileToFolder(localFolderHandle.value, file.name, file);
+          // Update maia-state.json to include the new file
+          const state = await readStateFile(localFolderHandle.value);
+          if (state) {
+            const stateFiles = state.files || [];
+            const existing = stateFiles.find((f: any) => f.fileName === file.name);
+            if (!existing) {
+              stateFiles.push({
+                fileName: file.name,
+                size: file.size,
+                cloudStatus: 'uploaded' as const,
+                bucketKey: uploadResult.fileInfo.bucketKey
+              });
+              state.files = stateFiles;
+              await writeStateFile(localFolderHandle.value, state);
+            }
+          }
+          console.log(`[localFolder] Paperclip file "${file.name}" copied to local folder`);
+        } catch (folderErr) {
+          console.warn('[localFolder] Failed to copy paperclip file to local folder:', folderErr);
+        }
+      } else {
+        console.log('[localFolder] No local folder connected — skipping local copy of paperclip file');
+      }
     } catch (error) {
       console.warn('Failed to save file metadata to user document:', error);
     }
@@ -5129,6 +5495,34 @@ const startSetupWizardPolling = () => {
 
   refreshWizardState()
     .then(() => {
+      // ── Safari/basic reload recovery: resume guided flow if indexing already done ──
+      // On reload wizardFlowPhase resets to 'done'. If the server shows indexing
+      // complete + agent ready but medications or summary are still pending, the
+      // user was mid-guided-flow. Resume it so the wizard doesn't get stuck.
+      if (
+        wizardFlowPhase.value === 'done' &&
+        (safariFolderName.value || localFolderHandle.value) &&
+        indexingStatus.value?.phase === 'complete' &&
+        wizardStage1Complete.value
+      ) {
+        if (!wizardPatientSummary.value && wizardCurrentMedications.value) {
+          // Meds done, summary pending → resume at summary phase
+          wizardFlowPhase.value = 'summary';
+          myStuffInitialTab.value = 'summary';
+          wizardRequestSummaryOnOpen.value = true;
+          showMyStuffDialog.value = true;
+        } else if (!wizardCurrentMedications.value) {
+          // Meds still pending → resume at medications phase
+          wizardFlowPhase.value = 'medications';
+          try {
+            sessionStorage.setItem('autoProcessInitialFile', 'true');
+            sessionStorage.setItem('wizardMyListsAuto', 'true');
+          } catch { /* ignore */ }
+          myStuffInitialTab.value = 'lists';
+          showMyStuffDialog.value = true;
+        }
+      }
+
       if (!shouldHideSetupWizard.value && !showAgentSetupDialog.value && !wizardDismissed.value) {
         showAgentSetupDialog.value = true;
         stopAgentSetupTimer();
@@ -5225,7 +5619,7 @@ const stage3IndexingActive = computed(() =>
 watch(
   () => indexingStatus.value?.phase,
   (phase, oldPhase) => {
-    if (phase === 'complete' && oldPhase !== 'complete' && localFolderHandle.value) {
+    if (phase === 'complete' && oldPhase !== 'complete' && (localFolderHandle.value || safariFolderName.value)) {
       const tokens = indexingStatus.value?.tokens || '0';
       const filesIndexed = indexingStatus.value?.filesIndexed || 0;
       const elapsed = stage3IndexingStartedAt.value
@@ -5241,7 +5635,7 @@ watch(
 watch(
   () => wizardCurrentMedications.value,
   (verified, was) => {
-    if (verified && !was && localFolderHandle.value) {
+    if (verified && !was && (localFolderHandle.value || safariFolderName.value)) {
       addSetupLogLine('Current Medications', 'Current Medications verified', true);
       void generateSetupLogPdf();
     }
@@ -5255,7 +5649,7 @@ watch(
     if (
       phase === 'complete' &&
       agentReady &&
-      localFolderHandle.value &&
+      (localFolderHandle.value || safariFolderName.value) &&
       wizardFlowPhase.value === 'running'
     ) {
       // Both indexing and agent are done — transition to medications phase
@@ -5317,6 +5711,21 @@ const handleIndexingFinished = (_data: { jobId: string; phase: string; error?: s
   // Update status tip to show normal status
   updateContextualTip();
   refreshWizardState();
+  // Prompt to update Patient Summary, but not during wizard-controlled guided flow or if already dismissed this session
+  if (wizardFlowPhase.value !== 'medications' && wizardFlowPhase.value !== 'summary' && !postIndexingSummaryDismissedThisSession.value) {
+    showPostIndexingSummaryPrompt.value = true;
+  }
+};
+
+const handlePostIndexingUpdateSummary = () => {
+  showPostIndexingSummaryPrompt.value = false;
+  // Close and reopen MyStuff on summary tab so requestSummaryOnOpen triggers generation
+  showMyStuffDialog.value = false;
+  void nextTick(() => {
+    myStuffInitialTab.value = 'summary';
+    wizardRequestSummaryOnOpen.value = true;
+    showMyStuffDialog.value = true;
+  });
 };
 
 const handleFilesArchived = (archivedBucketKeys: string[]) => {
@@ -5344,6 +5753,68 @@ const handleFilesArchived = (archivedBucketKeys: string[]) => {
   
   // Update status tip immediately after files are archived
   updateContextualTip();
+};
+
+const handleFileAddedToKb = async (data: { fileName: string; bucketKey: string }) => {
+  // Copy the file to the local MAIA folder so it's available for offline restore
+  // Try to reconnect if handle is missing (may work if user gesture chain is still active)
+  if (!localFolderHandle.value && props.user?.userId) {
+    try {
+      const result = await reconnectLocalFolderWithGesture(props.user.userId);
+      if (result) {
+        localFolderHandle.value = result.handle;
+        localFolderName.value = result.folderName;
+        console.log(`[localFolder] Reconnected to "${result.folderName}" during KB file add`);
+      }
+    } catch { /* ignore */ }
+  }
+  if (!localFolderHandle.value) {
+    console.log('[localFolder] No local folder connected — skipping local copy of KB file');
+    return;
+  }
+  try {
+    // Fetch file content via the proxy endpoint
+    const resp = await fetch(`/api/files/proxy-pdf/${encodeURIComponent(data.bucketKey)}`, {
+      credentials: 'include'
+    });
+    if (!resp.ok) {
+      console.warn(`[localFolder] Failed to fetch file for local copy: ${resp.status}`);
+      return;
+    }
+    const blob = await resp.blob();
+    await writeFileToFolder(localFolderHandle.value, data.fileName, blob);
+
+    // Update maia-state.json to reflect the new file
+    try {
+      const state = await readStateFile(localFolderHandle.value);
+      if (state) {
+        const files = state.files || [];
+        const existing = files.find(f => f.fileName === data.fileName);
+        if (!existing) {
+          files.push({
+            fileName: data.fileName,
+            size: blob.size,
+            cloudStatus: 'indexed' as const,
+            bucketKey: data.bucketKey
+          });
+          state.files = files;
+          await writeStateFile(localFolderHandle.value, state);
+        }
+      }
+    } catch (stateErr) {
+      console.warn('[localFolder] Failed to update maia-state.json:', stateErr);
+    }
+
+    if ($q && typeof $q.notify === 'function') {
+      $q.notify({
+        type: 'positive',
+        message: `"${data.fileName}" copied to local MAIA folder`,
+        timeout: 3000
+      });
+    }
+  } catch (err) {
+    console.warn('[localFolder] Failed to copy file to local folder:', err);
+  }
 };
 
 const handleMessagesFiltered = async (filteredMessages: Message[]) => {
@@ -5626,6 +6097,24 @@ onMounted(async () => {
     // Try to reconnect to a previously chosen local folder (silent on Chrome 122+)
     if (localFolderSupported.value) {
       void tryReconnectLocalFolder();
+    }
+
+    // Recover Safari folder session from localStorage on reload.
+    // If we had a safariFolderName but lost the live File objects (reload),
+    // we can still let the wizard show server-sourced progress. If files
+    // are already indexed, the watchers won't need the folder handle at all.
+    if (props.folderAccessTier === 'safari' || props.folderAccessTier === 'basic') {
+      try {
+        const sfKey = `safariFolderName-${props.user?.userId}`;
+        const stored = sfKey ? localStorage.getItem(sfKey) : null;
+        if (stored && !safariFolderName.value) {
+          safariFolderName.value = stored;
+          localFolderName.value = stored;
+          // We have the name but no live File objects — mark that a re-select
+          // may be needed if the wizard still requires file uploads.
+          safariNeedsReselect.value = true;
+        }
+      } catch { /* ignore */ }
     }
 
     startSetupWizardPolling();

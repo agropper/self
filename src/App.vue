@@ -46,21 +46,50 @@
                 <div class="text-center q-mb-md">
                   <p
                     class="q-ma-none text-body2"
-                    :style="welcomeUserType === 'new' ? { color: '#1a1a1a' } : welcomeUserType === 'local' ? { color: '#e65100' } : welcomeUserType === 'cloud' ? { color: '#2e7d32' } : {}"
+                    :style="welcomeUserType === 'new' ? { color: '#1a1a1a' } : (welcomeUserType === 'local' && welcomeCloudValid === true) ? { color: '#2e7d32' } : (welcomeUserType === 'local' && welcomeCloudValid === null) ? { color: '#757575' } : welcomeUserType === 'local' ? { color: '#e65100' } : welcomeUserType === 'cloud' ? { color: '#2e7d32' } : {}"
                   >
-                    {{ welcomeUserStatusLine }}
+                    <template v-if="welcomeUserStatusLine === '__passkey_link__'">
+                      Get started with a new account or
+                      <a
+                        href="#"
+                        style="color: #1976d2; text-decoration: underline; cursor: pointer"
+                        @click.prevent="handlePasskeySignInLink"
+                      >sign-in with a passkey</a>.
+                    </template>
+                    <template v-else>{{ welcomeUserStatusLine }}</template>
                   </p>
+                  <!-- Cloud-invalid local user: inline restore/delete options on the status line -->
+                  <div v-if="welcomeUserType === 'local' && welcomeCloudValid === false" class="q-mt-sm">
+                    <q-btn
+                      flat
+                      dense
+                      label="RESTORE FROM LOCAL FOLDER"
+                      color="negative"
+                      size="sm"
+                      :loading="tempStartLoading"
+                      @click="handleRestoreFromLocalFolder"
+                    />
+                    <span class="text-grey-6 q-mx-xs text-body2">or</span>
+                    <q-btn
+                      flat
+                      dense
+                      :label="`DELETE ${welcomeDisplayUserId}`"
+                      color="negative"
+                      size="sm"
+                      :loading="deleteLocalUserLoading"
+                      @click="handleDeleteLocalUser"
+                    />
+                  </div>
                 </div>
 
                 <div v-if="!showAuth">
-                  <!-- Get Started: single button (Passkey & More Choices hidden for simplicity) -->
+                  <!-- GET STARTED is always the main action -->
                   <q-btn
                     label="GET STARTED"
                     color="primary"
                     size="lg"
                     class="full-width q-mb-sm"
                     :loading="tempStartLoading"
-                    :disable="welcomeUserType === 'cloud'"
                     @click="handleGetStartedNoPassword"
                   />
                   <div v-if="tempStartError" class="text-negative text-center q-mb-md">
@@ -114,6 +143,7 @@
             :rehydration-files="rehydrationFiles"
             :rehydration-active="rehydrationActive"
             :suppress-wizard="suppressWizard"
+            :folder-access-tier="folderAccessTier"
             @sign-out="handleSignOut"
             @restore-applied="restoredChatState = null"
             @rehydration-complete="handleRehydrationComplete"
@@ -268,23 +298,102 @@
       </q-card>
     </q-dialog>
 
-    <!-- Passkey sign-out: offer local backup (encrypted with PIN) -->
-    <q-dialog v-model="showPasskeyBackupPromptModal" persistent>
-      <q-card style="min-width: 420px; max-width: 520px">
+    <!-- Non-Chrome browser warning -->
+    <q-dialog v-model="showNotChromeDialog" persistent>
+      <q-card style="min-width: 460px; max-width: 640px">
         <q-card-section>
-          <div class="text-h6">Local backup</div>
-          <p class="text-body2 q-mt-sm q-mb-md">
-            Would you like to keep a local backup on this computer and browser?
-          </p>
-          <q-toggle
-            v-model="passkeyBackupDoNotAskAgain"
-            label="Do not ask again"
-            color="primary"
-          />
+          <div class="text-h6">Chrome Recommended</div>
+        </q-card-section>
+        <q-card-section class="text-body2">
+          MAIA works best in Chrome because it can access an entire local folder
+          for your health records, rather than requiring you to select individual
+          files one at a time. Other browsers have limited support for folder-level
+          access.
         </q-card-section>
         <q-card-actions align="right">
-          <q-btn flat label="NO" color="primary" @click="onPasskeyBackupNo" />
-          <q-btn unelevated label="YES" color="primary" @click="onPasskeyBackupYes" />
+          <q-btn
+            flat
+            label="CONTINUE IN THIS BROWSER"
+            color="primary"
+            @click="handleContinueNonChrome"
+          />
+          <q-btn
+            unelevated
+            label="LET ME START OVER IN CHROME"
+            color="primary"
+            @click="showNotChromeDialog = false"
+          />
+        </q-card-actions>
+      </q-card>
+    </q-dialog>
+
+    <!-- Non-Chrome: create a MAIA folder first -->
+    <q-dialog v-model="showCreateFolderDialog" persistent>
+      <q-card style="min-width: 460px; max-width: 640px">
+        <q-card-section>
+          <div class="text-h6">Create Your MAIA Folder</div>
+        </q-card-section>
+        <q-card-section class="text-body2">
+          <p>
+            Before continuing, please pause here and go create a folder on this
+            computer — for example <strong>AG MAIA files</strong> — and put whatever
+            health record files you want indexed into that folder. Use a name that
+            identifies the patient so you don't accidentally mix records.
+          </p>
+          <p class="text-negative text-weight-medium q-mb-none">
+            Important: Be sure not to mix records from different patients into the
+            same folder.
+          </p>
+        </q-card-section>
+        <q-card-actions align="right">
+          <q-btn
+            unelevated
+            label="I HAVE MY HEALTH RECORDS FOLDER"
+            color="primary"
+            @click="handleFolderReady"
+          />
+        </q-card-actions>
+      </q-card>
+    </q-dialog>
+
+    <!-- Passkey sign-out: cross-device info -->
+    <q-dialog v-model="showPasskeyBackupPromptModal" persistent>
+      <q-card style="min-width: 420px; max-width: 560px">
+        <q-card-section>
+          <div class="text-h6">Passkey Created</div>
+          <p class="text-body2 q-mt-sm q-mb-none">
+            Passkeys allow you to access your MAIA on other devices or browsers.
+            The MAIA folder you created this account from may not be available or
+            would be a privacy risk on these other devices. Although your cloud
+            MAIA account will be updated, your local MAIA folder will not be
+            updated until the next time you access MAIA from the same original device.
+          </p>
+        </q-card-section>
+        <q-card-actions align="right">
+          <q-btn unelevated label="OK" color="primary" @click="onPasskeyBackupNo" />
+        </q-card-actions>
+      </q-card>
+    </q-dialog>
+
+    <!-- Sign-out: prompt to choose folder for saving updated files -->
+    <q-dialog v-model="showSignOutFolderPrompt" persistent>
+      <q-card style="min-width: 420px; max-width: 560px">
+        <q-card-section>
+          <div class="text-h6">Save Updated Files</div>
+          <p class="text-body2 q-mt-sm q-mb-none">
+            Download your updated log and database backup to keep your local
+            MAIA folder in sync with your cloud account.
+          </p>
+        </q-card-section>
+        <q-card-actions align="right">
+          <q-btn flat label="SKIP" color="grey" @click="signOutFolderSkip" />
+          <q-btn
+            unelevated
+            label="DOWNLOAD BACKUP"
+            color="primary"
+            :loading="signOutFolderSaving"
+            @click="signOutFolderPick"
+          />
         </q-card-actions>
       </q-card>
     </q-dialog>
@@ -441,7 +550,41 @@
       </q-card>
     </q-dialog>
 
-    <!-- Missing agent dialog -->
+    <!-- Delete local user confirmation dialog (from welcome page) -->
+    <q-dialog v-model="showDeleteLocalUserDialog" persistent>
+      <q-card style="min-width: 420px; max-width: 540px">
+        <q-card-section>
+          <div class="text-h6">Delete {{ welcomeDisplayUserId }}?</div>
+        </q-card-section>
+        <q-card-section class="text-body2">
+          <p>
+            This will permanently delete all cloud data for <strong>{{ welcomeDisplayUserId }}</strong>
+            (files, knowledge base, agent) and remove the local backup from this device.
+          </p>
+          <p class="q-mt-md">
+            The next time you click GET STARTED, a new account will be created.
+          </p>
+        </q-card-section>
+        <q-card-actions align="right">
+          <q-btn
+            flat
+            label="CANCEL"
+            color="primary"
+            :disable="deleteLocalUserLoading"
+            @click="showDeleteLocalUserDialog = false"
+          />
+          <q-btn
+            flat
+            :label="`DELETE ${welcomeDisplayUserId}`"
+            color="negative"
+            :loading="deleteLocalUserLoading"
+            @click="confirmDeleteLocalUser"
+          />
+        </q-card-actions>
+      </q-card>
+    </q-dialog>
+
+    <!-- Missing agent dialog (legacy — kept for temporary session flow) -->
     <q-dialog v-model="showMissingAgentDialog" persistent>
       <q-card style="min-width: 520px; max-width: 640px">
         <q-card-section>
@@ -467,6 +610,53 @@
             label="START THE WIZARD AGAIN"
             color="negative"
             @click="handleStartWizardAgain"
+          />
+        </q-card-actions>
+      </q-card>
+    </q-dialog>
+
+    <!-- Cloud health dialog — shown on sign-in when cloud resources are missing -->
+    <q-dialog v-model="showCloudHealthDialog" persistent>
+      <q-card style="min-width: 520px; max-width: 640px">
+        <q-card-section>
+          <div class="text-h6">Cloud Resources Unavailable</div>
+        </q-card-section>
+        <q-card-section class="text-body2">
+          <p>
+            Some cloud resources for your account are no longer available:
+          </p>
+          <ul class="q-mt-sm q-mb-md" style="padding-left: 1.2rem;">
+            <li v-if="cloudHealthDetails?.database && !cloudHealthDetails.database.ok">
+              <strong>Database</strong> — {{ cloudHealthDetails.database.error || 'not found' }}
+            </li>
+            <li v-if="cloudHealthDetails?.agent && !cloudHealthDetails.agent.ok">
+              <strong>AI Agent</strong> — {{ cloudHealthDetails.agent.error || 'not found' }}
+            </li>
+            <li v-if="cloudHealthDetails?.knowledgeBase && !cloudHealthDetails.knowledgeBase.ok">
+              <strong>Knowledge Base</strong> — {{ cloudHealthDetails.knowledgeBase.error || 'not found' }}
+            </li>
+            <li v-if="cloudHealthDetails?.spacesFiles && !cloudHealthDetails.spacesFiles.ok">
+              <strong>Stored Files</strong> — {{ cloudHealthDetails.spacesFiles.error || 'not found' }}
+            </li>
+          </ul>
+          <p>
+            Would you like to restore from your local MAIA folder, or start fresh with a new account?
+          </p>
+        </q-card-section>
+        <q-card-actions align="right" class="q-gutter-sm">
+          <q-btn
+            flat
+            label="Start fresh"
+            color="grey-8"
+            :loading="cloudHealthLoading"
+            @click="handleCloudStartFresh"
+          />
+          <q-btn
+            unelevated
+            label="Restore from local folder"
+            color="primary"
+            :loading="cloudHealthLoading"
+            @click="handleCloudRestore"
           />
         </q-card-actions>
       </q-card>
@@ -533,7 +723,7 @@ import PrivacyDialog from './components/PrivacyDialog.vue';
 import AdminUsers from './components/AdminUsers.vue';
 import { useQuasar } from 'quasar';
 import { saveUserSnapshot, getLastSnapshotUserId, getUserSnapshot, clearLastSnapshotUserId, clearUserSnapshot, getPasskeyBackupPromptSkip, setPasskeyBackupPromptSkip, saveUserSnapshotEncrypted } from './utils/localDb';
-import { writeStateFile, type MaiaState } from './utils/localFolder';
+import { writeStateFile, clearDirectoryHandle, type MaiaState } from './utils/localFolder';
 
 interface User {
   userId: string;
@@ -596,6 +786,8 @@ const showDormantDialog = ref(false);
 const dormantDeepLinkCount = ref(0);
 const dormantLoading = ref(false);
 const signOutSnapshot = ref<SignOutSnapshot | null>(null);
+const showSignOutFolderPrompt = ref(false);
+const signOutFolderSaving = ref(false);
 const showRestoreDialog = ref(false);
 const restoreLoading = ref(false);
 const restoreSnapshot = ref<any | null>(null);
@@ -605,15 +797,41 @@ const rehydrationActive = ref(false);
 const suppressWizard = ref(false);
 const showMissingAgentDialog = ref(false);
 const missingAgentUserId = ref<string | null>(null);
+const showCloudHealthDialog = ref(false);
+const cloudHealthDetails = ref<any>(null);
+const cloudHealthLoading = ref(false);
 const pendingLocalUserId = ref<string | null>(null);
 const showDevicePrivacyDialog = ref(false);
 const showSharedDeviceWarning = ref(false);
 const deviceChoiceResolved = ref(false);
 const sharedComputerMode = ref(false);
+const showNotChromeDialog = ref(false);
+const showCreateFolderDialog = ref(false);
+
+/** Browser folder-access capability tier:
+ *  'chrome'  – Full File System Access API (persistent read/write)
+ *  'safari'  – webkitdirectory one-time folder read; sync on sign-out only
+ *  'basic'   – No folder access; single-file-at-a-time fallback */
+type FolderTier = 'chrome' | 'safari' | 'basic';
+const folderAccessTier = ref<FolderTier>('basic');
+
+const detectFolderAccessTier = (): FolderTier => {
+  if (typeof window !== 'undefined' && typeof window.showDirectoryPicker === 'function') return 'chrome';
+  // Safari and Firefox support <input webkitdirectory> for one-time folder reads
+  if (typeof document !== 'undefined') {
+    const input = document.createElement('input');
+    if ('webkitdirectory' in input) return 'safari';
+  }
+  return 'basic';
+};
+folderAccessTier.value = detectFolderAccessTier();
+
 // ── Local folder (File System Access API) state ───────────────
 const localFolderHandle = ref<FileSystemDirectoryHandle | null>(null);
 const localFolderName = ref<string | null>(null);
 const showOtherAccountOptionsDialog = ref(false);
+const showDeleteLocalUserDialog = ref(false);
+const deleteLocalUserLoading = ref(false);
 const pendingAccountAction = ref<'backup-and-delete' | 'delete-only' | 'confirm-delete-cloud' | null>(null);
 const showMoreChoicesConfirmDialog = ref(false);
 const moreChoicesConfirmKind = ref<'delete-cloud' | 'delete-local' | null>(null);
@@ -637,6 +855,18 @@ const welcomeLocalSnapshot = ref<{
   medicationsVerified: boolean;
   summaryVerified: boolean;
 } | null>(null);
+/** [AUTH] Whether the DO GenAI agent exists for the local userId (null = not yet checked). */
+const welcomeAgentExists = ref<boolean | null>(null);
+/** [AUTH] Cloud file count for the local userId from CouchDB (null = not yet checked). */
+const welcomeCloudFileCount = ref<number | null>(null);
+/** [AUTH] Saved file count (excluding References) for the local userId (null = not yet checked). */
+const welcomeSavedFileCount = ref<number | null>(null);
+/** [AUTH] Whether KB exists for the local userId. */
+const welcomeKbExists = ref<boolean | null>(null);
+/** [AUTH] Whether agent is linked to KB. */
+const welcomeAgentLinkedToKb = ref<boolean | null>(null);
+/** [AUTH] Whether wizard is complete (verified patient summary). */
+const welcomeWizardComplete = ref<boolean | null>(null);
 
 /** [AUTH] Classify welcome into New / Local / Cloud for status line and copy (USER_AUTH.md §1–2). */
 const welcomeUserType = computed(() => {
@@ -653,17 +883,46 @@ const welcomeUserType = computed(() => {
   return 'new' as const;
 });
 
+/** [AUTH] True when cloud account is fully set up: KB exists with saved files, agent linked, wizard complete. */
+const welcomeCloudValid = computed(() => {
+  if (!welcomeLocalUserId.value) return null;
+  const snap = welcomeLocalSnapshot.value;
+  const savedCount = welcomeSavedFileCount.value;
+  const kbOk = welcomeKbExists.value === true;
+  const linkedOk = welcomeAgentLinkedToKb.value === true;
+  const wizardOk = welcomeWizardComplete.value === true;
+  // Saved files in cloud match or exceed local snapshot count
+  const filesOk = savedCount !== null && (!snap || snap.fileCount === 0 || savedCount >= snap.fileCount);
+  const valid = kbOk && linkedOk && wizardOk && filesOk;
+  console.log(`[WELCOME] cloudValid: kb=${kbOk}, linked=${linkedOk}, wizard=${wizardOk}, files=${savedCount}/${snap?.fileCount ?? '?'} → ${valid}`);
+  return valid;
+});
+
 /** [AUTH] Single User Status line below "Welcome to MAIA" (USER_AUTH.md §2). */
 const welcomeUserStatusLine = computed(() => {
   const type = welcomeUserType.value;
   const localId = welcomeLocalUserId.value;
   const snap = welcomeLocalSnapshot.value;
   const ws = welcomeStatus.value;
-  if (type === 'new') return 'Sign in with your passkey or create a new account';
+  if (type === 'new') return '__passkey_link__'; // handled in template
   if (type === 'local') {
     const userId = ws.tempCookieUserId || localId || '';
-    const fileCount = snap?.fileCount ?? 0;
-    return `${userId} has a local backup but ${fileCount} file${fileCount === 1 ? '' : 's'} will need to be restored and re-indexed.`;
+    const savedCount = welcomeSavedFileCount.value ?? snap?.fileCount ?? 0;
+    if (welcomeCloudValid.value === true) {
+      return `${userId} is ready to continue with ${savedCount} saved file${savedCount === 1 ? '' : 's'}.`;
+    }
+    // Still loading cloud validity — show neutral message to avoid red flash
+    if (welcomeCloudValid.value === null && welcomeKbExists.value === null) {
+      return `Checking ${userId} account status…`;
+    }
+    // Show what's missing
+    const parts: string[] = [];
+    if (!welcomeKbExists.value) parts.push('no knowledge base');
+    if (!welcomeAgentLinkedToKb.value) parts.push('agent not linked');
+    if (!welcomeWizardComplete.value) parts.push('wizard incomplete');
+    const localFiles = snap?.fileCount ?? 0;
+    const reason = parts.length > 0 ? ` (${parts.join(', ')})` : '';
+    return `${userId} has a local backup with ${localFiles} file${localFiles === 1 ? '' : 's'}${reason}.`;
   }
   const userId = ws.tempCookieUserId || localId || '';
   const hasLocalBackup = !!welcomeLocalUserId.value;
@@ -711,16 +970,37 @@ const loadWelcomeStatus = async () => {
   welcomeLocalUserId.value = getLastSnapshotUserId();
   welcomeLocalSnapshot.value = null;
   welcomeLocalHasPasskey.value = null;
+  welcomeAgentExists.value = null;
+  welcomeCloudFileCount.value = null;
+  welcomeSavedFileCount.value = null;
+  welcomeKbExists.value = null;
+  welcomeAgentLinkedToKb.value = null;
+  welcomeWizardComplete.value = null;
   const localId = welcomeLocalUserId.value;
+  console.log(`[WELCOME] loadWelcomeStatus: localId=${localId || 'none'}`);
   if (localId) {
     try {
-      const [snapshot, passkeyRes] = await Promise.all([
+      const [snapshot, passkeyRes, agentRes] = await Promise.all([
         getUserSnapshot(localId),
-        fetch(`/api/passkey/check-user?userId=${encodeURIComponent(localId)}`, { credentials: 'include' })
+        fetch(`/api/passkey/check-user?userId=${encodeURIComponent(localId)}`, { credentials: 'include' }),
+        fetch(`/api/agent-exists?userId=${encodeURIComponent(localId)}`)
       ]);
       if (passkeyRes.ok) {
         const passkeyData = await passkeyRes.json();
         welcomeLocalHasPasskey.value = !!passkeyData.hasPasskey;
+      }
+      if (agentRes.ok) {
+        const agentData = await agentRes.json();
+        welcomeAgentExists.value = !!agentData?.exists;
+        welcomeCloudFileCount.value = agentData?.cloudFileCount ?? null;
+        welcomeSavedFileCount.value = agentData?.savedFileCount ?? null;
+        welcomeKbExists.value = agentData?.kbExists ?? null;
+        welcomeAgentLinkedToKb.value = agentData?.agentLinkedToKb ?? null;
+        welcomeWizardComplete.value = agentData?.wizardComplete ?? null;
+        console.log(`[WELCOME] cloud status for ${localId}: agent=${agentData?.exists}, savedFiles=${agentData?.savedFileCount}, kb=${agentData?.kbExists}, linked=${agentData?.agentLinkedToKb}, wizardDone=${agentData?.wizardComplete}, stage=${agentData?.workflowStage}`);
+      } else {
+        console.warn(`[WELCOME] agent-exists call failed: ${agentRes.status}`);
+        welcomeAgentExists.value = false;
       }
       if (snapshot) {
         const fileStatusSummary = snapshot.fileStatusSummary || snapshot.files || [];
@@ -734,8 +1014,12 @@ const loadWelcomeStatus = async () => {
           medicationsVerified: !!(snapshot.currentMedications != null && String(snapshot.currentMedications).trim() !== ''),
           summaryVerified: !!(snapshot.patientSummary != null && String(snapshot.patientSummary).trim() !== '')
         };
+        console.log(`[WELCOME] local snapshot for ${localId}: files=${fileCount}, indexed=${indexedCount}, medsVerified=${welcomeLocalSnapshot.value.medicationsVerified}, summaryVerified=${welcomeLocalSnapshot.value.summaryVerified}`);
+      } else {
+        console.log(`[WELCOME] no local snapshot for ${localId}`);
       }
-    } catch (_) {
+    } catch (err) {
+      console.warn('[WELCOME] loadWelcomeStatus error:', err);
       welcomeLocalSnapshot.value = null;
     }
   }
@@ -1004,7 +1288,7 @@ const runPendingAccountClosure = async () => {
   }
 };
 
-const handleAuthenticated = (userData: any) => {
+const handleAuthenticated = async (userData: any) => {
   const pending = pendingAccountAction.value;
   if (pending === 'confirm-delete-cloud') {
     setAuthenticatedUser(userData, null);
@@ -1025,23 +1309,45 @@ const handleAuthenticated = (userData: any) => {
       ? { shareId: deepLinkShareId.value, chatId: null }
       : null;
   setAuthenticatedUser(userData, pendingDeepLink);
-  
+
   // After authentication, if on /admin path (and not localhost), redirect to root
   // This fixes the issue where new users end up on /admin after registration
   if (typeof window !== 'undefined') {
     const isAdminPage = window.location.pathname === '/admin';
     const isLocalhost = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
-    
+
     if (userData?.isAdmin) {
       showAdminPage.value = true;
       if (!isAdminPage) {
         window.history.replaceState({}, '', '/admin');
       }
+      return; // skip health check for admins
     } else if (isAdminPage && !isLocalhost && !userData?.isAdmin) {
       // Redirect to root after a brief delay to ensure state is updated
       setTimeout(() => {
         window.location.href = '/';
       }, 100);
+    }
+  }
+
+  // Cloud health check — verify all resources are still available
+  if (userData?.userId && !userData?.isAdmin && !pendingDeepLink) {
+    try {
+      const healthResp = await fetch(
+        `/api/cloud-health?userId=${encodeURIComponent(userData.userId)}`,
+        { credentials: 'include' }
+      );
+      if (healthResp.ok) {
+        const health = await healthResp.json();
+        if (!health.healthy) {
+          console.warn('[cloud-health] Resources missing:', health.details);
+          cloudHealthDetails.value = health.details;
+          showCloudHealthDialog.value = true;
+        }
+      }
+    } catch (e) {
+      console.warn('[cloud-health] Health check failed:', e);
+      // Don't block sign-in if health check itself fails
     }
   }
 };
@@ -1088,7 +1394,6 @@ const resetAuthState = () => {
 
 const saveLocalSnapshot = async (snapshot?: SignOutSnapshot | null) => {
   if (!user.value?.userId || user.value.isDeepLink || sharedComputerMode.value) return;
-  if (user.value.isTemporary === false) return;
   try {
     const [filesResponse, chatsResponse, statusResponse, summaryResponse] = await Promise.all([
       fetch(`/api/user-files?userId=${encodeURIComponent(user.value.userId)}`, {
@@ -1182,11 +1487,37 @@ const handleLocalFolderConnected = (payload: { handle: FileSystemDirectoryHandle
   localFolderName.value = payload.folderName;
 };
 
+/** Detect whether the browser is Chrome (not Edge, not Opera). */
+const isChromeBrowser = (): boolean => {
+  if (typeof navigator === 'undefined') return false;
+  const ua = navigator.userAgent;
+  return /Chrome\/\d+/.test(ua) && !/Edg\//.test(ua) && !/OPR\//.test(ua);
+};
+
+/** After device-privacy choice, check Chrome before proceeding. */
+const proceedAfterDeviceChoice = () => {
+  if (!isChromeBrowser()) {
+    showNotChromeDialog.value = true;
+    return;
+  }
+  startTemporarySession();
+};
+
+const handleContinueNonChrome = () => {
+  showNotChromeDialog.value = false;
+  showCreateFolderDialog.value = true;
+};
+
+const handleFolderReady = () => {
+  showCreateFolderDialog.value = false;
+  startTemporarySession();
+};
+
 const handlePrivateDevice = () => {
   sharedComputerMode.value = false;
   deviceChoiceResolved.value = true;
   showDevicePrivacyDialog.value = false;
-  startTemporarySession();
+  proceedAfterDeviceChoice();
 };
 
 const handleSharedDevice = () => {
@@ -1198,12 +1529,20 @@ const handleSharedDevice = () => {
 
 const handleSharedWarningOk = () => {
   showSharedDeviceWarning.value = false;
-  deviceChoiceResolved.value = false;
+  proceedAfterDeviceChoice();
 };
 
 const handleGetStartedNoPassword = () => {
   if (typeof console !== 'undefined' && console.log) {
-    console.log('[AUTH] Get Started (No Password): newClient=', isNewClient.value, 'deviceResolved=', deviceChoiceResolved.value);
+    console.log('[AUTH] Get Started (No Password): newClient=', isNewClient.value, 'deviceResolved=', deviceChoiceResolved.value, 'userType=', welcomeUserType.value);
+  }
+  // Cloud user (has passkey) → challenge passkey directly
+  if (welcomeUserType.value === 'cloud') {
+    const userId = welcomeDisplayUserId.value;
+    passkeyPrefillUserId.value = userId || null;
+    passkeyPrefillAction.value = 'signin';
+    showAuth.value = true;
+    return;
   }
   if (isNewClient.value) {
     if (!deviceChoiceResolved.value) {
@@ -1214,6 +1553,13 @@ const handleGetStartedNoPassword = () => {
     return;
   }
   startTemporarySession();
+};
+
+/** "sign-in with a passkey" link on Welcome page for new users */
+const handlePasskeySignInLink = () => {
+  passkeyPrefillUserId.value = null;
+  passkeyPrefillAction.value = 'signin';
+  showAuth.value = true;
 };
 
 // Passkey flow — hidden in simplified welcome page, kept for future use
@@ -1248,6 +1594,19 @@ const performSignOut = async () => {
 
 const handleDormantSignOut = async () => {
   if (!user.value?.userId) return;
+
+  // If no persistent folder handle, prompt user to choose a folder for saving updated files
+  if (!localFolderHandle.value && !sharedComputerMode.value) {
+    showSignOutFolderPrompt.value = true;
+    return;
+  }
+
+  await completeDormantSignOut();
+};
+
+/** Finish the dormant sign-out after optional folder save. */
+const completeDormantSignOut = async () => {
+  if (!user.value?.userId) return;
   dormantLoading.value = true;
   try {
     await saveLocalSnapshot(signOutSnapshot.value);
@@ -1262,6 +1621,66 @@ const handleDormantSignOut = async () => {
     dormantLoading.value = false;
     showDormantDialog.value = false;
     signOutSnapshot.value = null;
+  }
+};
+
+/** User chose to skip folder save on sign-out. */
+const signOutFolderSkip = () => {
+  showSignOutFolderPrompt.value = false;
+  void completeDormantSignOut();
+};
+
+/** User chose to download updated state on sign-out (non-Chrome browsers only). */
+const signOutFolderPick = async () => {
+  signOutFolderSaving.value = true;
+  try {
+    await downloadStateAsFile();
+  } catch (e) {
+    console.warn('[sign-out] State download failed:', e);
+  } finally {
+    signOutFolderSaving.value = false;
+    showSignOutFolderPrompt.value = false;
+    void completeDormantSignOut();
+  }
+};
+
+/** Download state JSON as a file (fallback for browsers without folder write). */
+const downloadStateAsFile = async () => {
+  if (!user.value?.userId) return;
+  try {
+    const [filesResponse, statusResponse, summaryResponse] = await Promise.all([
+      fetch(`/api/user-files?userId=${encodeURIComponent(user.value.userId)}`, { credentials: 'include' }),
+      fetch(`/api/user-status?userId=${encodeURIComponent(user.value.userId)}`, { credentials: 'include' }),
+      fetch(`/api/patient-summary?userId=${encodeURIComponent(user.value.userId)}`, { credentials: 'include' })
+    ]);
+    const files = filesResponse.ok ? await filesResponse.json() : null;
+    const status = statusResponse.ok ? await statusResponse.json() : null;
+    const summary = summaryResponse.ok ? await summaryResponse.json() : null;
+    const filesList = Array.isArray(files?.files) ? files.files : [];
+    const indexedSet = new Set(Array.isArray(files?.indexedFiles) ? files.indexedFiles : []);
+    const state = {
+      version: 1,
+      userId: user.value.userId,
+      displayName: user.value.displayName,
+      updatedAt: new Date().toISOString(),
+      files: filesList.map((f: any) => ({
+        fileName: f.fileName,
+        size: f.fileSize,
+        cloudStatus: indexedSet.has(f.bucketKey || '') ? 'indexed' : 'pending',
+        bucketKey: f.bucketKey
+      })),
+      currentMedications: status?.currentMedications || null,
+      patientSummary: summary?.summary || null
+    };
+    const blob = new Blob([JSON.stringify(state, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'maia-state.json';
+    a.click();
+    URL.revokeObjectURL(url);
+  } catch (e) {
+    console.warn('[sign-out] Failed to download state:', e);
   }
 };
 
@@ -1288,6 +1707,76 @@ const clearWizardPendingKey = (userId?: string | null) => {
   }
 };
 
+/** [AUTH] RESTORE FROM LOCAL FOLDER: create new temp session and run restore from IndexedDB snapshot. */
+const handleRestoreFromLocalFolder = async () => {
+  const localId = welcomeLocalUserId.value;
+  if (!localId) return;
+  tempStartLoading.value = true;
+  tempStartError.value = '';
+  try {
+    const newUser = await createTemporarySession();
+    if (!newUser) return;
+    const snapshot = await getUserSnapshot(localId);
+    if (snapshot) {
+      restoreSnapshot.value = snapshot;
+      suppressWizard.value = false;
+      clearWizardPendingKey(localId);
+      await handleRestoreSnapshot();
+    } else {
+      if ($q && typeof $q.notify === 'function') {
+        $q.notify({ type: 'info', message: 'No local backup found. Use the wizard to set up your account.', timeout: 4000 });
+      }
+    }
+  } catch (error) {
+    tempStartError.value = error instanceof Error ? error.message : 'Unable to start restore';
+  } finally {
+    tempStartLoading.value = false;
+  }
+};
+
+/** [AUTH] Open delete confirmation dialog for local userId from welcome page. */
+const handleDeleteLocalUser = () => {
+  showDeleteLocalUserDialog.value = true;
+};
+
+/** [AUTH] Confirmed delete: clear local snapshot and best-effort delete cloud resources. */
+const confirmDeleteLocalUser = async () => {
+  const localId = welcomeLocalUserId.value;
+  if (!localId) return;
+  deleteLocalUserLoading.value = true;
+  try {
+    // Best-effort server-side delete (user may have no cloud account)
+    try {
+      await fetch('/api/local/delete', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ userId: localId })
+      });
+    } catch {
+      // Non-fatal – clear local data regardless
+    }
+    // Clear all local data
+    await clearUserSnapshot(localId);
+    clearLastSnapshotUserId();
+    clearWizardPendingKey(localId);
+    // Reset welcome state so GET STARTED creates a new userId
+    welcomeLocalUserId.value = null;
+    welcomeLocalSnapshot.value = null;
+    welcomeLocalHasPasskey.value = null;
+    welcomeAgentExists.value = null;
+    welcomeCloudFileCount.value = null;
+    welcomeStatus.value = {};
+    showDeleteLocalUserDialog.value = false;
+    if ($q && typeof $q.notify === 'function') {
+      $q.notify({ type: 'positive', message: `${localId} deleted. Click GET STARTED to create a new account.`, timeout: 5000 });
+    }
+  } catch (error) {
+    console.error('[AUTH] Local user delete failed:', error);
+  } finally {
+    deleteLocalUserLoading.value = false;
+  }
+};
+
 const handleClearLocalBackup = () => {
   clearLastSnapshotUserId();
   pendingLocalUserId.value = null;
@@ -1300,6 +1789,67 @@ const handleStartWizardAgain = () => {
   pendingLocalUserId.value = null;
   showMissingAgentDialog.value = false;
   startTemporarySession();
+};
+
+const handleCloudRestore = async () => {
+  if (!user.value?.userId) return;
+  cloudHealthLoading.value = true;
+  try {
+    // Try IndexedDB snapshot first
+    const snapshot = await getUserSnapshot(user.value.userId);
+    if (snapshot) {
+      restoreSnapshot.value = snapshot;
+      showCloudHealthDialog.value = false;
+      cloudHealthDetails.value = null;
+      await handleRestoreSnapshot();
+      return;
+    }
+    // No snapshot — just close dialog and let user proceed normally
+    showCloudHealthDialog.value = false;
+    cloudHealthDetails.value = null;
+    if ($q && typeof $q.notify === 'function') {
+      $q.notify({
+        type: 'warning',
+        message: 'No local backup found. You may need to re-upload your files.',
+        timeout: 5000
+      });
+    }
+  } catch (e) {
+    console.error('[cloud-health] Restore failed:', e);
+    if ($q && typeof $q.notify === 'function') {
+      $q.notify({
+        type: 'negative',
+        message: 'Restore failed: ' + (e instanceof Error ? e.message : String(e)),
+        timeout: 5000
+      });
+    }
+  } finally {
+    cloudHealthLoading.value = false;
+  }
+};
+
+const handleCloudStartFresh = async () => {
+  if (!user.value?.userId) return;
+  cloudHealthLoading.value = true;
+  try {
+    const uid = user.value.userId;
+    await clearUserSnapshot(uid);
+    await clearDirectoryHandle(uid);
+    clearLastSnapshotUserId();
+    showCloudHealthDialog.value = false;
+    cloudHealthDetails.value = null;
+    if ($q && typeof $q.notify === 'function') {
+      $q.notify({
+        type: 'info',
+        message: 'Local backup cleared. Starting fresh.',
+        timeout: 3000
+      });
+    }
+  } catch (e) {
+    console.error('[cloud-health] Start fresh failed:', e);
+  } finally {
+    cloudHealthLoading.value = false;
+  }
 };
 
 const restoreSavedChats = async (snapshot: any) => {
@@ -1601,12 +2151,7 @@ const onPasskeyBackupNo = () => {
   void handleDormantSignOut();
 };
 
-const onPasskeyBackupYes = () => {
-  showPasskeyBackupPromptModal.value = false;
-  passkeyBackupPin.value = '';
-  passkeyBackupPinError.value = '';
-  showPasskeyBackupPinDialog.value = true;
-};
+// onPasskeyBackupYes removed — backup prompt replaced with info-only modal
 
 const closePasskeyBackupPinDialog = () => {
   showPasskeyBackupPinDialog.value = false;
@@ -1750,17 +2295,22 @@ const startTemporarySession = async () => {
 
     const effectiveUserId = user.value?.userId;
     if (lastSnapshotUserId && lastSnapshotUserId === effectiveUserId) {
-      try {
-        const snapshot = await getUserSnapshot(lastSnapshotUserId);
-        if (snapshot) {
-          restoreSnapshot.value = snapshot;
-          showRestoreDialog.value = true;
-          suppressWizard.value = true;
-          clearWizardPendingKey(lastSnapshotUserId);
-          clearWizardPendingKey(effectiveUserId);
+      // Skip restore dialog if cloud is already valid (agent + spaces in sync)
+      if (welcomeCloudValid.value !== true) {
+        try {
+          const snapshot = await getUserSnapshot(lastSnapshotUserId);
+          if (snapshot) {
+            restoreSnapshot.value = snapshot;
+            showRestoreDialog.value = true;
+            suppressWizard.value = true;
+            clearWizardPendingKey(lastSnapshotUserId);
+            clearWizardPendingKey(effectiveUserId);
+          }
+        } catch (restoreError) {
+          console.warn('Unable to read local backup:', restoreError);
         }
-      } catch (restoreError) {
-        console.warn('Unable to read local backup:', restoreError);
+      } else {
+        console.log('[AUTH] Cloud valid – skipping restore dialog for', effectiveUserId);
       }
     }
 
@@ -1890,12 +2440,24 @@ onMounted(async () => {
   const isLocalhost = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
   
   if (isAdminPage) {
-    showAdminPage.value = true;
     // If running locally, allow admin page without authentication
     if (isLocalhost) {
+      showAdminPage.value = true;
       authenticated.value = true;
       return;
     }
+    // Non-localhost: require passkey authentication for admin
+    // (showAdminPage will be set to true in handleAuthenticated after successful admin auth)
+    try {
+      const adminRes = await fetch('/api/admin-username');
+      if (adminRes.ok) {
+        const adminData = await adminRes.json();
+        passkeyPrefillUserId.value = adminData.adminUsername || null;
+      }
+    } catch { /* ignore */ }
+    passkeyPrefillAction.value = 'signin';
+    showAuth.value = true;
+    return;
   }
   
   const params = new URLSearchParams(window.location.search);
