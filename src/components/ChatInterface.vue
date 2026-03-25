@@ -8,6 +8,13 @@
           <div class="text-body2 text-grey-7 q-mt-md">Setting up...</div>
         </div>
         <template v-else>
+        <!-- Phase 5: Passkey-only session warning banner -->
+        <q-banner v-if="props.passkeyWithoutFolder" dense class="bg-amber-1 text-caption q-mb-none" style="flex-shrink: 0;">
+          <template v-slot:avatar>
+            <q-icon name="info" color="amber-8" size="sm" />
+          </template>
+          Your local backup will not be updated in this session. Access MAIA from your original device to keep your local folder current.
+        </q-banner>
         <!-- File Info Bar -->
         <div v-if="uploadedFiles.length > 0" class="q-px-md q-pt-md q-pb-sm" style="flex-shrink: 0; border-bottom: 1px solid #eee;">
           <div class="row items-center q-gutter-xs">
@@ -991,6 +998,7 @@ interface Props {
   rehydrationActive?: boolean;
   suppressWizard?: boolean;
   folderAccessTier?: 'chrome' | 'safari' | 'basic';
+  passkeyWithoutFolder?: boolean;
 }
 
 interface SignOutSnapshot {
@@ -1014,6 +1022,7 @@ const emit = defineEmits<{
   'rehydration-file-removed': [payload: { bucketKey?: string; fileName?: string }];
   'update:deepLinkInfo': [DeepLinkInfo | null];
   'local-folder-connected': [payload: { handle: FileSystemDirectoryHandle; folderName: string }];
+  'session-dirty': [];
 }>();
 
 const $q = useQuasar();
@@ -1887,6 +1896,7 @@ const estimateTokenCount = (text: string) => {
 // Send message (streaming)
 const sendMessage = async () => {
   if (!inputMessage.value || isStreaming.value || isRequestSent.value) return;
+  emit('session-dirty');
 
   const startTime = Date.now();
 

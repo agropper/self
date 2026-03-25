@@ -52,11 +52,19 @@ export interface MaiaFileEntry {
   fileHandle: FileSystemFileHandle;
 }
 
+export interface MaiaIdentity {
+  userId: string;
+  displayName: string;
+  createdAt: string;
+  lastSync: string;
+}
+
 export interface MaiaState {
   version: number;
   userId: string;
   displayName?: string;
   updatedAt: string;
+  exportedAt?: string;
   files?: Array<{
     fileName: string;
     size?: number;
@@ -67,10 +75,14 @@ export interface MaiaState {
   patientSummary?: string | null;
   savedChats?: any;
   currentChat?: any;
+  agentInstructions?: string | null;
+  kbStats?: { fileCount: number; tokenCount: number } | null;
+  wizardComplete?: boolean;
   settings?: Record<string, any>;
 }
 
 const STATE_FILE_NAME = 'maia-state.json';
+const IDENTITY_FILE_NAME = 'maia-identity.json';
 
 // ── IndexedDB handle storage ───────────────────────────────────────
 // Minimal raw IndexedDB usage — one database, one store, one entry per user.
@@ -335,4 +347,110 @@ export async function writeWeblocFile(
 </dict>
 </plist>`;
   await writeFileToFolder(handle, 'maia.webloc', plist);
+}
+
+// ── Identity file (maia-identity.json) ────────────────────────────
+
+/**
+ * Read maia-identity.json from the folder. Returns null if missing.
+ */
+export async function readIdentityFile(
+  handle: FileSystemDirectoryHandle
+): Promise<MaiaIdentity | null> {
+  const file = await readFileFromFolder(handle, IDENTITY_FILE_NAME);
+  if (!file) return null;
+  try {
+    const text = await file.text();
+    return JSON.parse(text) as MaiaIdentity;
+  } catch {
+    console.warn('[localFolder] Failed to parse maia-identity.json');
+    return null;
+  }
+}
+
+/**
+ * Write maia-identity.json to the folder.
+ */
+export async function writeIdentityFile(
+  handle: FileSystemDirectoryHandle,
+  identity: MaiaIdentity
+): Promise<void> {
+  const json = JSON.stringify(identity, null, 2);
+  await writeFileToFolder(handle, IDENTITY_FILE_NAME, json);
+}
+
+// ── Multi-user registry (localStorage) ────────────────────────────
+// Tracks all known family members who have used MAIA on this browser.
+
+export interface KnownUser {
+  userId: string;
+  displayName: string;
+  folderName: string | null;
+  hasPasskey: boolean;
+  lastActive: string;
+}
+
+const KNOWN_USERS_KEY = 'maia_known_users';
+const ACTIVE_USER_KEY = 'maia_active_user';
+
+export function getKnownUsers(): KnownUser[] {
+  if (typeof window === 'undefined' || !window.localStorage) return [];
+  try {
+    const raw = window.localStorage.getItem(KNOWN_USERS_KEY);
+    return raw ? JSON.parse(raw) : [];
+  } catch {
+    return [];
+  }
+}
+
+export function addOrUpdateKnownUser(entry: KnownUser): void {
+  if (typeof window === 'undefined' || !window.localStorage) return;
+  const users = getKnownUsers();
+  const idx = users.findIndex(u => u.userId === entry.userId);
+  if (idx >= 0) {
+    users[idx] = { ...users[idx], ...entry };
+  } else {
+    users.push(entry);
+  }
+  window.localStorage.setItem(KNOWN_USERS_KEY, JSON.stringify(users));
+}
+
+export function removeKnownUser(userId: string): void {
+  if (typeof window === 'undefined' || !window.localStorage) return;
+  const users = getKnownUsers().filter(u => u.userId !== userId);
+  window.localStorage.setItem(KNOWN_USERS_KEY, JSON.stringify(users));
+}
+
+export function getActiveUserId(): string | null {
+  if (typeof window === 'undefined' || !window.localStorage) return null;
+  return window.localStorage.getItem(ACTIVE_USER_KEY);
+}
+
+export function setActiveUserId(userId: string | null): void {
+  if (typeof window === 'undefined' || !window.localStorage) return;
+  if (userId) {
+    window.localStorage.setItem(ACTIVE_USER_KEY, userId);
+  } else {
+    window.localStorage.removeItem(ACTIVE_USER_KEY);
+  }
+}
+
+/**
+ * Migrate from the old single-user maia_last_snapshot_user key
+ * to the new multi-user registry. Call once on app startup.
+ */
+export function migrateToKnownUsers(): void {
+  if (typeof window === 'undefined' || !window.localStorage) return;
+  const existing = getKnownUsers();
+  if (existing.length > 0) return; // already migrated
+  const oldUserId = window.localStorage.getItem('maia_last_snapshot_user');
+  if (!oldUserId) return;
+  addOrUpdateKnownUser({
+    userId: oldUserId,
+    displayName: oldUserId,
+    folderName: null,
+    hasPasskey: false,
+    lastActive: new Date().toISOString()
+  });
+  setActiveUserId(oldUserId);
 }
