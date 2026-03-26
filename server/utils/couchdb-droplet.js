@@ -1,78 +1,32 @@
 /**
  * Ensure CouchDB droplet exists on DigitalOcean.
- * Creates ubuntu-s-1vcpu-1gb-tor1-01 if missing; stores credentials in Spaces (couchdb/credentials.json) and local file.
+ * Creates ubuntu-s-1vcpu-1gb-tor1-01 if missing.
+ * Password is derived deterministically from DIGITALOCEAN_TOKEN via HMAC —
+ * no need to store credentials in Spaces or local files.
  */
 
-import { randomBytes } from 'crypto';
-import { writeFileSync, readFileSync, existsSync } from 'fs';
-import { dirname, join } from 'path';
+import { createHmac } from 'crypto';
+import { dirname } from 'path';
 import { fileURLToPath } from 'url';
-import { S3Client, GetObjectCommand, PutObjectCommand } from '@aws-sdk/client-s3';
 import { getSpacesEndpoint, getSpacesBucketName } from './storage-config.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const CREDENTIALS_FILE = join(__dirname, '../../.couchdb-droplet-credentials');
-const SPACES_CREDENTIALS_KEY = 'couchdb/credentials.json';
 const DROPLET_NAME = 'ubuntu-s-1vcpu-1gb-tor1-01';
 const REGION = 'tor1';
 const SIZE = 's-1vcpu-1gb';
 const IMAGE = 'ubuntu-22-04-x64';
 const COUCHDB_PORT = 5984;
 
-function generatePassword() {
-  return randomBytes(24).toString('base64').replace(/[+/=]/g, (c) =>
-    ({ '+': '-', '/': '_', '=': '' }[c] || c)
-  );
-}
-
-function getBucketName(bucketUrl) {
-  if (!bucketUrl) return null;
-  const withoutProtocol = bucketUrl.replace(/^https?:\/\//, '');
-  const hostOrName = withoutProtocol.split('/')[0];
-  return hostOrName.split('.')[0] || 'maia';
-}
-
-function getSpacesClient() {
-  const bucketUrl = getSpacesBucketName();
-  const bucketName = getBucketName(bucketUrl);
-  const endpoint = getSpacesEndpoint();
-  const accessKeyId = process.env.DIGITALOCEAN_AWS_ACCESS_KEY_ID || '';
-  const secretAccessKey = process.env.DIGITALOCEAN_AWS_SECRET_ACCESS_KEY || '';
-  if (!bucketName || !accessKeyId || !secretAccessKey) return null;
-  const client = new S3Client({
-    endpoint,
-    region: 'us-east-1',
-    credentials: { accessKeyId, secretAccessKey }
-  });
-  return { client, bucketName };
-}
-
-async function loadCredentialsFromSpaces() {
-  const spaces = getSpacesClient();
-  if (!spaces) return null;
-  try {
-    const res = await spaces.client.send(new GetObjectCommand({
-      Bucket: spaces.bucketName,
-      Key: SPACES_CREDENTIALS_KEY
-    }));
-    if (!res.Body) return null;
-    const raw = await res.Body.transformToString();
-    return JSON.parse(raw);
-  } catch (e) {
-    if (e?.name === 'NoSuchKey' || e?.$metadata?.httpStatusCode === 404) return null;
-    throw e;
-  }
-}
-
-async function saveCredentialsToSpaces(creds) {
-  const spaces = getSpacesClient();
-  if (!spaces) return;
-  await spaces.client.send(new PutObjectCommand({
-    Bucket: spaces.bucketName,
-    Key: SPACES_CREDENTIALS_KEY,
-    Body: JSON.stringify(creds, null, 2),
-    ContentType: 'application/json'
-  }));
+/**
+ * Derive CouchDB admin password deterministically from the DIGITALOCEAN_TOKEN.
+ * HMAC-SHA256(token, "maia-couchdb-admin") → base64url (32 chars).
+ * Same token always produces same password; no storage needed.
+ */
+function derivePassword(token) {
+  return createHmac('sha256', token)
+    .update('maia-couchdb-admin')
+    .digest('base64url')
+    .slice(0, 32);
 }
 
 async function doRequest(token, method, path, body = null) {
@@ -90,6 +44,8 @@ async function doRequest(token, method, path, body = null) {
     const text = await res.text();
     throw new Error(`DO API ${method} ${path}: ${res.status} - ${text}`);
   }
+  // DELETE returns 204 with no body
+  if (res.status === 204) return {};
   return res.json();
 }
 
@@ -135,25 +91,6 @@ docker run -d --name couchdb --restart unless-stopped -p ${COUCHDB_PORT}:${COUCH
 `;
 }
 
-async function loadCredentials() {
-  const fromSpaces = await loadCredentialsFromSpaces();
-  if (fromSpaces) return fromSpaces;
-  if (!existsSync(CREDENTIALS_FILE)) return null;
-  try {
-    const raw = readFileSync(CREDENTIALS_FILE, 'utf8');
-    return JSON.parse(raw);
-  } catch {
-    return null;
-  }
-}
-
-async function saveCredentials(creds) {
-  await saveCredentialsToSpaces(creds);
-  try {
-    writeFileSync(CREDENTIALS_FILE, JSON.stringify(creds, null, 2), { mode: 0o600 });
-  } catch {}
-}
-
 async function waitForIp(token, dropletId, maxWaitMs = 120000, intervalMs = 5000) {
   const start = Date.now();
   while (Date.now() - start < maxWaitMs) {
@@ -183,69 +120,37 @@ export async function ensureCouchDBDroplet() {
     throw new Error('DIGITALOCEAN_TOKEN is required for CouchDB droplet');
   }
 
+  const password = derivePassword(token);
   const existing = await listDroplets(token);
   const droplet = existing.find(d => d.name === DROPLET_NAME);
 
   if (droplet) {
-    const creds = await loadCredentials();
-    if (!creds) {
-      // If CLOUDANT_* env vars are already set, use them instead of crashing
-      if (process.env.CLOUDANT_URL && process.env.CLOUDANT_PASSWORD) {
-        console.warn(
-          `[CouchDB Droplet] Droplet "${DROPLET_NAME}" exists but credentials not found in Spaces or local file. ` +
-          'Using CLOUDANT_URL/CLOUDANT_USERNAME/CLOUDANT_PASSWORD from environment.'
-        );
-        return;
-      }
-      // Without a password, don't even attempt connection — repeated bad-auth
-      // attempts trigger CouchDB's brute-force lockout (HTTP 403).
-      const ip = getDropletIp(droplet);
-      throw new Error(
-        `CouchDB droplet "${DROPLET_NAME}" exists${ip ? ` at ${ip}` : ''} but credentials not found in Spaces (${SPACES_CREDENTIALS_KEY}) or local file, ` +
-        'and CLOUDANT_PASSWORD is not set in the environment. ' +
-        'To recover: SSH into the droplet and run `docker inspect couchdb | grep COUCHDB_PASSWORD` to retrieve the password, ' +
-        'then set CLOUDANT_PASSWORD in the App Platform environment variables. ' +
-        'Do NOT restart the app without the password — repeated auth failures will lock the CouchDB account.'
-      );
-    }
-    const ip = getDropletIp(droplet) || creds.url?.match(/\/\/([^:/]+)/)?.[1];
+    const ip = getDropletIp(droplet);
     if (!ip) {
       throw new Error(`CouchDB droplet "${DROPLET_NAME}" has no public IP yet`);
     }
     const url = `http://${ip}:${COUCHDB_PORT}`;
     process.env.CLOUDANT_URL = url;
-    process.env.CLOUDANT_USERNAME = creds.username || 'admin';
-    process.env.CLOUDANT_PASSWORD = creds.password;
-    console.log(`[CouchDB Droplet] Found existing droplet "${DROPLET_NAME}" at ${url}`);
-    // Re-save to Spaces if loaded from local file only (ensures Spaces has a copy)
-    if (!await loadCredentialsFromSpaces()) {
-      console.log('[CouchDB Droplet] Saving credentials to Spaces for next deploy...');
-      await saveCredentialsToSpaces(creds).catch(e =>
-        console.warn('[CouchDB Droplet] Failed to save credentials to Spaces:', e.message)
-      );
-    }
+    process.env.CLOUDANT_USERNAME = 'admin';
+    process.env.CLOUDANT_PASSWORD = password;
+    console.log(`[CouchDB Droplet] Found existing droplet "${DROPLET_NAME}" at ${url} (password derived from token)`);
     return;
   }
 
-  const password = generatePassword();
+  // No droplet — create one with the derived password
+  console.log(`[CouchDB Droplet] No droplet found, creating "${DROPLET_NAME}"...`);
   const userData = buildUserData(password);
   const created = await createDroplet(token, userData);
   console.log(`[CouchDB Droplet] Created droplet "${DROPLET_NAME}" (id: ${created.id}), waiting for IP...`);
   const ip = await waitForIp(token, created.id);
   const url = `http://${ip}:${COUCHDB_PORT}`;
-  const creds = {
-    url,
-    username: 'admin',
-    password
-  };
-  await saveCredentials(creds);
   process.env.CLOUDANT_URL = url;
+  process.env.CLOUDANT_USERNAME = 'admin';
+  process.env.CLOUDANT_PASSWORD = password;
   waitForCouchDBReady(url).then(() => {
     console.log(`[CouchDB Droplet] CouchDB ready at ${url}`);
   }).catch((err) => {
     console.warn(`[CouchDB Droplet] CouchDB readiness wait failed:`, err.message);
   });
-  process.env.CLOUDANT_USERNAME = 'admin';
-  process.env.CLOUDANT_PASSWORD = password;
-  console.log(`[CouchDB Droplet] Credentials saved, server starting (CouchDB may take 1–2 min to become ready)`);
+  console.log(`[CouchDB Droplet] Password derived from DIGITALOCEAN_TOKEN — no credentials file needed`);
 }
