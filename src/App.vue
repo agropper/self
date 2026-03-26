@@ -1663,6 +1663,7 @@ const saveLocalSnapshot = async (snapshot?: SignOutSnapshot | null) => {
     });
 
     // Also save to local folder if connected (v2 state file)
+    console.log(`[localFolder] signOut save: folderHandle=${!!localFolderHandle.value}, safariFolderName=${safariFolderName.value || 'none'}, userId=${user.value?.userId}`);
     if (localFolderHandle.value && user.value?.userId) {
       try {
         const now = new Date().toISOString();
@@ -1704,19 +1705,40 @@ const saveLocalSnapshot = async (snapshot?: SignOutSnapshot | null) => {
         if (summary?.summary && user.value?.userId) {
           try {
             const { writeWeblocFile } = await import('./utils/localFolder');
-            // Extract patient name from first line of summary (typically "Patient Summary for <Name>")
-            const firstLine = summary.summary.split('\n')[0] || '';
-            const nameMatch = firstLine.match(/(?:Patient Summary for|Summary for|Name:\s*)\s*(.+)/i);
-            const patientName = nameMatch?.[1]?.trim();
+            // Extract patient name: try "Patient Summary for X", "Summary for X", "Name: X",
+            // or fall back to first line that looks like a name (capitalized words)
+            const lines = summary.summary.split('\n').map((l: string) => l.trim()).filter(Boolean);
+            let patientName: string | null = null;
+            for (const line of lines.slice(0, 5)) {
+              const nameMatch = line.match(/(?:Patient Summary for|Summary for|Name:\s*)\s*(.+)/i);
+              if (nameMatch?.[1]?.trim()) {
+                patientName = nameMatch[1].trim();
+                break;
+              }
+            }
+            // Fallback: look for "**Name:** X" or "Name: X" patterns common in markdown summaries
+            if (!patientName) {
+              for (const line of lines.slice(0, 10)) {
+                const mdMatch = line.match(/\*?\*?Name\*?\*?:\s*\*?\*?\s*(.+)/i);
+                if (mdMatch?.[1]?.trim()) {
+                  patientName = mdMatch[1].trim().replace(/\*+/g, '');
+                  break;
+                }
+              }
+            }
+            console.log(`[localFolder] webloc: patientName=${patientName || 'not found'}, userId=${user.value.userId}, firstLine="${lines[0]?.substring(0, 80)}"`);
             if (patientName) {
               await writeWeblocFile(localFolderHandle.value, window.location.origin, {
                 patientName,
                 userId: user.value.userId
               });
+              console.log(`[localFolder] webloc written: maia-for-${patientName}-as-${user.value.userId}.webloc`);
             }
-          } catch {
-            // non-critical
+          } catch (e) {
+            console.warn('[localFolder] webloc write failed:', e);
           }
+        } else {
+          console.log(`[localFolder] webloc skipped: summary=${!!summary?.summary}, userId=${user.value?.userId}`);
         }
       } catch (e) {
         console.warn('[localFolder] Failed to save state to local folder:', e);
