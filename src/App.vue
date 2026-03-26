@@ -1663,7 +1663,7 @@ const saveLocalSnapshot = async (snapshot?: SignOutSnapshot | null) => {
     });
 
     // Also save to local folder if connected (v2 state file)
-    console.log(`[localFolder] signOut save: folderHandle=${!!localFolderHandle.value}, safariFolderName=${safariFolderName.value || 'none'}, userId=${user.value?.userId}`);
+    console.log(`[localFolder] signOut save: folderHandle=${!!localFolderHandle.value}, folderName=${localFolderName.value || 'none'}, userId=${user.value?.userId}`);
     if (localFolderHandle.value && user.value?.userId) {
       try {
         const now = new Date().toISOString();
