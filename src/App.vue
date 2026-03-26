@@ -2056,7 +2056,18 @@ const performSignOut = async () => {
 const handleDormantSignOut = async () => {
   if (!user.value?.userId) return;
 
-  // If no persistent folder handle, prompt user to choose a folder for saving updated files
+  // Try to reconnect the local folder handle if missing (e.g., after passkey sign-in)
+  if (!localFolderHandle.value && user.value.userId) {
+    try {
+      const result = await readStateFileByUserId(user.value.userId);
+      if (result) {
+        localFolderHandle.value = result.handle;
+        console.log(`[SIGN-OUT] Reconnected folder handle for ${user.value.userId}`);
+      }
+    } catch { /* not available */ }
+  }
+
+  // If still no persistent folder handle, prompt user to choose a folder for saving updated files
   if (!localFolderHandle.value && !sharedComputerMode.value) {
     showSignOutFolderPrompt.value = true;
     return;
