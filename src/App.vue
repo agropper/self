@@ -715,6 +715,41 @@
       @restore-complete="handleRestoreWizardComplete"
     />
 
+    <!-- Destroyed account restore dialog -->
+    <q-dialog v-model="showDestroyedRestoreDialog" persistent>
+      <q-card style="min-width: 520px; max-width: 640px">
+        <q-card-section>
+          <div class="text-h6">Account Previously Deleted</div>
+        </q-card-section>
+        <q-card-section class="text-body2">
+          <p>
+            The account <strong>{{ destroyedUserId }}</strong> was previously deleted from the cloud,
+            but your local MAIA folder still has a backup of your files and settings.
+          </p>
+          <p class="q-mt-md">
+            Would you like to <strong>restore</strong> your account from the local backup,
+            or <strong>start fresh</strong> with a new account?
+          </p>
+        </q-card-section>
+        <q-card-actions align="right" class="q-gutter-sm">
+          <q-btn
+            flat
+            label="Start fresh"
+            color="grey-8"
+            :loading="cloudHealthLoading"
+            @click="handleDestroyedStartFresh"
+          />
+          <q-btn
+            unelevated
+            label="Restore from local backup"
+            color="primary"
+            :loading="cloudHealthLoading"
+            @click="handleDestroyedRestore"
+          />
+        </q-card-actions>
+      </q-card>
+    </q-dialog>
+
     <!-- Confirm destroy dialog -->
     <q-dialog v-model="showDestroyDialog" persistent>
       <q-card style="min-width: 520px; max-width: 640px">
@@ -791,6 +826,8 @@ interface User {
   isDeepLink?: boolean;
   isTemporary?: boolean;
   isAdmin?: boolean;
+  hasPasskey?: boolean;
+  credentialID?: string;
   deepLinkInfo?: DeepLinkInfo | null;
 }
 
@@ -864,6 +901,8 @@ const cloudHealthLoading = ref(false);
 const showRestoreWizard = ref(false);
 const restoreWizardLocalState = ref<MaiaState | null>(null);
 const pendingLocalUserId = ref<string | null>(null);
+const showDestroyedRestoreDialog = ref(false);
+const destroyedUserId = ref<string | null>(null);
 const showDevicePrivacyDialog = ref(false);
 const showSharedDeviceWarning = ref(false);
 const deviceChoiceResolved = ref(false);
@@ -2058,6 +2097,116 @@ const handleRestoreWizardComplete = () => {
   }
 };
 
+/** Handle "Restore" from destroyed account dialog — recreate user doc then launch RestoreWizard */
+const handleDestroyedRestore = async () => {
+  const uid = destroyedUserId.value;
+  if (!uid) return;
+  cloudHealthLoading.value = true;
+  try {
+    // Step 1: Recreate the user doc in CouchDB
+    const recreateResp = await fetch('/api/account/recreate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify({ userId: uid })
+    });
+    const recreateData = await recreateResp.json();
+    if (!recreateResp.ok || !recreateData.authenticated) {
+      throw new Error(recreateData.error || 'Failed to recreate account');
+    }
+    // Sign in with the recreated user
+    setAuthenticatedUser(recreateData.user, null);
+    showDestroyedRestoreDialog.value = false;
+
+    // Step 2: Read local state from folder or IndexedDB
+    let localState: MaiaState | null = null;
+    if (localFolderHandle.value) {
+      const { readStateFile } = await import('./utils/localFolder');
+      localState = await readStateFile(localFolderHandle.value);
+    }
+    if (!localState) {
+      const snapshot = await getUserSnapshot(uid);
+      if (snapshot) {
+        localState = {
+          version: 1,
+          userId: uid,
+          displayName: recreateData.user?.displayName || uid,
+          updatedAt: snapshot.updatedAt || new Date().toISOString(),
+          files: Array.isArray(snapshot.fileStatusSummary) ? snapshot.fileStatusSummary.map((f: any) => ({
+            fileName: f.fileName,
+            bucketKey: f.bucketKey,
+            cloudStatus: f.chipStatus
+          })) : undefined,
+          currentMedications: snapshot.currentMedications || null,
+          patientSummary: snapshot.patientSummary || null,
+          savedChats: snapshot.savedChats || undefined,
+          currentChat: snapshot.currentChat || undefined
+        };
+      }
+    }
+
+    // Step 3: Check cloud health (everything should be missing)
+    const healthResp = await fetch(
+      `/api/cloud-health?userId=${encodeURIComponent(uid)}`,
+      { credentials: 'include' }
+    );
+    if (healthResp.ok) {
+      const health = await healthResp.json();
+      cloudHealthDetails.value = health.details || {
+        database: { ok: true },
+        agent: { ok: false, error: 'Not deployed' },
+        knowledgeBase: { ok: false, error: 'Not created' },
+        spacesFiles: { ok: false, error: 'No files' }
+      };
+    }
+
+    // Step 4: Launch the Restore Wizard
+    if (localState) {
+      restoreWizardLocalState.value = localState;
+      showRestoreWizard.value = true;
+    } else {
+      // No local state — just notify, they'll need to re-upload manually
+      if ($q && typeof $q.notify === 'function') {
+        $q.notify({
+          type: 'warning',
+          message: 'Account recreated but no local backup found. Please re-upload your files.',
+          timeout: 5000
+        });
+      }
+    }
+  } catch (e) {
+    console.error('[DESTROYED-RESTORE] Error:', e);
+    if ($q && typeof $q.notify === 'function') {
+      $q.notify({ type: 'negative', message: 'Restore failed: ' + (e instanceof Error ? e.message : String(e)), timeout: 5000 });
+    }
+  } finally {
+    cloudHealthLoading.value = false;
+  }
+};
+
+/** Handle "Start Fresh" from destroyed account dialog — clear cookie and create new account */
+const handleDestroyedStartFresh = async () => {
+  showDestroyedRestoreDialog.value = false;
+  destroyedUserId.value = null;
+  tempStartLoading.value = true;
+  try {
+    const response = await fetch('/api/temporary/start', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify({ forceNew: true })
+    });
+    const data = await response.json();
+    if (data.authenticated && data.user) {
+      setAuthenticatedUser(data.user, null);
+    }
+  } catch (e) {
+    console.error('[DESTROYED-FRESH] Error:', e);
+  } finally {
+    tempStartLoading.value = false;
+  }
+};
+
 const restoreSavedChats = async (snapshot: any) => {
   const savedChats = snapshot?.savedChats?.chats;
   if (!Array.isArray(savedChats) || savedChats.length === 0) return;
@@ -2096,6 +2245,13 @@ const createTemporarySession = async () => {
     passkeyPrefillUserId.value = data.user.userId;
     passkeyPrefillAction.value = 'signin';
     showAuth.value = true;
+    return null;
+  }
+  // Account was destroyed but cookie still exists — offer restore from local folder
+  if (data.destroyed && data.destroyedUserId) {
+    destroyedUserId.value = data.destroyedUserId;
+    showDestroyedRestoreDialog.value = true;
+    tempStartLoading.value = false;
     return null;
   }
   if (!data.authenticated || !data.user) {
@@ -2591,6 +2747,8 @@ const destroyTemporaryAccount = async () => {
       throw new Error(data.error || 'Failed to delete temporary account');
     }
     await clearUserSnapshot(userIdToDelete);
+    removeKnownUser(userIdToDelete);
+    knownUsers.value = knownUsers.value.filter(u => u.userId !== userIdToDelete);
     resetAuthState();
     showDestroyDialog.value = false;
   } catch (error) {

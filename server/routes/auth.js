@@ -866,11 +866,96 @@ export default function setupAuthRoutes(app, passkeyService, cloudant, doClient,
     }
   });
 
+  // Recreate a destroyed account (user doc deleted but local folder has state)
+  app.post('/api/account/recreate', async (req, res) => {
+    try {
+      const { userId, displayName } = req.body || {};
+      if (!userId || typeof userId !== 'string') {
+        return res.status(400).json({ success: false, error: 'userId required' });
+      }
+
+      // Check if user doc already exists (shouldn't, but be safe)
+      try {
+        const existing = await cloudant.getDocument('maia_users', userId);
+        if (existing) {
+          // User doc exists — just sign them in
+          req.session.userId = userId;
+          req.session.username = userId;
+          req.session.displayName = existing.displayName || userId;
+          req.session.isTemporary = true;
+          req.session.authenticatedAt = new Date().toISOString();
+          req.session.expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
+          res.cookie(TEMP_USER_COOKIE, userId, {
+            maxAge: TEMP_USER_COOKIE_MAX_AGE,
+            httpOnly: true,
+            sameSite: 'lax'
+          });
+          return res.json({
+            success: true,
+            authenticated: true,
+            user: {
+              userId: existing.userId,
+              displayName: existing.displayName || userId,
+              isTemporary: true
+            }
+          });
+        }
+      } catch (e) {
+        // 404 expected — user was destroyed, proceed to recreate
+      }
+
+      // Recreate the user doc with the same userId
+      const userDoc = {
+        _id: userId,
+        userId,
+        displayName: displayName || userId,
+        email: null,
+        domain: passkeyService.rpID,
+        type: 'user',
+        workflowStage: 'active',
+        temporaryAccount: true,
+        restoredAt: new Date().toISOString(),
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString()
+      };
+      await cloudant.saveDocument('maia_users', userDoc);
+      console.log(`[RECREATE] User doc recreated for ${userId}`);
+
+      // Sign them in
+      req.session.userId = userId;
+      req.session.username = userId;
+      req.session.displayName = userDoc.displayName;
+      req.session.isTemporary = true;
+      req.session.authenticatedAt = new Date().toISOString();
+      req.session.expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
+      res.cookie(TEMP_USER_COOKIE, userId, {
+        maxAge: TEMP_USER_COOKIE_MAX_AGE,
+        httpOnly: true,
+        sameSite: 'lax'
+      });
+
+      res.json({
+        success: true,
+        authenticated: true,
+        recreated: true,
+        user: {
+          userId,
+          displayName: userDoc.displayName,
+          isTemporary: true
+        }
+      });
+    } catch (error) {
+      console.error('[RECREATE] Error:', error);
+      res.status(500).json({ success: false, error: error.message || 'Failed to recreate account' });
+    }
+  });
+
   // Temporary user start (cookie-backed)
   app.post('/api/temporary/start', async (req, res) => {
     try {
+      const forceNew = req.body?.forceNew === true;
       const cookieUserId = req.cookies?.[TEMP_USER_COOKIE];
-      if (cookieUserId) {
+      if (cookieUserId && !forceNew) {
         try {
           const existingUser = await cloudant.getDocument('maia_users', cookieUserId);
           if (existingUser?.credentialID) {
@@ -905,7 +990,17 @@ export default function setupAuthRoutes(app, passkeyService, cloudant, doClient,
             });
           }
         } catch (error) {
-          // Ignore and create a fresh temp user
+          // User doc not found (404) — account was destroyed.
+          // Signal the client so it can offer a restore from local folder.
+          if (error.statusCode === 404) {
+            return res.json({
+              authenticated: false,
+              destroyed: true,
+              destroyedUserId: cookieUserId,
+              message: 'Account was previously destroyed. Restore from local backup?'
+            });
+          }
+          // Other errors: fall through to create a new user
         }
       }
 

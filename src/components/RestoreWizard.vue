@@ -70,7 +70,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, watch } from 'vue';
+import { ref, watch } from 'vue';
 import type { MaiaState } from '../utils/localFolder';
 
 interface RestoreItem {
@@ -99,7 +99,7 @@ const props = defineProps<{
   safariFolderFiles?: File[] | null;
 }>();
 
-const emit = defineEmits<{
+defineEmits<{
   'update:modelValue': [value: boolean];
   'restore-complete': [];
 }>();
@@ -112,6 +112,17 @@ const buildRestoreItems = () => {
   const items: RestoreItem[] = [];
   const health = props.cloudHealth;
   const state = props.localState;
+
+  // Database/user doc (only if destroyed — normally ok)
+  if (health?.database && !health.database.ok) {
+    items.push({
+      key: 'database',
+      label: 'Recreate user account',
+      detail: `Restore ${props.userId} in cloud database`,
+      needed: true,
+      status: 'pending'
+    });
+  }
 
   // Files upload
   const fileCount = state?.files?.length || 0;
@@ -212,6 +223,28 @@ const executeRestore = async () => {
   let filesUploaded = 0;
 
   try {
+    // 0. Recreate user doc if destroyed
+    const dbItem = restoreItems.value.find(i => i.key === 'database' && i.needed);
+    if (dbItem) {
+      updateItem('database', { status: 'running' });
+      try {
+        const resp = await fetch('/api/account/recreate', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: 'include',
+          body: JSON.stringify({ userId: uid })
+        });
+        if (!resp.ok) throw new Error('Failed to recreate account');
+        updateItem('database', { status: 'done' });
+      } catch (e: any) {
+        updateItem('database', { status: 'error', errorMsg: e?.message || 'Failed' });
+        // Can't continue without user doc
+        phase.value = 'complete';
+        restoreSummary.value = 'Account recreation failed. Cannot proceed with restore.';
+        return;
+      }
+    }
+
     // 1. Upload files
     const filesItem = restoreItems.value.find(i => i.key === 'files' && i.needed);
     if (filesItem && props.localFolderHandle) {
