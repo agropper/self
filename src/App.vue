@@ -1776,20 +1776,20 @@ const saveLocalSnapshot = async (snapshot?: SignOutSnapshot | null) => {
 
         // Always update webloc shortcut at sign-out
         if (user.value?.userId) {
+          console.log(`[localFolder] webloc: starting write for userId=${user.value.userId}, hasSummary=${!!state.patientSummary}`);
           try {
-            const { writeWeblocFile, extractPatientName } = await import('./utils/localFolder');
-            const patientName = extractPatientName(state.patientSummary);
-            console.log(`[localFolder] webloc: patientName=${patientName || 'none'}, userId=${user.value.userId}`);
-            await writeWeblocFile(localFolderHandle.value, window.location.origin, {
+            const folderUtils = await import('./utils/localFolder');
+            const patientName = typeof folderUtils.extractPatientName === 'function'
+              ? folderUtils.extractPatientName(state.patientSummary)
+              : null;
+            console.log(`[localFolder] webloc: patientName=${patientName || 'none'}`);
+            await folderUtils.writeWeblocFile(localFolderHandle.value, window.location.origin, {
               patientName: patientName || undefined,
               userId: user.value.userId
             });
-            const filename = patientName
-              ? `maia-for-${patientName}-as-${user.value.userId}.webloc`
-              : `maia-for-${user.value.userId}.webloc`;
-            console.log(`[localFolder] webloc written: ${filename}`);
+            console.log(`[localFolder] webloc: write complete`);
           } catch (e) {
-            console.warn('[localFolder] webloc write failed:', e);
+            console.warn('[localFolder] webloc write FAILED:', e);
           }
         }
       } catch (e) {
