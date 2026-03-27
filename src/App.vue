@@ -1774,45 +1774,23 @@ const saveLocalSnapshot = async (snapshot?: SignOutSnapshot | null) => {
           // non-critical
         }
 
-        // Update webloc shortcut with patient name from summary (use merged state which preserves local data)
-        const summaryText = state.patientSummary;
-        if (summaryText && user.value?.userId) {
+        // Always update webloc shortcut at sign-out
+        if (user.value?.userId) {
           try {
-            const { writeWeblocFile } = await import('./utils/localFolder');
-            // Extract patient name: try "Patient Summary for X", "Summary for X", "Name: X",
-            // or fall back to first line that looks like a name (capitalized words)
-            const lines = summaryText.split('\n').map((l: string) => l.trim()).filter(Boolean);
-            let patientName: string | null = null;
-            for (const line of lines.slice(0, 5)) {
-              const nameMatch = line.match(/(?:Patient Summary for|Summary for|Name:\s*)\s*(.+)/i);
-              if (nameMatch?.[1]?.trim()) {
-                patientName = nameMatch[1].trim();
-                break;
-              }
-            }
-            // Fallback: look for "**Name:** X" or "Name: X" patterns common in markdown summaries
-            if (!patientName) {
-              for (const line of lines.slice(0, 10)) {
-                const mdMatch = line.match(/\*?\*?Name\*?\*?:\s*\*?\*?\s*(.+)/i);
-                if (mdMatch?.[1]?.trim()) {
-                  patientName = mdMatch[1].trim().replace(/\*+/g, '');
-                  break;
-                }
-              }
-            }
-            console.log(`[localFolder] webloc: patientName=${patientName || 'not found'}, userId=${user.value.userId}, firstLine="${lines[0]?.substring(0, 80)}"`);
-            if (patientName) {
-              await writeWeblocFile(localFolderHandle.value, window.location.origin, {
-                patientName,
-                userId: user.value.userId
-              });
-              console.log(`[localFolder] webloc written: maia-for-${patientName}-as-${user.value.userId}.webloc`);
-            }
+            const { writeWeblocFile, extractPatientName } = await import('./utils/localFolder');
+            const patientName = extractPatientName(state.patientSummary);
+            console.log(`[localFolder] webloc: patientName=${patientName || 'none'}, userId=${user.value.userId}`);
+            await writeWeblocFile(localFolderHandle.value, window.location.origin, {
+              patientName: patientName || undefined,
+              userId: user.value.userId
+            });
+            const filename = patientName
+              ? `maia-for-${patientName}-as-${user.value.userId}.webloc`
+              : `maia-for-${user.value.userId}.webloc`;
+            console.log(`[localFolder] webloc written: ${filename}`);
           } catch (e) {
             console.warn('[localFolder] webloc write failed:', e);
           }
-        } else {
-          console.log(`[localFolder] webloc skipped: summaryText=${!!summaryText}, userId=${user.value?.userId}`);
         }
       } catch (e) {
         console.warn('[localFolder] Failed to save state to local folder:', e);
@@ -1919,28 +1897,13 @@ const handleWizardComplete = async () => {
       try {
         const { readStateFile, writeWeblocFile } = await import('./utils/localFolder');
         const currentState = await readStateFile(localFolderHandle.value);
-        const summaryText = currentState?.patientSummary;
-        if (summaryText) {
-          const lines = summaryText.split('\n').map((l: string) => l.trim()).filter(Boolean);
-          let patientName: string | null = null;
-          for (const line of lines.slice(0, 5)) {
-            const m = line.match(/(?:Patient Summary for|Summary for|Name:\s*)\s*(.+)/i);
-            if (m?.[1]?.trim()) { patientName = m[1].trim(); break; }
-          }
-          if (!patientName) {
-            for (const line of lines.slice(0, 10)) {
-              const m = line.match(/\*?\*?Name\*?\*?:\s*\*?\*?\s*(.+)/i);
-              if (m?.[1]?.trim()) { patientName = m[1].trim().replace(/\*+/g, ''); break; }
-            }
-          }
-          if (patientName) {
-            await writeWeblocFile(localFolderHandle.value, window.location.origin, {
-              patientName,
-              userId: user.value.userId
-            });
-            console.log(`[WIZARD-COMPLETE] Webloc renamed: maia-for-${patientName}-as-${user.value.userId}.webloc`);
-          }
-        }
+        const { extractPatientName } = await import('./utils/localFolder');
+        const patientName = extractPatientName(currentState?.patientSummary);
+        await writeWeblocFile(localFolderHandle.value, window.location.origin, {
+          patientName: patientName || undefined,
+          userId: user.value.userId
+        });
+        console.log(`[WIZARD-COMPLETE] Webloc written: patientName=${patientName || 'none'}, userId=${user.value.userId}`);
       } catch (e) {
         console.warn('[WIZARD-COMPLETE] Webloc update failed:', e);
       }

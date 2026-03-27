@@ -369,10 +369,44 @@ export async function writeStateFile(
 }
 
 /**
+ * Extract patient name from a patient summary text.
+ * Tries several formats: "Patient Summary for X", "Summary for X",
+ * "Name: X", markdown "**Name:** X", or first capitalized multi-word line.
+ * Returns null if no name can be extracted.
+ */
+export function extractPatientName(summaryText: string | null | undefined): string | null {
+  if (!summaryText?.trim()) return null;
+  const lines = summaryText.split('\n').map(l => l.trim()).filter(Boolean);
+
+  // Pattern 1: "Patient Summary for X" or "Summary for X" or "Name: X"
+  for (const line of lines.slice(0, 5)) {
+    const m = line.match(/(?:Patient Summary for|Summary for|Patient:\s*|Name:\s*)\s*(.+)/i);
+    if (m?.[1]?.trim()) {
+      return m[1].trim().replace(/\*+/g, '').replace(/^#+\s*/, '');
+    }
+  }
+  // Pattern 2: Markdown "**Name:** X" or "**Patient:** X"
+  for (const line of lines.slice(0, 10)) {
+    const m = line.match(/\*?\*?(?:Name|Patient)\*?\*?:\s*\*?\*?\s*(.+)/i);
+    if (m?.[1]?.trim()) {
+      return m[1].trim().replace(/\*+/g, '');
+    }
+  }
+  // Pattern 3: First line that looks like a person's name (2-4 capitalized words, no punctuation)
+  for (const line of lines.slice(0, 5)) {
+    const cleaned = line.replace(/^#+\s*/, '').replace(/\*+/g, '').trim();
+    if (/^[A-Z][a-z]+(\s+[A-Z][a-z]+){0,3}$/.test(cleaned) && cleaned.length < 40) {
+      return cleaned;
+    }
+  }
+  return null;
+}
+
+/**
  * Write a maia.webloc file (macOS web shortcut) to the folder.
- * If patientName and userId are provided, the filename is:
- *   maia-for-<patient name>-as-<userId>.webloc
- * Otherwise falls back to maia.webloc.
+ * Filename: maia-for-<patient>-as-<userId>.webloc (with name)
+ *           maia-for-<userId>.webloc (without name)
+ *           maia.webloc (no userId at all)
  */
 export async function writeWeblocFile(
   handle: FileSystemDirectoryHandle,
@@ -387,21 +421,30 @@ export async function writeWeblocFile(
   <string>${url}</string>
 </dict>
 </plist>`;
-  // Build filename: maia-for-<patient>-as-<userId>.webloc or maia.webloc
+  // Build filename
   let filename = 'maia.webloc';
-  if (opts?.patientName && opts?.userId) {
-    // Sanitize patient name for filesystem: remove special chars, collapse spaces
-    const safeName = opts.patientName.replace(/[^a-zA-Z0-9 _-]/g, '').trim().replace(/\s+/g, '-');
-    if (safeName) {
-      filename = `maia-for-${safeName}-as-${opts.userId}.webloc`;
+  if (opts?.userId) {
+    if (opts?.patientName) {
+      const safeName = opts.patientName.replace(/[^a-zA-Z0-9 _-]/g, '').trim().replace(/\s+/g, '-');
+      filename = safeName
+        ? `maia-for-${safeName}-as-${opts.userId}.webloc`
+        : `maia-for-${opts.userId}.webloc`;
+    } else {
+      filename = `maia-for-${opts.userId}.webloc`;
     }
   }
-  // Remove old maia.webloc if we're using a personalized name (avoid duplicates)
+  // Remove old webloc files to avoid duplicates
   if (filename !== 'maia.webloc') {
-    try {
-      await handle.removeEntry('maia.webloc');
-    } catch { /* doesn't exist, fine */ }
+    try { await handle.removeEntry('maia.webloc'); } catch { /* doesn't exist */ }
   }
+  // Also remove any previous maia-for-*.webloc that doesn't match the new name
+  try {
+    for await (const [name] of (handle as any).entries()) {
+      if (name.endsWith('.webloc') && name.startsWith('maia-for-') && name !== filename) {
+        try { await handle.removeEntry(name); } catch { /* skip */ }
+      }
+    }
+  } catch { /* iteration not supported or failed */ }
   await writeFileToFolder(handle, filename, plist);
 }
 
