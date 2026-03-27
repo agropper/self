@@ -433,11 +433,14 @@ export async function writeWeblocFile(
       filename = `maia-for-${opts.userId}.webloc`;
     }
   }
-  // Remove old webloc files to avoid duplicates
+  console.log(`[writeWeblocFile] Writing ${filename}`);
+  // Write the new file FIRST (most important step)
+  await writeFileToFolder(handle, filename, plist);
+  console.log(`[writeWeblocFile] Written successfully: ${filename}`);
+  // Then clean up old webloc files
   if (filename !== 'maia.webloc') {
     try { await handle.removeEntry('maia.webloc'); } catch { /* doesn't exist */ }
   }
-  // Also remove any previous maia-for-*.webloc that doesn't match the new name
   try {
     for await (const [name] of (handle as any).entries()) {
       if (name.endsWith('.webloc') && name.startsWith('maia-for-') && name !== filename) {
@@ -445,7 +448,6 @@ export async function writeWeblocFile(
       }
     }
   } catch { /* iteration not supported or failed */ }
-  await writeFileToFolder(handle, filename, plist);
 }
 
 // ── Identity file (maia-identity.json) ────────────────────────────
