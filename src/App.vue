@@ -1699,7 +1699,7 @@ const saveLocalSnapshot = async (snapshot?: SignOutSnapshot | null) => {
       fetch(`/api/user-chats?userId=${uid}`, { credentials: 'include' }),
       fetch(`/api/user-status?userId=${uid}`, { credentials: 'include' }),
       fetch(`/api/patient-summary?userId=${uid}`, { credentials: 'include' }),
-      fetch('/api/agent-instructions', { credentials: 'include' }).catch(() => null)
+      fetch(`/api/agent-instructions?userId=${uid}`, { credentials: 'include' }).catch(() => null)
     ]);
 
     const files = filesResponse.ok ? await filesResponse.json() : null;
