@@ -1906,19 +1906,21 @@ export default function setupFileRoutes(app, cloudant, doClient) {
         }
 
         try {
-          userDoc.initialFile = {
-            ...userDoc.initialFile,
+          // Re-fetch user doc to avoid revision conflict from concurrent wizard writes
+          const freshDoc = await cloudant.getDocument('maia_users', userId);
+          freshDoc.initialFile = {
+            ...freshDoc.initialFile,
             bucketKey: foundKey,
-            fileName: initialFileName || userDoc.initialFile?.fileName || cleanName
+            fileName: initialFileName || freshDoc.initialFile?.fileName || cleanName
           };
-          userDoc.updatedAt = new Date().toISOString();
-          await cloudant.saveDocument('maia_users', userDoc);
+          freshDoc.updatedAt = new Date().toISOString();
+          await cloudant.saveDocument('maia_users', freshDoc);
           console.log('[SAVE-RESTORE] process-initial-file initial file updated', {
             userId,
             bucketKey: foundKey
           });
         } catch (updateErr) {
-          // ignore initialFile update errors
+          console.warn('[SAVE-RESTORE] process-initial-file update conflict (non-fatal):', updateErr?.message);
         }
       }
 

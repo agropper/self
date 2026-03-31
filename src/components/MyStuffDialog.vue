@@ -4997,8 +4997,11 @@ const loadPatientSummary = async () => {
       isEditingSummaryTab.value = false;
     }
 
-    // Check medications consistency after loading summary
-    if (loadedSummary && !medsMismatchAcknowledged.value) {
+    // Check medications consistency after loading summary — but only if this
+    // is NOT the first-ever summary (initial creation naturally differs from the
+    // verified medications list because the AI uses its own wording).
+    const summaryCount = (result.summaries || []).length;
+    if (loadedSummary && !medsMismatchAcknowledged.value && summaryCount > 1) {
       await checkMedicationsConsistency();
     }
   } catch (err) {
