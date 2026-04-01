@@ -128,23 +128,21 @@
                     {{ tempStartError }}
                   </div>
 
-                  <!-- Caption (full width, two columns) -->
+                  <!-- Introduction from welcome.md -->
                   <div class="q-mt-lg">
-                    <div class="welcome-caption text-body2 text-grey-7 q-pa-md">
-                      <vue-markdown :source="welcomeCaption || 'Loading...'" />
+                    <div class="welcome-intro text-body2 text-grey-8 q-pa-md">
+                      <vue-markdown :source="welcomeIntro || 'Loading...'" />
                     </div>
                   </div>
 
-                  <!-- Privacy link at bottom -->
+                  <!-- Footer: Privacy | FAQ | About + copyright -->
                   <div class="text-center q-mt-lg q-mb-md">
-                    <a 
-                      href="#" 
-                      @click.prevent="showPrivacyDialog = true"
-                      style="color: #1976d2; text-decoration: none; font-size: 0.9rem; cursor: pointer;"
-                      class="text-primary"
-                    >
-                      Privacy, Security, Communities, and Risk
-                    </a>
+                    <a href="#" @click.prevent="welcomeDialogSection = 'privacy'; showWelcomeContentDialog = true" class="welcome-footer-link">Privacy</a>
+                    <span class="text-grey-5 q-mx-sm">|</span>
+                    <a href="#" @click.prevent="welcomeDialogSection = 'faq'; showWelcomeContentDialog = true" class="welcome-footer-link">FAQ</a>
+                    <span class="text-grey-5 q-mx-sm">|</span>
+                    <a href="#" @click.prevent="welcomeDialogSection = 'about'; showWelcomeContentDialog = true" class="welcome-footer-link">About</a>
+                    <div class="text-caption text-grey-6 q-mt-sm">CC-BY MAIA by Adrian Gropper, MD</div>
                   </div>
                 </div>
 
@@ -285,8 +283,8 @@
       </q-card>
     </q-dialog>
 
-    <!-- Privacy Dialog -->
-    <PrivacyDialog v-model="showPrivacyDialog" />
+    <!-- Welcome Content Dialog (Privacy / FAQ / About) -->
+    <WelcomeContentDialog v-model="showWelcomeContentDialog" :section="welcomeDialogSection" />
 
     <!-- Device privacy choice -->
     <q-dialog v-model="showDevicePrivacyDialog" persistent>
@@ -779,7 +777,7 @@ import PasskeyAuth from './components/PasskeyAuth.vue';
 import RestoreWizard from './components/RestoreWizard.vue';
 import ChatInterface from './components/ChatInterface.vue';
 import DeepLinkAccess from './components/DeepLinkAccess.vue';
-import PrivacyDialog from './components/PrivacyDialog.vue';
+import WelcomeContentDialog from './components/WelcomeContentDialog.vue';
 import AdminUsers from './components/AdminUsers.vue';
 import { useQuasar } from 'quasar';
 import { saveUserSnapshot, getUserSnapshot, clearUserSnapshot } from './utils/localDb';
@@ -830,9 +828,10 @@ const deepLinkShareId = ref<string | null>(null);
 const showDeepLinkAccess = ref(false);
 const deepLinkLoading = ref(false);
 const deepLinkError = ref('');
-const showPrivacyDialog = ref(false);
+const showWelcomeContentDialog = ref(false);
+const welcomeDialogSection = ref<'privacy' | 'faq' | 'about'>('privacy');
 const showAdminPage = ref(false);
-const welcomeCaption = ref<string>('');
+const welcomeIntro = ref<string>('');
 const tempStartLoading = ref(false);
 const tempStartError = ref('');
 const showTempSignOutDialog = ref(false);
@@ -2953,22 +2952,19 @@ const handleDeepLinkInfoUpdate = (info: DeepLinkInfo | null) => {
   deepLinkInfo.value = info;
 };
 
-const loadWelcomeCaption = async () => {
+const loadWelcomeIntro = async () => {
   try {
-    const response = await fetch('/api/welcome-caption', {
-      credentials: 'include'
-    });
-    
-    if (response.ok) {
-      const data = await response.json();
-      welcomeCaption.value = data.caption || '';
-    } else {
-      console.warn('Failed to load welcome caption:', response.statusText);
-      // Fallback to empty string - will show "Loading..." in template
-    }
+    const response = await fetch('/welcome.md', { cache: 'no-cache' });
+    if (!response.ok) return;
+    const text = await response.text();
+    const marker = '<!-- SECTION:introduction -->';
+    const start = text.indexOf(marker);
+    if (start === -1) return;
+    const contentStart = start + marker.length;
+    const nextMarker = text.indexOf('<!-- SECTION:', contentStart);
+    welcomeIntro.value = (nextMarker === -1 ? text.slice(contentStart) : text.slice(contentStart, nextMarker)).trim();
   } catch (error) {
-    console.error('Error loading welcome caption:', error);
-    // Fallback to empty string - will show "Loading..." in template
+    console.error('Error loading welcome intro:', error);
   }
 };
 
@@ -3014,8 +3010,8 @@ onMounted(async () => {
   // Phase 6: Register beforeunload listener
   window.addEventListener('beforeunload', beforeUnloadHandler);
 
-  // Load welcome caption
-  loadWelcomeCaption();
+  // Load welcome introduction from welcome.md
+  loadWelcomeIntro();
   
   // Check for admin page route
   const isAdminPage = window.location.pathname === '/admin';
@@ -3173,26 +3169,24 @@ onMounted(async () => {
   padding: 0 !important;
 }
 
-.welcome-caption {
+.welcome-intro {
   background-color: #f5f5f5;
   border-radius: 4px;
-  column-count: 2;
-  column-gap: 24px;
-  column-fill: balance;
 }
 
-.welcome-caption hr:last-child {
-  display: none;
+.welcome-footer-link {
+  color: #1976d2;
+  text-decoration: none;
+  font-size: 0.9rem;
+  cursor: pointer;
+}
+
+.welcome-footer-link:hover {
+  text-decoration: underline;
 }
 
 .more-choices-card .more-choices-actions .q-btn {
   min-height: 44px;
-}
-
-@media (max-width: 768px) {
-  .welcome-caption {
-    column-count: 1;
-  }
 }
 </style>
 
