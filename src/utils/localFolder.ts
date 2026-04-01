@@ -52,11 +52,19 @@ export interface MaiaFileEntry {
   fileHandle: FileSystemFileHandle;
 }
 
+export interface MaiaIdentity {
+  userId: string;
+  displayName: string;
+  createdAt: string;
+  lastSync: string;
+}
+
 export interface MaiaState {
   version: number;
   userId: string;
   displayName?: string;
   updatedAt: string;
+  exportedAt?: string;
   files?: Array<{
     fileName: string;
     size?: number;
@@ -67,10 +75,14 @@ export interface MaiaState {
   patientSummary?: string | null;
   savedChats?: any;
   currentChat?: any;
+  agentInstructions?: string | null;
+  kbStats?: { fileCount: number; tokenCount: number } | null;
+  wizardComplete?: boolean;
   settings?: Record<string, any>;
 }
 
 const STATE_FILE_NAME = 'maia-state.json';
+const IDENTITY_FILE_NAME = 'maia-identity.json';
 
 // ── IndexedDB handle storage ───────────────────────────────────────
 // Minimal raw IndexedDB usage — one database, one store, one entry per user.
@@ -94,7 +106,7 @@ function openHandleDb(): Promise<IDBDatabase> {
   });
 }
 
-async function storeHandle(
+export async function storeDirectoryHandle(
   userId: string,
   handle: FileSystemDirectoryHandle
 ): Promise<void> {
@@ -130,7 +142,7 @@ export async function pickLocalFolder(
   if (!isFileSystemAccessSupported()) return null;
   try {
     const handle = await window.showDirectoryPicker({ mode: 'readwrite' });
-    await storeHandle(userId, handle);
+    await storeDirectoryHandle(userId, handle);
     return { handle, folderName: handle.name };
   } catch (e: any) {
     // User cancelled the picker
@@ -308,6 +320,43 @@ export async function readStateFile(
 }
 
 /**
+ * Try to read maia-state.json from the stored folder handle for a userId.
+ * Uses queryPermission only (no user gesture needed).
+ * Returns { state, handle } if successful, or null if no handle / no permission / no file.
+ */
+export async function readStateFileByUserId(
+  userId: string,
+  options?: { requestWrite?: boolean }
+): Promise<{ state: MaiaState; handle: FileSystemDirectoryHandle } | null> {
+  if (!isFileSystemAccessSupported()) return null;
+  try {
+    const handle = await getStoredHandle(userId);
+    if (!handle) return null;
+    // Try readwrite first so the returned handle can be used for writes (sign-out snapshot).
+    let perm = await handle.queryPermission({ mode: 'readwrite' });
+    if (perm !== 'granted') {
+      // If caller passed requestWrite (has a user gesture), prompt Chrome for permission
+      if (options?.requestWrite && perm === 'prompt') {
+        perm = await handle.requestPermission({ mode: 'readwrite' });
+      }
+      if (perm !== 'granted') {
+        // Fall back to read-only
+        perm = await handle.queryPermission({ mode: 'read' });
+        if (perm !== 'granted' && options?.requestWrite) {
+          perm = await handle.requestPermission({ mode: 'read' });
+        }
+        if (perm !== 'granted') return null;
+      }
+    }
+    const state = await readStateFile(handle);
+    if (!state) return null;
+    return { state, handle };
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Write maia-state.json to the folder (replaces PouchDB snapshot).
  */
 export async function writeStateFile(
@@ -320,11 +369,58 @@ export async function writeStateFile(
 }
 
 /**
+ * Extract patient name from a patient summary text.
+ * Tries several formats: "Patient Summary for X", "Summary for X",
+ * "Name: X", markdown "**Name:** X", or first capitalized multi-word line.
+ * Returns null if no name can be extracted.
+ */
+export function extractPatientName(summaryText: string | null | undefined): string | null {
+  if (!summaryText?.trim()) return null;
+  const lines = summaryText.split('\n').map(l => l.trim()).filter(Boolean);
+
+  // Pattern 1: "Patient Summary for X" or "Summary for X" or "Name: X"
+  for (const line of lines.slice(0, 5)) {
+    const m = line.match(/(?:Patient Summary for|Summary for|Patient:\s*|Name:\s*)\s*(.+)/i);
+    if (m?.[1]?.trim()) {
+      return m[1].trim().replace(/\*+/g, '').replace(/^#+\s*/, '');
+    }
+  }
+  // Pattern 2: Markdown "**Name:** X" or "**Patient:** X"
+  for (const line of lines.slice(0, 10)) {
+    const m = line.match(/\*?\*?(?:Name|Patient)\*?\*?:\s*\*?\*?\s*(.+)/i);
+    if (m?.[1]?.trim()) {
+      return m[1].trim().replace(/\*+/g, '');
+    }
+  }
+  // Pattern 3: "**Name, Age Gender**" or "# Name, Age Gender" (common AI summary format)
+  for (const line of lines.slice(0, 3)) {
+    const cleaned = line.replace(/^#+\s*/, '').replace(/\*+/g, '').trim();
+    // Match "Adrian Gropper, 73 M" — extract just the name before comma/paren/age
+    const nameAge = cleaned.match(/^([A-Z][a-zA-Z]+(?:\s+[A-Z][a-zA-Z]+)+)\s*[,(]\s*\d/);
+    if (nameAge?.[1]) {
+      return nameAge[1].trim();
+    }
+  }
+  // Pattern 4: First line that looks like a person's name (2-4 capitalized words, no punctuation)
+  for (const line of lines.slice(0, 5)) {
+    const cleaned = line.replace(/^#+\s*/, '').replace(/\*+/g, '').trim();
+    if (/^[A-Z][a-z]+(\s+[A-Z][a-z]+){0,3}$/.test(cleaned) && cleaned.length < 40) {
+      return cleaned;
+    }
+  }
+  return null;
+}
+
+/**
  * Write a maia.webloc file (macOS web shortcut) to the folder.
+ * Filename: maia-for-<patient>-as-<userId>.webloc (with name)
+ *           maia-for-<userId>.webloc (without name)
+ *           maia.webloc (no userId at all)
  */
 export async function writeWeblocFile(
   handle: FileSystemDirectoryHandle,
-  url: string
+  url: string,
+  opts?: { patientName?: string; userId?: string }
 ): Promise<void> {
   const plist = `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -334,5 +430,221 @@ export async function writeWeblocFile(
   <string>${url}</string>
 </dict>
 </plist>`;
-  await writeFileToFolder(handle, 'maia.webloc', plist);
+  // Build filename
+  let filename = 'maia.webloc';
+  if (opts?.userId) {
+    if (opts?.patientName) {
+      const safeName = opts.patientName.replace(/[^a-zA-Z0-9 _-]/g, '').trim().replace(/\s+/g, '-');
+      filename = safeName
+        ? `maia-for-${safeName}-as-${opts.userId}.webloc`
+        : `maia-for-${opts.userId}.webloc`;
+    } else {
+      filename = `maia-for-${opts.userId}.webloc`;
+    }
+  }
+  console.log(`[writeWeblocFile] Writing ${filename}`);
+  // Write the new file FIRST (most important step)
+  await writeFileToFolder(handle, filename, plist);
+  console.log(`[writeWeblocFile] Written successfully: ${filename}`);
+  // Then clean up old webloc files
+  if (filename !== 'maia.webloc') {
+    try { await handle.removeEntry('maia.webloc'); } catch { /* doesn't exist */ }
+  }
+  try {
+    for await (const [name] of (handle as any).entries()) {
+      if (name.endsWith('.webloc') && name.startsWith('maia-for-') && name !== filename) {
+        try { await handle.removeEntry(name); } catch { /* skip */ }
+      }
+    }
+  } catch { /* iteration not supported or failed */ }
+}
+
+// ── Identity file (maia-identity.json) ────────────────────────────
+
+/**
+ * Read maia-identity.json from the folder. Returns null if missing.
+ */
+export async function readIdentityFile(
+  handle: FileSystemDirectoryHandle
+): Promise<MaiaIdentity | null> {
+  const file = await readFileFromFolder(handle, IDENTITY_FILE_NAME);
+  if (!file) return null;
+  try {
+    const text = await file.text();
+    return JSON.parse(text) as MaiaIdentity;
+  } catch {
+    console.warn('[localFolder] Failed to parse maia-identity.json');
+    return null;
+  }
+}
+
+/**
+ * Write maia-identity.json to the folder.
+ */
+export async function writeIdentityFile(
+  handle: FileSystemDirectoryHandle,
+  identity: MaiaIdentity
+): Promise<void> {
+  const json = JSON.stringify(identity, null, 2);
+  await writeFileToFolder(handle, IDENTITY_FILE_NAME, json);
+}
+
+// ── Multi-user registry (localStorage) ────────────────────────────
+// Tracks all known family members who have used MAIA on this browser.
+
+export interface KnownUser {
+  userId: string;
+  displayName: string;
+  folderName: string | null;
+  hasPasskey: boolean;
+  lastActive: string;
+}
+
+const KNOWN_USERS_KEY = 'maia_known_users';
+const ACTIVE_USER_KEY = 'maia_active_user';
+
+export function getKnownUsers(): KnownUser[] {
+  if (typeof window === 'undefined' || !window.localStorage) return [];
+  try {
+    const raw = window.localStorage.getItem(KNOWN_USERS_KEY);
+    return raw ? JSON.parse(raw) : [];
+  } catch {
+    return [];
+  }
+}
+
+export function addOrUpdateKnownUser(entry: KnownUser): void {
+  if (typeof window === 'undefined' || !window.localStorage) return;
+  const users = getKnownUsers();
+  const idx = users.findIndex(u => u.userId === entry.userId);
+  if (idx >= 0) {
+    users[idx] = { ...users[idx], ...entry };
+  } else {
+    users.push(entry);
+  }
+  window.localStorage.setItem(KNOWN_USERS_KEY, JSON.stringify(users));
+}
+
+export function removeKnownUser(userId: string): void {
+  if (typeof window === 'undefined' || !window.localStorage) return;
+  const users = getKnownUsers().filter(u => u.userId !== userId);
+  window.localStorage.setItem(KNOWN_USERS_KEY, JSON.stringify(users));
+}
+
+export function getActiveUserId(): string | null {
+  if (typeof window === 'undefined' || !window.localStorage) return null;
+  return window.localStorage.getItem(ACTIVE_USER_KEY);
+}
+
+export function setActiveUserId(userId: string | null): void {
+  if (typeof window === 'undefined' || !window.localStorage) return;
+  if (userId) {
+    window.localStorage.setItem(ACTIVE_USER_KEY, userId);
+  } else {
+    window.localStorage.removeItem(ACTIVE_USER_KEY);
+  }
+}
+
+/**
+ * Migrate from the old single-user maia_last_snapshot_user key
+ * to the new multi-user registry. Call once on app startup.
+ */
+export function migrateToKnownUsers(): void {
+  if (typeof window === 'undefined' || !window.localStorage) return;
+  const existing = getKnownUsers();
+  if (existing.length > 0) return; // already migrated
+  const oldUserId = window.localStorage.getItem('maia_last_snapshot_user');
+  if (!oldUserId) return;
+  addOrUpdateKnownUser({
+    userId: oldUserId,
+    displayName: oldUserId,
+    folderName: null,
+    hasPasskey: false,
+    lastActive: new Date().toISOString()
+  });
+  setActiveUserId(oldUserId);
+  // Clean up the old key — knownUsers is now canonical
+  window.localStorage.removeItem('maia_last_snapshot_user');
+}
+
+/**
+ * Recover userIds from IndexedDB folder handles (survives localStorage clear).
+ * For each stored handle, tries queryPermission (no user gesture needed).
+ * If permission is granted, reads maia-identity.json to get userId/displayName.
+ * Returns recoverable users not already in knownUsers.
+ */
+export async function getAllStoredUserIds(): Promise<Array<{ userId: string; displayName: string; folderName: string }>> {
+  if (typeof window === 'undefined' || !window.indexedDB) return [];
+  const results: Array<{ userId: string; displayName: string; folderName: string }> = [];
+  try {
+    const db = await openHandleDb();
+    const tx = db.transaction(HANDLE_STORE_NAME, 'readonly');
+    const store = tx.objectStore(HANDLE_STORE_NAME);
+    // Get all keys (userIds) from the handle store
+    const allKeys: string[] = await new Promise((resolve, reject) => {
+      const req = store.getAllKeys();
+      req.onsuccess = () => resolve(req.result as string[]);
+      req.onerror = () => reject(req.error);
+    });
+    db.close();
+
+    for (const userId of allKeys) {
+      try {
+        const handle = await getStoredHandle(userId);
+        if (!handle) continue;
+        const perm = await handle.queryPermission({ mode: 'read' });
+        if (perm !== 'granted') continue;
+        // Try to read identity file
+        const identity = await readIdentityFile(handle);
+        results.push({
+          userId: identity?.userId || userId,
+          displayName: identity?.displayName || userId,
+          folderName: handle.name
+        });
+      } catch {
+        // Skip handles we can't access
+      }
+    }
+  } catch {
+    // IndexedDB not available
+  }
+  return results;
+}
+
+/**
+ * Reconcile knownUsers with all available sources:
+ * - Existing knownUsers (localStorage)
+ * - Folder handles in IndexedDB (survives localStorage clear)
+ * Call on app startup after migrateToKnownUsers().
+ */
+export async function reconcileKnownUsers(): Promise<void> {
+  const existing = getKnownUsers();
+  const existingIds = new Set(existing.map(u => u.userId));
+
+  // Recover from IndexedDB folder handles
+  const folderUsers = await getAllStoredUserIds();
+  for (const fu of folderUsers) {
+    if (!existingIds.has(fu.userId)) {
+      addOrUpdateKnownUser({
+        userId: fu.userId,
+        displayName: fu.displayName,
+        folderName: fu.folderName,
+        hasPasskey: false, // unknown — will be checked by checkAllUserCloudStatus
+        lastActive: new Date().toISOString()
+      });
+      existingIds.add(fu.userId);
+      console.log(`[reconcile] Recovered user "${fu.userId}" from local folder handle`);
+    } else {
+      // Update folderName if we didn't have it
+      const ku = existing.find(u => u.userId === fu.userId);
+      if (ku && !ku.folderName && fu.folderName) {
+        addOrUpdateKnownUser({ ...ku, folderName: fu.folderName });
+      }
+    }
+  }
+
+  // Ensure active user is set if we have known users
+  if (!getActiveUserId() && getKnownUsers().length > 0) {
+    setActiveUserId(getKnownUsers()[0].userId);
+  }
 }

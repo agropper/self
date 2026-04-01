@@ -582,6 +582,13 @@ function getAppUrlConfig() {
 }
 const appUrlConfig = getAppUrlConfig();
 
+// Client-side diagnostic logging endpoint (shows browser events in server terminal)
+app.post('/api/client-log', express.json(), (req, res) => {
+  const { tag, msg } = req.body || {};
+  console.log(`[CLIENT ${tag || '?'}] ${msg || ''}`);
+  res.json({ ok: true });
+});
+
 // Start listening immediately so readiness probes pass while CouchDB droplet setup runs
 app.get('/health', (req, res) => res.json({ status: 'ok', app: 'maia-cloud-user-app' }));
 app.listen(PORT, () => console.log(`User app server listening on port ${PORT} (startup in progress)`));
@@ -613,8 +620,15 @@ ensureBucketExists();
   const intervalMs = useDroplet ? 30000 : 0;
   let connected = false;
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-    connected = await cloudant.testConnection();
-    if (connected) break;
+    const result = await cloudant.testConnection();
+    if (result === true) { connected = true; break; }
+    if (result === 'auth_error') {
+      console.error(`❌ CouchDB authentication failed — stopping retries to avoid brute-force lockout.`);
+      console.error('   Check CLOUDANT_USERNAME and CLOUDANT_PASSWORD. If using CouchDB droplet:');
+      console.error('   SSH into droplet and run: docker inspect couchdb | grep COUCHDB_PASSWORD');
+      console.error('   Then set the correct CLOUDANT_PASSWORD in App Platform environment variables.');
+      return;
+    }
     if (attempt < maxAttempts) {
       console.warn(`[Cloudant] Connection attempt ${attempt}/${maxAttempts} failed, retrying in ${intervalMs / 1000}s...`);
       await new Promise(r => setTimeout(r, intervalMs));
@@ -9420,72 +9434,6 @@ if (isProduction) {
     }
   });
 
-  // Serve welcome page video caption from NEW-AGENT.txt
-  app.get('/api/welcome-caption', (req, res) => {
-    const newAgentPath = path.join(__dirname, '../NEW-AGENT.txt');
-    console.log(`📄 [WELCOME] Request for welcome caption, checking: ${newAgentPath}`);
-    
-    if (!existsSync(newAgentPath)) {
-      console.log(`⚠️ [WELCOME] NEW-AGENT.txt not found at ${newAgentPath}`);
-      return res.status(404).json({ error: 'Welcome caption not found' });
-    }
-
-    try {
-      const content = readFileSync(newAgentPath, 'utf-8');
-      const lines = content.split('\n');
-      
-      // Find the "## Welcome Page Video Caption" section
-      let captionStartIndex = -1;
-      for (let i = 0; i < lines.length; i++) {
-        if (lines[i].trim() === '## Welcome Page Video Caption') {
-          captionStartIndex = i + 1;
-          break;
-        }
-      }
-
-      if (captionStartIndex === -1) {
-        console.log(`⚠️ [WELCOME] Welcome Page Video Caption section not found in NEW-AGENT.txt`);
-        return res.status(404).json({ error: 'Welcome caption section not found' });
-      }
-
-      // Extract caption text (until next section or end of file)
-      const captionLines = [];
-      for (let i = captionStartIndex; i < lines.length; i++) {
-        const rawLine = lines[i];
-        const trimmed = rawLine.trim();
-        // Stop at next section header or empty line followed by section
-        if (trimmed.startsWith('##') && trimmed !== '## Welcome Page Video Caption') {
-          break;
-        }
-        if (trimmed) {
-          captionLines.push(rawLine);
-        } else if (captionLines.length > 0) {
-          // Allow one empty line, but stop at multiple empty lines
-          const nextNonEmpty = lines.slice(i + 1).find(l => l.trim());
-          if (nextNonEmpty && nextNonEmpty.trim().startsWith('##')) {
-            break;
-          }
-          captionLines.push('');
-        }
-      }
-
-      const caption = captionLines.join('\n').trim();
-      
-      if (!caption) {
-        console.log(`⚠️ [WELCOME] Welcome caption is empty`);
-        return res.status(404).json({ error: 'Welcome caption is empty' });
-      }
-
-      res.setHeader('Content-Type', 'application/json; charset=utf-8');
-      res.setHeader('Cache-Control', 'public, max-age=3600'); // Cache for 1 hour
-      res.json({ caption });
-      console.log(`✅ [WELCOME] Served welcome caption from NEW-AGENT.txt`);
-    } catch (err) {
-      console.error(`❌ [WELCOME] Error reading NEW-AGENT.txt:`, err);
-      res.status(500).json({ error: 'Error loading welcome caption' });
-    }
-  });
-  
   // Serve static assets (JS, CSS, images, etc.)
   // fallthrough: true allows requests to continue to the catch-all if file not found
   // Note: Privacy.md is handled above, so it won't be served by static middleware
@@ -9562,71 +9510,6 @@ if (isProduction) {
     }
   });
 
-  // Serve welcome page video caption from NEW-AGENT.txt (dev mode)
-  app.get('/api/welcome-caption', (req, res) => {
-    const newAgentPath = path.join(__dirname, '../NEW-AGENT.txt');
-    console.log(`📄 [WELCOME] Request for welcome caption, checking: ${newAgentPath}`);
-    
-    if (!existsSync(newAgentPath)) {
-      console.log(`⚠️ [WELCOME] NEW-AGENT.txt not found at ${newAgentPath}`);
-      return res.status(404).json({ error: 'Welcome caption not found' });
-    }
-
-    try {
-      const content = readFileSync(newAgentPath, 'utf-8');
-      const lines = content.split('\n');
-      
-      // Find the "## Welcome Page Video Caption" section
-      let captionStartIndex = -1;
-      for (let i = 0; i < lines.length; i++) {
-        if (lines[i].trim() === '## Welcome Page Video Caption') {
-          captionStartIndex = i + 1;
-          break;
-        }
-      }
-
-      if (captionStartIndex === -1) {
-        console.log(`⚠️ [WELCOME] Welcome Page Video Caption section not found in NEW-AGENT.txt`);
-        return res.status(404).json({ error: 'Welcome caption section not found' });
-      }
-
-      // Extract caption text (until next section or end of file)
-      const captionLines = [];
-      for (let i = captionStartIndex; i < lines.length; i++) {
-        const rawLine = lines[i];
-        const trimmed = rawLine.trim();
-        // Stop at next section header or empty line followed by section
-        if (trimmed.startsWith('##') && trimmed !== '## Welcome Page Video Caption') {
-          break;
-        }
-        if (trimmed) {
-          captionLines.push(rawLine);
-        } else if (captionLines.length > 0) {
-          // Allow one empty line, but stop at multiple empty lines
-          const nextNonEmpty = lines.slice(i + 1).find(l => l.trim());
-          if (nextNonEmpty && nextNonEmpty.trim().startsWith('##')) {
-            break;
-          }
-          captionLines.push('');
-        }
-      }
-
-      const caption = captionLines.join('\n').trim();
-      
-      if (!caption) {
-        console.log(`⚠️ [WELCOME] Welcome caption is empty`);
-        return res.status(404).json({ error: 'Welcome caption is empty' });
-      }
-
-      res.setHeader('Content-Type', 'application/json; charset=utf-8');
-      res.setHeader('Cache-Control', 'public, max-age=3600'); // Cache for 1 hour
-      res.json({ caption });
-      console.log(`✅ [WELCOME] Served welcome caption from NEW-AGENT.txt`);
-    } catch (err) {
-      console.error(`❌ [WELCOME] Error reading NEW-AGENT.txt:`, err);
-      res.status(500).json({ error: 'Error loading welcome caption' });
-    }
-  });
 }
 
 // Startup complete (server already listening for readiness probes)

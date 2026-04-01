@@ -42,44 +42,76 @@
                 <div class="text-h6 text-center q-mb-sm">
                   Welcome to MAIA
                 </div>
-                <!-- User Status line (USER_AUTH.md §2): black / orange / green by type -->
-                <div class="text-center q-mb-md">
-                  <p
-                    class="q-ma-none text-body2"
-                    :style="welcomeUserType === 'new' ? { color: '#1a1a1a' } : (welcomeUserType === 'local' && welcomeCloudValid === true) ? { color: '#2e7d32' } : (welcomeUserType === 'local' && welcomeCloudValid === null) ? { color: '#757575' } : welcomeUserType === 'local' ? { color: '#e65100' } : welcomeUserType === 'cloud' ? { color: '#2e7d32' } : {}"
+                <!-- Account status cards for known users -->
+                <div v-if="knownUsers.length > 0" class="q-mb-md">
+                  <div
+                    v-for="ku in knownUsers"
+                    :key="ku.userId"
+                    class="q-mb-xs q-pa-sm rounded-borders"
+                    :style="{
+                      border: '1px solid ' + (welcomeUserCloudStatus[ku.userId] === 'ready' ? '#c8e6c9' : welcomeUserCloudStatus[ku.userId] === 'loading' ? '#e0e0e0' : '#ffe0b2'),
+                      background: welcomeUserCloudStatus[ku.userId] === 'ready' ? '#f1f8e9' : welcomeUserCloudStatus[ku.userId] === 'loading' ? '#fafafa' : '#fff8e1'
+                    }"
                   >
-                    <template v-if="welcomeUserStatusLine === '__passkey_link__'">
-                      Get started with a new account or
-                      <a
-                        href="#"
-                        style="color: #1976d2; text-decoration: underline; cursor: pointer"
-                        @click.prevent="handlePasskeySignInLink"
-                      >sign-in with a passkey</a>.
-                    </template>
-                    <template v-else>{{ welcomeUserStatusLine }}</template>
-                  </p>
-                  <!-- Cloud-invalid local user: inline restore/delete options on the status line -->
-                  <div v-if="welcomeUserType === 'local' && welcomeCloudValid === false" class="q-mt-sm">
-                    <q-btn
-                      flat
-                      dense
-                      label="RESTORE FROM LOCAL FOLDER"
-                      color="negative"
-                      size="sm"
-                      :loading="tempStartLoading"
-                      @click="handleRestoreFromLocalFolder"
-                    />
-                    <span class="text-grey-6 q-mx-xs text-body2">or</span>
-                    <q-btn
-                      flat
-                      dense
-                      :label="`DELETE ${welcomeDisplayUserId}`"
-                      color="negative"
-                      size="sm"
-                      :loading="deleteLocalUserLoading"
-                      @click="handleDeleteLocalUser"
-                    />
+                    <div class="row items-center no-wrap">
+                      <q-icon
+                        :name="welcomeUserCloudStatus[ku.userId] === 'ready' ? 'check_circle' : welcomeUserCloudStatus[ku.userId] === 'loading' ? 'hourglass_empty' : 'warning'"
+                        :color="welcomeUserCloudStatus[ku.userId] === 'ready' ? 'green' : welcomeUserCloudStatus[ku.userId] === 'loading' ? 'grey' : 'orange'"
+                        size="sm"
+                        class="q-mr-sm"
+                      />
+                      <div class="col text-body2">
+                        <strong>{{ ku.displayName }}</strong>
+                        <span v-if="ku.displayName.toLowerCase() !== ku.userId.toLowerCase()" class="text-grey-7"> ({{ ku.userId }})</span>
+                        <span v-if="ku.folderName" class="text-grey-6"> &mdash; {{ ku.folderName }}</span>
+                        <div v-if="welcomeUserCloudStatus[ku.userId] === 'ready'" class="text-caption text-green-8">
+                          Cloud account ready{{ ku.hasPasskey ? ' (passkey)' : '' }}
+                        </div>
+                        <div v-else-if="welcomeUserCloudStatus[ku.userId] === 'loading'" class="text-caption text-grey-6">
+                          Checking account...
+                        </div>
+                        <div v-else class="text-caption text-orange-9">
+                          Cloud account needs restoring
+                        </div>
+                      </div>
+                      <div class="row no-wrap q-gutter-xs">
+                        <q-btn
+                          v-if="welcomeUserCloudStatus[ku.userId] === 'ready'"
+                          flat dense size="sm" color="primary"
+                          :label="ku.hasPasskey ? 'SIGN IN' : 'CONTINUE'"
+                          :loading="tempStartLoading && selectedWelcomeUserId === ku.userId"
+                          @click="handleUserCardContinue(ku)"
+                        />
+                        <q-btn
+                          v-else-if="welcomeUserCloudStatus[ku.userId] === 'restore'"
+                          flat dense size="sm" color="primary"
+                          label="RESTORE"
+                          :loading="tempStartLoading && selectedWelcomeUserId === ku.userId"
+                          @click="handleUserCardRestore(ku)"
+                        />
+                        <q-btn
+                          flat dense round size="xs" icon="close" color="grey-5"
+                          @click="handleDeleteLocalUser(ku.userId)"
+                        >
+                          <q-tooltip>Remove from this device</q-tooltip>
+                        </q-btn>
+                      </div>
+                    </div>
                   </div>
+                  <div class="text-center q-mt-xs">
+                    <q-btn flat dense size="sm" color="grey-6" icon="person_add" label="Add family member" @click="handleAddFamilyMember" />
+                  </div>
+                </div>
+                <!-- No known users: passkey link -->
+                <div v-else class="text-center q-mb-md">
+                  <p class="q-ma-none text-body2" style="color: #1a1a1a">
+                    Get started with a new account or
+                    <a
+                      href="#"
+                      style="color: #1976d2; text-decoration: underline; cursor: pointer"
+                      @click.prevent="handlePasskeySignInLink"
+                    >sign-in with a passkey</a>.
+                  </p>
                 </div>
 
                 <div v-if="!showAuth">
@@ -96,23 +128,21 @@
                     {{ tempStartError }}
                   </div>
 
-                  <!-- Caption (full width, two columns) -->
+                  <!-- Introduction from welcome.md -->
                   <div class="q-mt-lg">
-                    <div class="welcome-caption text-body2 text-grey-7 q-pa-md">
-                      <vue-markdown :source="welcomeCaption || 'Loading...'" />
+                    <div class="welcome-intro text-body2 text-grey-8 q-pa-md">
+                      <vue-markdown :source="welcomeIntro || 'Loading...'" />
                     </div>
                   </div>
 
-                  <!-- Privacy link at bottom -->
+                  <!-- Footer: Privacy | FAQ | About + copyright -->
                   <div class="text-center q-mt-lg q-mb-md">
-                    <a 
-                      href="#" 
-                      @click.prevent="showPrivacyDialog = true"
-                      style="color: #1976d2; text-decoration: none; font-size: 0.9rem; cursor: pointer;"
-                      class="text-primary"
-                    >
-                      Privacy, Security, Communities, and Risk
-                    </a>
+                    <a href="#" @click.prevent="welcomeDialogSection = 'privacy'; showWelcomeContentDialog = true" class="welcome-footer-link">Privacy</a>
+                    <span class="text-grey-5 q-mx-sm">|</span>
+                    <a href="#" @click.prevent="welcomeDialogSection = 'faq'; showWelcomeContentDialog = true" class="welcome-footer-link">FAQ</a>
+                    <span class="text-grey-5 q-mx-sm">|</span>
+                    <a href="#" @click.prevent="welcomeDialogSection = 'about'; showWelcomeContentDialog = true" class="welcome-footer-link">About</a>
+                    <div class="text-caption text-grey-6 q-mt-sm">CC-BY MAIA by Adrian Gropper, MD</div>
                   </div>
                 </div>
 
@@ -144,12 +174,15 @@
             :rehydration-active="rehydrationActive"
             :suppress-wizard="suppressWizard"
             :folder-access-tier="folderAccessTier"
+            :passkey-without-folder="passkeyWithoutFolder"
             @sign-out="handleSignOut"
             @restore-applied="restoredChatState = null"
             @rehydration-complete="handleRehydrationComplete"
             @rehydration-file-removed="handleRehydrationFileRemoved"
             @update:deep-link-info="handleDeepLinkInfoUpdate"
             @local-folder-connected="handleLocalFolderConnected"
+            @session-dirty="sessionDirty = true"
+            @wizard-complete="handleWizardComplete"
           />
         </div>
       </q-page>
@@ -250,8 +283,8 @@
       </q-card>
     </q-dialog>
 
-    <!-- Privacy Dialog -->
-    <PrivacyDialog v-model="showPrivacyDialog" />
+    <!-- Welcome Content Dialog (Privacy / FAQ / About) -->
+    <WelcomeContentDialog v-model="showWelcomeContentDialog" :section="welcomeDialogSection" />
 
     <!-- Device privacy choice -->
     <q-dialog v-model="showDevicePrivacyDialog" persistent>
@@ -356,25 +389,6 @@
       </q-card>
     </q-dialog>
 
-    <!-- Passkey sign-out: cross-device info -->
-    <q-dialog v-model="showPasskeyBackupPromptModal" persistent>
-      <q-card style="min-width: 420px; max-width: 560px">
-        <q-card-section>
-          <div class="text-h6">Passkey Created</div>
-          <p class="text-body2 q-mt-sm q-mb-none">
-            Passkeys allow you to access your MAIA on other devices or browsers.
-            The MAIA folder you created this account from may not be available or
-            would be a privacy risk on these other devices. Although your cloud
-            MAIA account will be updated, your local MAIA folder will not be
-            updated until the next time you access MAIA from the same original device.
-          </p>
-        </q-card-section>
-        <q-card-actions align="right">
-          <q-btn unelevated label="OK" color="primary" @click="onPasskeyBackupNo" />
-        </q-card-actions>
-      </q-card>
-    </q-dialog>
-
     <!-- Sign-out: prompt to choose folder for saving updated files -->
     <q-dialog v-model="showSignOutFolderPrompt" persistent>
       <q-card style="min-width: 420px; max-width: 560px">
@@ -398,35 +412,7 @@
       </q-card>
     </q-dialog>
 
-    <!-- Passkey backup: 4-digit PIN to encrypt -->
-    <q-dialog v-model="showPasskeyBackupPinDialog" persistent>
-      <q-card style="min-width: 360px; max-width: 440px">
-        <q-card-section>
-          <div class="text-h6">Encrypt local backup</div>
-          <p class="text-body2 q-mt-sm q-mb-md">
-            Enter a 4-digit PIN to encrypt your local backup. You will need this PIN to restore on this device.
-          </p>
-          <q-input
-            v-model="passkeyBackupPin"
-            type="password"
-            inputmode="numeric"
-            pattern="[0-9]*"
-            maxlength="4"
-            placeholder="4-digit PIN"
-            dense
-            outlined
-            :error="!!passkeyBackupPinError"
-            :error-message="passkeyBackupPinError"
-            autocomplete="off"
-            @keyup.enter="submitPasskeyBackupPin"
-          />
-        </q-card-section>
-        <q-card-actions align="right">
-          <q-btn flat label="CANCEL" color="primary" @click="closePasskeyBackupPinDialog" />
-          <q-btn unelevated label="SAVE" color="primary" :loading="passkeyBackupPinLoading" :disable="(passkeyBackupPin || '').length !== 4" @click="submitPasskeyBackupPin" />
-        </q-card-actions>
-      </q-card>
-    </q-dialog>
+
 
     <!-- Passkey dialog for authenticated users -->
     <q-dialog v-model="showPasskeyDialog" persistent>
@@ -584,32 +570,24 @@
       </q-card>
     </q-dialog>
 
-    <!-- Missing agent dialog (legacy — kept for temporary session flow) -->
-    <q-dialog v-model="showMissingAgentDialog" persistent>
-      <q-card style="min-width: 520px; max-width: 640px">
+
+    <!-- Phase 4: Confirm new account creation when known users exist -->
+    <q-dialog v-model="showNewAccountConfirmDialog" persistent>
+      <q-card style="min-width: 400px; max-width: 520px">
         <q-card-section>
-          <div class="text-h6">Local Backup Found</div>
+          <div class="text-h6">Create New Account?</div>
         </q-card-section>
         <q-card-section class="text-body2">
-          <p>
-            We found a local backup for <strong>{{ missingAgentUserId }}</strong>, but no matching agent is available.
-          </p>
-          <p class="q-mt-md">
-            Choose what to do with the local backup.
-          </p>
+          {{ newAccountConfirmMessage }}
         </q-card-section>
         <q-card-actions align="right">
           <q-btn
-            flat
-            label="CLEAR LOCAL STORAGE"
-            color="primary"
-            @click="handleClearLocalBackup"
+            flat label="Cancel" color="grey-7"
+            @click="showNewAccountConfirmDialog = false; pendingNewAccountCallback = null"
           />
           <q-btn
-            flat
-            label="START THE WIZARD AGAIN"
-            color="negative"
-            @click="handleStartWizardAgain"
+            flat label="Yes, Create New Account" color="primary"
+            @click="() => { showNewAccountConfirmDialog = false; if (pendingNewAccountCallback) { pendingNewAccountCallback(); pendingNewAccountCallback = null; } }"
           />
         </q-card-actions>
       </q-card>
@@ -657,6 +635,84 @@
             color="primary"
             :loading="cloudHealthLoading"
             @click="handleCloudRestore"
+          />
+        </q-card-actions>
+      </q-card>
+    </q-dialog>
+
+    <!-- Connect local MAIA folder dialog (shown after passkey sign-in without folder) -->
+    <q-dialog v-model="showConnectFolderDialog">
+      <q-card style="min-width: 420px; max-width: 560px">
+        <q-card-section>
+          <div class="text-h6">Connect Your MAIA Folder</div>
+        </q-card-section>
+        <q-card-section class="text-body2">
+          <p>
+            You signed in with a passkey. To keep your local backup updated,
+            connect the MAIA folder on this computer.
+          </p>
+          <p class="text-caption text-grey-7 q-mt-sm">
+            Without a connected folder, changes made during this session
+            will only be saved in the cloud. Your local backup will not be updated.
+          </p>
+        </q-card-section>
+        <q-card-actions align="right" class="q-gutter-sm">
+          <q-btn
+            flat
+            label="Skip for now"
+            color="grey-8"
+            @click="showConnectFolderDialog = false"
+          />
+          <q-btn
+            unelevated
+            label="Connect folder"
+            color="primary"
+            @click="handleConnectFolderFromDialog"
+          />
+        </q-card-actions>
+      </q-card>
+    </q-dialog>
+
+    <!-- Phase 7: Restore Wizard -->
+    <RestoreWizard
+      v-model="showRestoreWizard"
+      :user-id="user?.userId || ''"
+      :cloud-health="cloudHealthDetails"
+      :local-state="restoreWizardLocalState"
+      :local-folder-handle="localFolderHandle"
+      @restore-complete="handleRestoreWizardComplete"
+    />
+
+    <!-- Destroyed account restore dialog -->
+    <q-dialog v-model="showDestroyedRestoreDialog" persistent>
+      <q-card style="min-width: 520px; max-width: 640px">
+        <q-card-section>
+          <div class="text-h6">Account Previously Deleted</div>
+        </q-card-section>
+        <q-card-section class="text-body2">
+          <p>
+            The account <strong>{{ destroyedUserId }}</strong> was previously deleted from the cloud,
+            but your local MAIA folder still has a backup of your files and settings.
+          </p>
+          <p class="q-mt-md">
+            Would you like to <strong>restore</strong> your account from the local backup,
+            or <strong>start fresh</strong> with a new account?
+          </p>
+        </q-card-section>
+        <q-card-actions align="right" class="q-gutter-sm">
+          <q-btn
+            flat
+            label="Start fresh"
+            color="grey-8"
+            :loading="cloudHealthLoading"
+            @click="handleDestroyedStartFresh"
+          />
+          <q-btn
+            unelevated
+            label="Restore from local backup"
+            color="primary"
+            :loading="cloudHealthLoading"
+            @click="handleDestroyedRestore"
           />
         </q-card-actions>
       </q-card>
@@ -715,15 +771,23 @@ onUnmounted(() => {
     window.removeEventListener('popstate', checkRouteRef.value);
     checkRouteRef.value = null;
   }
+  window.removeEventListener('beforeunload', beforeUnloadHandler);
 });
 import PasskeyAuth from './components/PasskeyAuth.vue';
+import RestoreWizard from './components/RestoreWizard.vue';
 import ChatInterface from './components/ChatInterface.vue';
 import DeepLinkAccess from './components/DeepLinkAccess.vue';
-import PrivacyDialog from './components/PrivacyDialog.vue';
+import WelcomeContentDialog from './components/WelcomeContentDialog.vue';
 import AdminUsers from './components/AdminUsers.vue';
 import { useQuasar } from 'quasar';
-import { saveUserSnapshot, getLastSnapshotUserId, getUserSnapshot, clearLastSnapshotUserId, clearUserSnapshot, getPasskeyBackupPromptSkip, setPasskeyBackupPromptSkip, saveUserSnapshotEncrypted } from './utils/localDb';
-import { writeStateFile, clearDirectoryHandle, type MaiaState } from './utils/localFolder';
+import { saveUserSnapshot, getUserSnapshot, clearUserSnapshot } from './utils/localDb';
+import {
+  writeStateFile, clearDirectoryHandle, readIdentityFile, writeIdentityFile,
+  addOrUpdateKnownUser, removeKnownUser, migrateToKnownUsers, reconcileKnownUsers,
+  getKnownUsers, getActiveUserId, setActiveUserId,
+  readStateFileByUserId,
+  type MaiaState, type MaiaIdentity, type KnownUser
+} from './utils/localFolder';
 
 interface User {
   userId: string;
@@ -731,6 +795,8 @@ interface User {
   isDeepLink?: boolean;
   isTemporary?: boolean;
   isAdmin?: boolean;
+  hasPasskey?: boolean;
+  credentialID?: string;
   deepLinkInfo?: DeepLinkInfo | null;
 }
 
@@ -762,9 +828,10 @@ const deepLinkShareId = ref<string | null>(null);
 const showDeepLinkAccess = ref(false);
 const deepLinkLoading = ref(false);
 const deepLinkError = ref('');
-const showPrivacyDialog = ref(false);
+const showWelcomeContentDialog = ref(false);
+const welcomeDialogSection = ref<'privacy' | 'faq' | 'about'>('privacy');
 const showAdminPage = ref(false);
-const welcomeCaption = ref<string>('');
+const welcomeIntro = ref<string>('');
 const tempStartLoading = ref(false);
 const tempStartError = ref('');
 const showTempSignOutDialog = ref(false);
@@ -776,12 +843,6 @@ const passkeyPrefillAction = ref<'signin' | 'register' | null>(null);
 /** When set, we showed PasskeyAuth for a returning passkey user (from Get Started + local snapshot). */
 const welcomeBackPasskeyUserId = ref<string | null>(null);
 const showPasskeyDialog = ref(false);
-const showPasskeyBackupPromptModal = ref(false);
-const passkeyBackupDoNotAskAgain = ref(false);
-const showPasskeyBackupPinDialog = ref(false);
-const passkeyBackupPin = ref('');
-const passkeyBackupPinError = ref('');
-const passkeyBackupPinLoading = ref(false);
 const showDormantDialog = ref(false);
 const dormantDeepLinkCount = ref(0);
 const dormantLoading = ref(false);
@@ -795,12 +856,14 @@ const restoredChatState = ref<any | null>(null);
 const rehydrationFiles = ref<any[]>([]);
 const rehydrationActive = ref(false);
 const suppressWizard = ref(false);
-const showMissingAgentDialog = ref(false);
-const missingAgentUserId = ref<string | null>(null);
 const showCloudHealthDialog = ref(false);
 const cloudHealthDetails = ref<any>(null);
 const cloudHealthLoading = ref(false);
-const pendingLocalUserId = ref<string | null>(null);
+/** [Phase 7] Restore Wizard state */
+const showRestoreWizard = ref(false);
+const restoreWizardLocalState = ref<MaiaState | null>(null);
+const showDestroyedRestoreDialog = ref(false);
+const destroyedUserId = ref<string | null>(null);
 const showDevicePrivacyDialog = ref(false);
 const showSharedDeviceWarning = ref(false);
 const deviceChoiceResolved = ref(false);
@@ -829,6 +892,11 @@ folderAccessTier.value = detectFolderAccessTier();
 // ── Local folder (File System Access API) state ───────────────
 const localFolderHandle = ref<FileSystemDirectoryHandle | null>(null);
 const localFolderName = ref<string | null>(null);
+/** [Phase 5] True when user signed in via passkey but has no local folder on this device. */
+const passkeyWithoutFolder = ref(false);
+const showConnectFolderDialog = ref(false);
+/** [Phase 6] Dirty flag — true when session state changed since last save. */
+const sessionDirty = ref(false);
 const showOtherAccountOptionsDialog = ref(false);
 const showDeleteLocalUserDialog = ref(false);
 const deleteLocalUserLoading = ref(false);
@@ -898,41 +966,168 @@ const welcomeCloudValid = computed(() => {
   return valid;
 });
 
-/** [AUTH] Single User Status line below "Welcome to MAIA" (USER_AUTH.md §2). */
-const welcomeUserStatusLine = computed(() => {
-  const type = welcomeUserType.value;
-  const localId = welcomeLocalUserId.value;
-  const snap = welcomeLocalSnapshot.value;
-  const ws = welcomeStatus.value;
-  if (type === 'new') return '__passkey_link__'; // handled in template
-  if (type === 'local') {
-    const userId = ws.tempCookieUserId || localId || '';
-    const savedCount = welcomeSavedFileCount.value ?? snap?.fileCount ?? 0;
-    if (welcomeCloudValid.value === true) {
-      return `${userId} is ready to continue with ${savedCount} saved file${savedCount === 1 ? '' : 's'}.`;
+/** Per-user cloud status for Welcome page cards: 'loading' | 'ready' | 'restore' */
+const welcomeUserCloudStatus = ref<Record<string, 'loading' | 'ready' | 'restore'>>({});
+
+/** Check cloud status for all known users (called from loadWelcomeStatus). */
+const checkAllUserCloudStatus = async () => {
+  const users = knownUsers.value;
+  if (users.length === 0) return;
+  // Set all to loading initially
+  const statusMap: Record<string, 'loading' | 'ready' | 'restore'> = {};
+  for (const u of users) statusMap[u.userId] = 'loading';
+  welcomeUserCloudStatus.value = { ...statusMap };
+  // Check each user in parallel
+  await Promise.all(users.map(async (u) => {
+    try {
+      const resp = await fetch(`/api/agent-exists?userId=${encodeURIComponent(u.userId)}`);
+      if (resp.ok) {
+        const data = await resp.json();
+        const kbOk = !!data.kbExists;
+        const linkedOk = !!data.agentLinkedToKb;
+        const wizardOk = !!data.wizardComplete;
+        statusMap[u.userId] = (kbOk && linkedOk && wizardOk) ? 'ready' : 'restore';
+      } else {
+        statusMap[u.userId] = 'restore';
+      }
+    } catch {
+      statusMap[u.userId] = 'restore';
     }
-    // Still loading cloud validity — show neutral message to avoid red flash
-    if (welcomeCloudValid.value === null && welcomeKbExists.value === null) {
-      return `Checking ${userId} account status…`;
-    }
-    // Show what's missing
-    const parts: string[] = [];
-    if (!welcomeKbExists.value) parts.push('no knowledge base');
-    if (!welcomeAgentLinkedToKb.value) parts.push('agent not linked');
-    if (!welcomeWizardComplete.value) parts.push('wizard incomplete');
-    const localFiles = snap?.fileCount ?? 0;
-    const reason = parts.length > 0 ? ` (${parts.join(', ')})` : '';
-    return `${userId} has a local backup with ${localFiles} file${localFiles === 1 ? '' : 's'}${reason}.`;
+    welcomeUserCloudStatus.value = { ...statusMap };
+  }));
+};
+
+/** Handle CONTINUE/SIGN IN on a user card */
+const handleUserCardContinue = (ku: KnownUser) => {
+  selectedWelcomeUserId.value = ku.userId;
+  setActiveUserId(ku.userId);
+  welcomeLocalUserId.value = ku.userId;
+  if (ku.hasPasskey) {
+    passkeyPrefillUserId.value = ku.userId;
+    passkeyPrefillAction.value = 'signin';
+    showAuth.value = true;
+  } else {
+    startTemporarySession();
   }
-  const userId = ws.tempCookieUserId || localId || '';
-  const hasLocalBackup = !!welcomeLocalUserId.value;
-  return hasLocalBackup
-    ? `${userId} has a passkey and local backup available.`
-    : `${userId} has a passkey and no local backup available.`;
-});
+};
+
+/** Handle RESTORE on a user card — uses /api/account/recreate to preserve original userId */
+const handleUserCardRestore = async (ku: KnownUser) => {
+  selectedWelcomeUserId.value = ku.userId;
+  setActiveUserId(ku.userId);
+  welcomeLocalUserId.value = ku.userId;
+  tempStartLoading.value = true;
+  tempStartError.value = '';
+  try {
+    // Recreate the user doc with the ORIGINAL userId
+    const recreateResp = await fetch('/api/account/recreate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify({ userId: ku.userId, displayName: ku.displayName })
+    });
+    const recreateData = await recreateResp.json();
+    if (!recreateResp.ok || !recreateData.authenticated) {
+      throw new Error(recreateData.error || 'Failed to recreate account');
+    }
+    setAuthenticatedUser(recreateData.user, null);
+
+    // Read local state from folder
+    let localState: MaiaState | null = null;
+    if (localFolderHandle.value) {
+      const { readStateFile } = await import('./utils/localFolder');
+      localState = await readStateFile(localFolderHandle.value);
+    }
+    if (!localState && ku.userId) {
+      try {
+        const result = await readStateFileByUserId(ku.userId);
+        if (result) {
+          localState = result.state;
+          localFolderHandle.value = result.handle;
+        }
+      } catch { /* not available */ }
+    }
+    if (!localState) {
+      const snapshot = await getUserSnapshot(ku.userId);
+      if (snapshot) {
+        localState = {
+          version: 1,
+          userId: ku.userId,
+          displayName: ku.displayName,
+          updatedAt: snapshot.updatedAt || new Date().toISOString(),
+          files: Array.isArray(snapshot.fileStatusSummary) ? snapshot.fileStatusSummary.map((f: any) => ({
+            fileName: f.fileName, bucketKey: f.bucketKey, cloudStatus: f.chipStatus
+          })) : undefined,
+          currentMedications: snapshot.currentMedications || null,
+          patientSummary: snapshot.patientSummary || null,
+          savedChats: snapshot.savedChats || undefined,
+          currentChat: snapshot.currentChat || undefined
+        };
+      }
+    }
+
+    // Cloud health check
+    try {
+      const healthResp = await fetch(`/api/cloud-health?userId=${encodeURIComponent(ku.userId)}`, { credentials: 'include' });
+      if (healthResp.ok) {
+        const health = await healthResp.json();
+        cloudHealthDetails.value = health.details || null;
+      }
+    } catch {
+      cloudHealthDetails.value = {
+        database: { ok: true },
+        agent: { ok: false, error: 'Not deployed' },
+        knowledgeBase: { ok: false, error: 'Not created' },
+        spacesFiles: { ok: false, error: 'No files' }
+      };
+    }
+
+    // Launch RestoreWizard
+    if (localState) {
+      restoreWizardLocalState.value = localState;
+      showRestoreWizard.value = true;
+    } else {
+      if ($q && typeof $q.notify === 'function') {
+        $q.notify({ type: 'warning', message: 'No local backup found. Please use GET STARTED to set up your account.', timeout: 5000 });
+      }
+    }
+  } catch (error) {
+    tempStartError.value = error instanceof Error ? error.message : 'Restore failed';
+  } finally {
+    tempStartLoading.value = false;
+  }
+};
 
 /** [AUTH] New client = no local backup and no temp cookie. */
 const isNewClient = computed(() => !welcomeLocalUserId.value && !welcomeStatus.value.tempCookieUserId);
+
+/** [MULTI-USER] Known family members on this device. */
+const knownUsers = ref<KnownUser[]>([]);
+/** [MULTI-USER] Currently selected userId in the Welcome page selector. */
+const selectedWelcomeUserId = ref<string | null>(null);
+
+/** Refresh knownUsers from localStorage. */
+const refreshKnownUsers = () => {
+  knownUsers.value = getKnownUsers();
+  // Auto-select: active user, or first known user
+  if (!selectedWelcomeUserId.value || !knownUsers.value.some(u => u.userId === selectedWelcomeUserId.value)) {
+    selectedWelcomeUserId.value = getActiveUserId() || knownUsers.value[0]?.userId || null;
+  }
+};
+
+/** When user switches in the multi-user toggle, reload welcome status for that user. */
+/** Add family member: go through new-account flow */
+const handleAddFamilyMember = () => {
+  // Clear any existing user context and start fresh
+  welcomeLocalUserId.value = null;
+  welcomeStatus.value = {};
+  showDevicePrivacyDialog.value = true;
+};
+
+/** [PHASE 4] Confirmation dialog for new account creation */
+const showNewAccountConfirmDialog = ref(false);
+const newAccountConfirmMessage = ref('');
+const pendingNewAccountCallback = ref<(() => void) | null>(null);
 
 /** [AUTH] userId to show in More Choices heading (cookie or local). */
 const welcomeDisplayUserId = computed(() => welcomeStatus.value.tempCookieUserId || welcomeLocalUserId.value || '');
@@ -967,7 +1162,11 @@ const moreChoicesConfirmUserId = ref<string | null>(null);
 
 /** [AUTH] Load welcome-status and localStorage for status line and branching. */
 const loadWelcomeStatus = async () => {
-  welcomeLocalUserId.value = getLastSnapshotUserId();
+  refreshKnownUsers();
+  // Check cloud status for all known users (parallel, non-blocking)
+  void checkAllUserCloudStatus();
+  // Use selected user from multi-user selector, fall back to active user in knownUsers
+  welcomeLocalUserId.value = selectedWelcomeUserId.value || getActiveUserId();
   welcomeLocalSnapshot.value = null;
   welcomeLocalHasPasskey.value = null;
   welcomeAgentExists.value = null;
@@ -1002,19 +1201,66 @@ const loadWelcomeStatus = async () => {
         console.warn(`[WELCOME] agent-exists call failed: ${agentRes.status}`);
         welcomeAgentExists.value = false;
       }
-      if (snapshot) {
+      // Prefer local folder maia-state.json (most accurate after sign-out), fall back to IndexedDB
+      let localFileCount = 0;
+      let localIndexedCount = 0;
+      let localMedsVerified = false;
+      let localSummaryVerified = false;
+      let localWizardComplete = false;
+      let foundLocalState = false;
+      // Try active folder handle first, then try reconnecting stored handle (queryPermission only, no gesture)
+      let folderHandle = localFolderHandle.value;
+      if (!folderHandle && localId) {
+        try {
+          const result = await readStateFileByUserId(localId);
+          if (result) {
+            folderHandle = result.handle;
+            // Also populate localFolderHandle so subsequent operations can use it
+            localFolderHandle.value = result.handle;
+          }
+        } catch {
+          // Not available without gesture, will fall back to IndexedDB
+        }
+      }
+      if (folderHandle) {
+        try {
+          const { readStateFile } = await import('./utils/localFolder');
+          const folderState = await readStateFile(folderHandle);
+          if (folderState) {
+            foundLocalState = true;
+            localFileCount = Array.isArray(folderState.files) ? folderState.files.length : 0;
+            localIndexedCount = Array.isArray(folderState.files) ? folderState.files.filter(f => f.cloudStatus === 'indexed').length : 0;
+            localMedsVerified = !!(folderState.currentMedications != null && String(folderState.currentMedications).trim() !== '');
+            localSummaryVerified = !!(folderState.patientSummary != null && String(folderState.patientSummary).trim() !== '');
+            localWizardComplete = !!folderState.wizardComplete;
+            console.log(`[WELCOME] local folder state for ${localId}: files=${localFileCount}, indexed=${localIndexedCount}, medsVerified=${localMedsVerified}, summaryVerified=${localSummaryVerified}, wizardComplete=${localWizardComplete}`);
+          }
+        } catch (e) {
+          console.warn('[WELCOME] Failed to read local folder state:', e);
+        }
+      }
+      if (!foundLocalState && snapshot) {
         const fileStatusSummary = snapshot.fileStatusSummary || snapshot.files || [];
-        const fileCount = Array.isArray(fileStatusSummary) ? fileStatusSummary.length : 0;
-        const indexedCount = Array.isArray(snapshot.fileStatusSummary)
+        localFileCount = Array.isArray(fileStatusSummary) ? fileStatusSummary.length : 0;
+        localIndexedCount = Array.isArray(snapshot.fileStatusSummary)
           ? snapshot.fileStatusSummary.filter((f: any) => f?.chipStatus === 'indexed').length
           : 0;
+        localMedsVerified = !!(snapshot.currentMedications != null && String(snapshot.currentMedications).trim() !== '');
+        localSummaryVerified = !!(snapshot.patientSummary != null && String(snapshot.patientSummary).trim() !== '');
+        foundLocalState = true;
+        console.log(`[WELCOME] IndexedDB snapshot for ${localId}: files=${localFileCount}, indexed=${localIndexedCount}, medsVerified=${localMedsVerified}, summaryVerified=${localSummaryVerified}`);
+      }
+      if (foundLocalState) {
         welcomeLocalSnapshot.value = {
-          fileCount,
-          indexedCount,
-          medicationsVerified: !!(snapshot.currentMedications != null && String(snapshot.currentMedications).trim() !== ''),
-          summaryVerified: !!(snapshot.patientSummary != null && String(snapshot.patientSummary).trim() !== '')
+          fileCount: localFileCount,
+          indexedCount: localIndexedCount,
+          medicationsVerified: localMedsVerified,
+          summaryVerified: localSummaryVerified
         };
-        console.log(`[WELCOME] local snapshot for ${localId}: files=${fileCount}, indexed=${indexedCount}, medsVerified=${welcomeLocalSnapshot.value.medicationsVerified}, summaryVerified=${welcomeLocalSnapshot.value.summaryVerified}`);
+        // If cloud says wizard incomplete but local folder says it was complete, trust local
+        if (localWizardComplete && welcomeWizardComplete.value === false) {
+          welcomeWizardComplete.value = true;
+        }
       } else {
         console.log(`[WELCOME] no local snapshot for ${localId}`);
       }
@@ -1098,6 +1344,28 @@ const setAuthenticatedUser = (userData: any, deepLink: DeepLinkInfo | null = nul
     showDeepLinkAccess.value = false;
   } else {
     deepLinkInfo.value = deepLink;
+  }
+
+  // Register in the multi-user registry (skip deep-link users)
+  if (!normalizedUser.isDeepLink) {
+    addOrUpdateKnownUser({
+      userId: normalizedUser.userId,
+      displayName: normalizedUser.displayName || normalizedUser.userId,
+      folderName: localFolderName.value || null,
+      hasPasskey: !!userData.hasPasskey || !!userData.credentialID,
+      lastActive: new Date().toISOString()
+    });
+    setActiveUserId(normalizedUser.userId);
+
+    // Write identity file at account creation (Goal B) — fire-and-forget
+    if (localFolderHandle.value) {
+      writeIdentityFile(localFolderHandle.value, {
+        userId: normalizedUser.userId,
+        displayName: normalizedUser.displayName || normalizedUser.userId,
+        createdAt: new Date().toISOString(),
+        lastSync: new Date().toISOString()
+      }).catch((e) => console.warn('[AUTH] Identity file write failed:', e));
+    }
   }
 };
 
@@ -1207,6 +1475,8 @@ const confirmDeleteCloudOnly = async () => {
       const data = await res.json();
       if (!res.ok || !data.authenticated || !data.user) throw new Error(data.error || 'Could not restore session');
       setAuthenticatedUser(data.user, null);
+      // Save local snapshot before deleting cloud resources
+      await saveLocalSnapshot(null);
       const response = await fetch('/api/self/delete', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -1262,6 +1532,8 @@ const runPendingAccountClosure = async () => {
       await fetch('/api/account/dormant', { method: 'POST', credentials: 'include' });
       await performSignOut();
     } else if (action === 'delete-only') {
+      // Save local snapshot before destroying cloud resources
+      await saveLocalSnapshot(null);
       const userIdToDelete = user.value.userId;
       const response = await fetch('/api/self/delete', {
         method: 'POST',
@@ -1350,6 +1622,36 @@ const handleAuthenticated = async (userData: any) => {
       // Don't block sign-in if health check itself fails
     }
   }
+
+  // Phase 5: Detect passkey-only session (no local folder on this device)
+  if (userData?.hasPasskey || userData?.credentialID) {
+    passkeyWithoutFolder.value = !localFolderHandle.value;
+    // Prompt to connect a local folder if one isn't already connected
+    // Check if this user has a known folder on this device (knownUsers registry)
+    if (!localFolderHandle.value && typeof window !== 'undefined') {
+      const known = getKnownUsers().find(u => u.userId === userData.userId);
+      if (known?.folderName) {
+        // User has used a folder on this device before — try silent reconnect
+        try {
+          const result = await readStateFileByUserId(userData.userId);
+          if (result) {
+            localFolderHandle.value = result.handle;
+            localFolderName.value = known.folderName;
+            passkeyWithoutFolder.value = false;
+            console.log(`[AUTH] Reconnected folder "${known.folderName}" for passkey user ${userData.userId}`);
+          } else {
+            // Handle exists in registry but can't reconnect — prompt user
+            showConnectFolderDialog.value = true;
+          }
+        } catch {
+          showConnectFolderDialog.value = true;
+        }
+      } else {
+        // No known folder — show connect prompt (user may have the folder on this computer)
+        showConnectFolderDialog.value = true;
+      }
+    }
+  }
 };
 
 const handleDeepLinkAuthenticated = (payload: { user: User; deepLinkInfo: DeepLinkInfo }) => {
@@ -1375,12 +1677,6 @@ const resetAuthState = () => {
   welcomeBackPasskeyUserId.value = null;
   pendingAccountAction.value = null;
   showPasskeyDialog.value = false;
-  showPasskeyBackupPromptModal.value = false;
-  showPasskeyBackupPinDialog.value = false;
-  passkeyBackupPin.value = '';
-  passkeyBackupPinError.value = '';
-  passkeyBackupPinLoading.value = false;
-  passkeyBackupDoNotAskAgain.value = false;
   showDeepLinkAccess.value = !!deepLinkShareId.value;
   showMoreChoicesConfirmDialog.value = false;
   moreChoicesConfirmKind.value = null;
@@ -1395,25 +1691,21 @@ const resetAuthState = () => {
 const saveLocalSnapshot = async (snapshot?: SignOutSnapshot | null) => {
   if (!user.value?.userId || user.value.isDeepLink || sharedComputerMode.value) return;
   try {
-    const [filesResponse, chatsResponse, statusResponse, summaryResponse] = await Promise.all([
-      fetch(`/api/user-files?userId=${encodeURIComponent(user.value.userId)}`, {
-        credentials: 'include'
-      }),
-      fetch(`/api/user-chats?userId=${encodeURIComponent(user.value.userId)}`, {
-        credentials: 'include'
-      }),
-      fetch(`/api/user-status?userId=${encodeURIComponent(user.value.userId)}`, {
-        credentials: 'include'
-      }),
-      fetch(`/api/patient-summary?userId=${encodeURIComponent(user.value.userId)}`, {
-        credentials: 'include'
-      })
+    // Fetch all user data in parallel (v2: also fetch agent instructions)
+    const uid = encodeURIComponent(user.value.userId);
+    const [filesResponse, chatsResponse, statusResponse, summaryResponse, instrResponse] = await Promise.all([
+      fetch(`/api/user-files?userId=${uid}`, { credentials: 'include' }),
+      fetch(`/api/user-chats?userId=${uid}`, { credentials: 'include' }),
+      fetch(`/api/user-status?userId=${uid}`, { credentials: 'include' }),
+      fetch(`/api/patient-summary?userId=${uid}`, { credentials: 'include' }),
+      fetch(`/api/agent-instructions?userId=${uid}`, { credentials: 'include' }).catch(() => null)
     ]);
 
     const files = filesResponse.ok ? await filesResponse.json() : null;
     const savedChats = chatsResponse.ok ? await chatsResponse.json() : null;
     const status = statusResponse.ok ? await statusResponse.json() : null;
     const summary = summaryResponse.ok ? await summaryResponse.json() : null;
+    const instrData = instrResponse && instrResponse.ok ? await instrResponse.json() : null;
     const filesList = Array.isArray(files?.files) ? files.files : [];
     const indexedSet = new Set(Array.isArray(files?.indexedFiles) ? files.indexedFiles : []);
     const kbName = files?.kbName || null;
@@ -1452,39 +1744,212 @@ const saveLocalSnapshot = async (snapshot?: SignOutSnapshot | null) => {
       patientSummary: summary?.summary || null
     });
 
-    // Also save to local folder if connected
+    // Also save to local folder if connected (v2 state file)
+    const clog = (msg: string) => { console.log(msg); fetch('/api/client-log', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ tag: 'SIGN-OUT', msg }) }).catch(() => {}); };
+    clog(`folderHandle=${!!localFolderHandle.value}, folderName=${localFolderName.value || 'none'}, userId=${user.value?.userId}`);
+    clog(`cloud summary="${(summary?.summary || '').substring(0, 100)}", summaryResponse.ok=${summaryResponse.ok}`);
     if (localFolderHandle.value && user.value?.userId) {
       try {
+        const now = new Date().toISOString();
+        const indexedCount = filesList.filter((f: any) => indexedSet.has(f.bucketKey || '')).length;
+        // Read existing local state so we don't overwrite good data with empty cloud responses
+        let existingState: MaiaState | null = null;
+        try {
+          const { readStateFile } = await import('./utils/localFolder');
+          existingState = await readStateFile(localFolderHandle.value);
+        } catch { /* first time, no existing state */ }
+        clog(`existingState: summary="${(existingState?.patientSummary || '').substring(0, 100)}", files=${existingState?.files?.length || 0}, wizard=${existingState?.wizardComplete}`);
         const state: MaiaState = {
-          version: 1,
+          version: 2,
           userId: user.value.userId,
           displayName: user.value.displayName,
-          updatedAt: new Date().toISOString(),
-          files: filesList.map((f: any) => ({
+          updatedAt: now,
+          exportedAt: now,
+          files: filesList.length > 0 ? filesList.map((f: any) => ({
             fileName: f.fileName,
             size: f.fileSize,
             cloudStatus: indexedSet.has(f.bucketKey || '') ? 'indexed' as const : 'pending' as const,
             bucketKey: f.bucketKey
-          })),
-          currentMedications: status?.currentMedications || null,
-          patientSummary: summary?.summary || null,
-          savedChats: savedChats || undefined,
-          currentChat: snapshot?.currentChat || undefined
+          })) : existingState?.files || [],
+          currentMedications: (status?.currentMedications && status.currentMedications.trim()) ? status.currentMedications : (existingState?.currentMedications || null),
+          patientSummary: (summary?.summary && summary.summary.trim()) ? summary.summary : (existingState?.patientSummary || null),
+          savedChats: (savedChats?.chats?.length || savedChats?.length) ? savedChats : (existingState?.savedChats || undefined),
+          currentChat: snapshot?.currentChat || existingState?.currentChat || undefined,
+          agentInstructions: (instrData?.instructions && instrData.instructions.trim()) ? instrData.instructions : (existingState?.agentInstructions || null),
+          kbStats: indexedCount > 0
+            ? { fileCount: indexedCount, tokenCount: files?.tokenCount || 0 }
+            : existingState?.kbStats || { fileCount: 0, tokenCount: 0 },
+          wizardComplete: status?.workflowStage === 'patient_summary' || existingState?.wizardComplete || false
         };
         await writeStateFile(localFolderHandle.value, state);
-      } catch (e) {
-        console.warn('[localFolder] Failed to save state to local folder:', e);
+
+        // Update identity file lastSync
+        try {
+          const identity = await readIdentityFile(localFolderHandle.value);
+          if (identity) {
+            identity.lastSync = now;
+            await writeIdentityFile(localFolderHandle.value, identity);
+          }
+        } catch {
+          // non-critical
+        }
+
+        // Extract patient name for webloc and known-user display
+        let extractedPatientName: string | null = null;
+        try {
+          const folderUtils = await import('./utils/localFolder');
+          extractedPatientName = typeof folderUtils.extractPatientName === 'function'
+            ? folderUtils.extractPatientName(state.patientSummary)
+            : null;
+        } catch { /* extraction not critical */ }
+
+        // Always update webloc shortcut at sign-out
+        clog(`stateFile written OK. Now writing webloc. userId=${user.value?.userId}`);
+        if (user.value?.userId) {
+          try {
+            const folderUtils = await import('./utils/localFolder');
+            clog(`webloc: patientName=${extractedPatientName || 'none'}, calling writeWeblocFile`);
+            await folderUtils.writeWeblocFile(localFolderHandle.value, window.location.origin, {
+              patientName: extractedPatientName || undefined,
+              userId: user.value.userId
+            });
+            clog(`webloc: WRITTEN SUCCESSFULLY`);
+          } catch (e: any) {
+            clog(`webloc: WRITE FAILED: ${e?.message || e}`);
+          }
+        }
+
+        // Update known-user registry with patient name if available
+        addOrUpdateKnownUser({
+          userId: user.value.userId,
+          displayName: extractedPatientName || user.value.displayName || user.value.userId,
+          folderName: localFolderName.value || localFolderHandle.value.name || null,
+          hasPasskey: !!user.value.hasPasskey,
+          lastActive: new Date().toISOString()
+        });
+      } catch (e: any) {
+        clog(`OUTER CATCH: folder save failed: ${e?.message || e}`);
       }
+    } else {
+      clog(`SKIPPED folder save: folderHandle=${!!localFolderHandle.value}, userId=${user.value?.userId}`);
+    }
+
+    // Update known-user registry (fallback when no folder handle)
+    if (!localFolderHandle.value) {
+      addOrUpdateKnownUser({
+        userId: user.value.userId,
+        displayName: user.value.displayName || user.value.userId,
+        folderName: null,
+        hasPasskey: !!user.value.hasPasskey,
+        lastActive: new Date().toISOString()
+      });
     }
   } catch (error) {
     console.warn('Failed to save local snapshot:', error);
   }
 };
 
+/** Handle "Connect folder" button from the passkey-without-folder dialog. */
+const handleConnectFolderFromDialog = async () => {
+  showConnectFolderDialog.value = false;
+  if (typeof window !== 'undefined' && 'showDirectoryPicker' in window) {
+    try {
+      const handle = await (window as any).showDirectoryPicker({ mode: 'readwrite' });
+      const folderName = handle.name;
+      localFolderHandle.value = handle;
+      localFolderName.value = folderName;
+      passkeyWithoutFolder.value = false;
+      // Store the handle for future reconnection
+      const { storeDirectoryHandle } = await import('./utils/localFolder');
+      if (user.value?.userId) {
+        await storeDirectoryHandle(user.value.userId, handle);
+      }
+      // Read/create identity file
+      const existing = await readIdentityFile(handle);
+      if (!existing && user.value?.userId) {
+        await writeIdentityFile(handle, {
+          userId: user.value.userId,
+          displayName: user.value.displayName || user.value.userId,
+          createdAt: new Date().toISOString(),
+          lastSync: new Date().toISOString()
+        });
+      }
+      console.log(`[AUTH] Folder "${folderName}" connected after passkey sign-in`);
+    } catch (e: any) {
+      if (e?.name !== 'AbortError') {
+        console.warn('[AUTH] Folder picker failed:', e);
+      }
+    }
+  }
+};
+
 /** Handle local-folder-connected event from ChatInterface. */
-const handleLocalFolderConnected = (payload: { handle: FileSystemDirectoryHandle; folderName: string }) => {
+const handleLocalFolderConnected = async (payload: { handle: FileSystemDirectoryHandle; folderName: string }) => {
   localFolderHandle.value = payload.handle;
   localFolderName.value = payload.folderName;
+
+  // Read or create the identity file inside the folder
+  try {
+    const existing = await readIdentityFile(payload.handle);
+    if (existing) {
+      // Folder already belongs to a user
+      if (user.value?.userId && existing.userId !== user.value.userId) {
+        // Identity mismatch — this folder belongs to a different user.
+        // For now, log a warning; Phase 3 will add a conflict dialog.
+        console.warn(`[IDENTITY] Folder "${payload.folderName}" belongs to ${existing.userId}, but current user is ${user.value.userId}`);
+      }
+    } else if (user.value?.userId) {
+      // New folder — stamp it with the current user's identity
+      const identity: MaiaIdentity = {
+        userId: user.value.userId,
+        displayName: user.value.displayName || user.value.userId,
+        createdAt: new Date().toISOString(),
+        lastSync: new Date().toISOString()
+      };
+      await writeIdentityFile(payload.handle, identity);
+    }
+  } catch (e) {
+    console.warn('[localFolder] Identity file check failed:', e);
+  }
+
+  // Register in the multi-user registry
+  if (user.value?.userId) {
+    addOrUpdateKnownUser({
+      userId: user.value.userId,
+      displayName: user.value.displayName || user.value.userId,
+      folderName: payload.folderName,
+      hasPasskey: false,
+      lastActive: new Date().toISOString()
+    });
+    setActiveUserId(user.value.userId);
+  }
+};
+
+/** [WIZARD] Save state to local folder when wizard completes (so maia-state.json is current). */
+const handleWizardComplete = async () => {
+  console.log('[WIZARD-COMPLETE] Wizard finished, saving local state snapshot...');
+  try {
+    await saveLocalSnapshot(null);
+    console.log('[WIZARD-COMPLETE] Local state saved successfully');
+    // Also update the webloc NOW (don't wait for sign-out) since the patient summary is fresh
+    if (localFolderHandle.value && user.value?.userId) {
+      try {
+        const { readStateFile, writeWeblocFile } = await import('./utils/localFolder');
+        const currentState = await readStateFile(localFolderHandle.value);
+        const { extractPatientName } = await import('./utils/localFolder');
+        const patientName = extractPatientName(currentState?.patientSummary);
+        await writeWeblocFile(localFolderHandle.value, window.location.origin, {
+          patientName: patientName || undefined,
+          userId: user.value.userId
+        });
+        console.log(`[WIZARD-COMPLETE] Webloc written: patientName=${patientName || 'none'}, userId=${user.value.userId}`);
+      } catch (e) {
+        console.warn('[WIZARD-COMPLETE] Webloc update failed:', e);
+      }
+    }
+  } catch (e) {
+    console.warn('[WIZARD-COMPLETE] Failed to save local state:', e);
+  }
 };
 
 /** Detect whether the browser is Chrome (not Edge, not Opera). */
@@ -1595,7 +2060,20 @@ const performSignOut = async () => {
 const handleDormantSignOut = async () => {
   if (!user.value?.userId) return;
 
-  // If no persistent folder handle, prompt user to choose a folder for saving updated files
+  // Try to reconnect the local folder handle if missing.
+  // Pass requestWrite:true — the Sign Out button click is a user gesture,
+  // so Chrome will show its "allow access" prompt if permission expired.
+  if (!localFolderHandle.value && user.value.userId) {
+    try {
+      const result = await readStateFileByUserId(user.value.userId, { requestWrite: true });
+      if (result) {
+        localFolderHandle.value = result.handle;
+        console.log(`[SIGN-OUT] Reconnected folder handle for ${user.value.userId}`);
+      }
+    } catch { /* not available */ }
+  }
+
+  // If still no persistent folder handle, prompt user to choose a folder for saving updated files
   if (!localFolderHandle.value && !sharedComputerMode.value) {
     showSignOutFolderPrompt.value = true;
     return;
@@ -1707,35 +2185,13 @@ const clearWizardPendingKey = (userId?: string | null) => {
   }
 };
 
-/** [AUTH] RESTORE FROM LOCAL FOLDER: create new temp session and run restore from IndexedDB snapshot. */
-const handleRestoreFromLocalFolder = async () => {
-  const localId = welcomeLocalUserId.value;
-  if (!localId) return;
-  tempStartLoading.value = true;
-  tempStartError.value = '';
-  try {
-    const newUser = await createTemporarySession();
-    if (!newUser) return;
-    const snapshot = await getUserSnapshot(localId);
-    if (snapshot) {
-      restoreSnapshot.value = snapshot;
-      suppressWizard.value = false;
-      clearWizardPendingKey(localId);
-      await handleRestoreSnapshot();
-    } else {
-      if ($q && typeof $q.notify === 'function') {
-        $q.notify({ type: 'info', message: 'No local backup found. Use the wizard to set up your account.', timeout: 4000 });
-      }
-    }
-  } catch (error) {
-    tempStartError.value = error instanceof Error ? error.message : 'Unable to start restore';
-  } finally {
-    tempStartLoading.value = false;
-  }
-};
-
 /** [AUTH] Open delete confirmation dialog for local userId from welcome page. */
-const handleDeleteLocalUser = () => {
+const handleDeleteLocalUser = (userIdOrEvent?: string | Event) => {
+  // Accept userId from card close button or use current welcomeLocalUserId
+  if (typeof userIdOrEvent === 'string') {
+    welcomeLocalUserId.value = userIdOrEvent;
+    selectedWelcomeUserId.value = userIdOrEvent;
+  }
   showDeleteLocalUserDialog.value = true;
 };
 
@@ -1743,6 +2199,7 @@ const handleDeleteLocalUser = () => {
 const confirmDeleteLocalUser = async () => {
   const localId = welcomeLocalUserId.value;
   if (!localId) return;
+  console.log(`[WELCOME] DELETE requested for ${localId}`);
   deleteLocalUserLoading.value = true;
   try {
     // Best-effort server-side delete (user may have no cloud account)
@@ -1757,16 +2214,35 @@ const confirmDeleteLocalUser = async () => {
     }
     // Clear all local data
     await clearUserSnapshot(localId);
-    clearLastSnapshotUserId();
     clearWizardPendingKey(localId);
+    // Remove from known users registry, clear active user, and clear stored folder handle
+    removeKnownUser(localId);
+    // Clear active user if it matches the deleted user, so refreshKnownUsers won't resurrect it
+    if (getActiveUserId() === localId) {
+      setActiveUserId(null);
+    }
+    try {
+      await clearDirectoryHandle(localId);
+    } catch { /* non-fatal */ }
+    // Clear the httpOnly temp-user cookie so /api/welcome-status doesn't re-surface this user
+    await fetch('/api/auth/clear-temp-cookie', { method: 'POST', credentials: 'include' }).catch(() => {});
+    refreshKnownUsers();
+    selectedWelcomeUserId.value = knownUsers.value[0]?.userId || null;
     // Reset welcome state so GET STARTED creates a new userId
     welcomeLocalUserId.value = null;
     welcomeLocalSnapshot.value = null;
     welcomeLocalHasPasskey.value = null;
     welcomeAgentExists.value = null;
     welcomeCloudFileCount.value = null;
+    welcomeKbExists.value = null;
+    welcomeAgentLinkedToKb.value = null;
+    welcomeWizardComplete.value = null;
+    welcomeSavedFileCount.value = null;
     welcomeStatus.value = {};
     showDeleteLocalUserDialog.value = false;
+    console.log(`[WELCOME] DELETE complete for ${localId}: knownUsers=${JSON.stringify(knownUsers.value.map(u => u.userId))}, activeUser=${getActiveUserId()}`);
+    // Reload welcome status to reflect the deletion
+    void loadWelcomeStatus();
     if ($q && typeof $q.notify === 'function') {
       $q.notify({ type: 'positive', message: `${localId} deleted. Click GET STARTED to create a new account.`, timeout: 5000 });
     }
@@ -1777,51 +2253,54 @@ const confirmDeleteLocalUser = async () => {
   }
 };
 
-const handleClearLocalBackup = () => {
-  clearLastSnapshotUserId();
-  pendingLocalUserId.value = null;
-  showMissingAgentDialog.value = false;
-  startTemporarySession();
-};
-
-const handleStartWizardAgain = () => {
-  clearLastSnapshotUserId();
-  pendingLocalUserId.value = null;
-  showMissingAgentDialog.value = false;
-  startTemporarySession();
-};
 
 const handleCloudRestore = async () => {
   if (!user.value?.userId) return;
   cloudHealthLoading.value = true;
   try {
-    // Try IndexedDB snapshot first
-    const snapshot = await getUserSnapshot(user.value.userId);
-    if (snapshot) {
-      restoreSnapshot.value = snapshot;
+    // Try to read local state from folder first, then fall back to IndexedDB
+    let localState: MaiaState | null = null;
+    if (localFolderHandle.value) {
+      const { readStateFile } = await import('./utils/localFolder');
+      localState = await readStateFile(localFolderHandle.value);
+    }
+    if (!localState) {
+      // Fall back to IndexedDB snapshot, convert to MaiaState shape
+      const snapshot = await getUserSnapshot(user.value.userId);
+      if (snapshot) {
+        localState = {
+          version: 1,
+          userId: user.value.userId,
+          displayName: user.value.displayName,
+          updatedAt: snapshot.updatedAt || new Date().toISOString(),
+          files: Array.isArray(snapshot.fileStatusSummary) ? snapshot.fileStatusSummary.map((f: any) => ({
+            fileName: f.fileName,
+            bucketKey: f.bucketKey,
+            cloudStatus: f.chipStatus
+          })) : undefined,
+          currentMedications: snapshot.currentMedications || null,
+          patientSummary: snapshot.patientSummary || null,
+          savedChats: snapshot.savedChats || undefined,
+          currentChat: snapshot.currentChat || undefined
+        };
+      }
+    }
+    if (!localState) {
       showCloudHealthDialog.value = false;
       cloudHealthDetails.value = null;
-      await handleRestoreSnapshot();
+      if ($q && typeof $q.notify === 'function') {
+        $q.notify({ type: 'warning', message: 'No local backup found. You may need to re-upload your files.', timeout: 5000 });
+      }
       return;
     }
-    // No snapshot — just close dialog and let user proceed normally
+    // Launch the Restore Wizard
+    restoreWizardLocalState.value = localState;
     showCloudHealthDialog.value = false;
-    cloudHealthDetails.value = null;
-    if ($q && typeof $q.notify === 'function') {
-      $q.notify({
-        type: 'warning',
-        message: 'No local backup found. You may need to re-upload your files.',
-        timeout: 5000
-      });
-    }
+    showRestoreWizard.value = true;
   } catch (e) {
     console.error('[cloud-health] Restore failed:', e);
     if ($q && typeof $q.notify === 'function') {
-      $q.notify({
-        type: 'negative',
-        message: 'Restore failed: ' + (e instanceof Error ? e.message : String(e)),
-        timeout: 5000
-      });
+      $q.notify({ type: 'negative', message: 'Restore failed: ' + (e instanceof Error ? e.message : String(e)), timeout: 5000 });
     }
   } finally {
     cloudHealthLoading.value = false;
@@ -1835,7 +2314,8 @@ const handleCloudStartFresh = async () => {
     const uid = user.value.userId;
     await clearUserSnapshot(uid);
     await clearDirectoryHandle(uid);
-    clearLastSnapshotUserId();
+    removeKnownUser(uid);
+    if (getActiveUserId() === uid) setActiveUserId(null);
     showCloudHealthDialog.value = false;
     cloudHealthDetails.value = null;
     if ($q && typeof $q.notify === 'function') {
@@ -1849,6 +2329,165 @@ const handleCloudStartFresh = async () => {
     console.error('[cloud-health] Start fresh failed:', e);
   } finally {
     cloudHealthLoading.value = false;
+  }
+};
+
+/** Phase 7: Restore Wizard completed — close dialog, clear health state, notify user. */
+const handleRestoreWizardComplete = async () => {
+  showRestoreWizard.value = false;
+  restoreWizardLocalState.value = null;
+  cloudHealthDetails.value = null;
+  suppressWizard.value = true; // Don't re-enter the wizard flow
+  // Mark wizard as complete on the server so it doesn't re-trigger
+  if (user.value?.userId) {
+    try {
+      await fetch('/api/user-status', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ userId: user.value.userId, workflowStage: 'patient_summary' })
+      });
+    } catch { /* non-critical */ }
+  }
+  // Re-stamp maia-identity.json with the current userId (may differ from the original after restore)
+  if (localFolderHandle.value && user.value?.userId) {
+    try {
+      const existing = await readIdentityFile(localFolderHandle.value);
+      const identity: MaiaIdentity = {
+        userId: user.value.userId,
+        displayName: user.value.displayName || user.value.userId,
+        createdAt: existing?.createdAt || new Date().toISOString(),
+        lastSync: new Date().toISOString()
+      };
+      await writeIdentityFile(localFolderHandle.value, identity);
+      // Also store the handle under the new userId for future reconnection
+      const { storeDirectoryHandle } = await import('./utils/localFolder');
+      await storeDirectoryHandle(user.value.userId, localFolderHandle.value);
+      // Update known users registry
+      addOrUpdateKnownUser({
+        userId: user.value.userId,
+        displayName: user.value.displayName || user.value.userId,
+        folderName: localFolderName.value || localFolderHandle.value.name,
+        hasPasskey: !!user.value.hasPasskey,
+        lastActive: new Date().toISOString()
+      });
+      console.log(`[RESTORE] Re-stamped identity and handle for ${user.value.userId}`);
+    } catch (e) {
+      console.warn('[RESTORE] Failed to re-stamp identity:', e);
+    }
+  }
+  if ($q && typeof $q.notify === 'function') {
+    $q.notify({ type: 'positive', message: 'Account restored successfully!', timeout: 3000 });
+  }
+};
+
+/** Handle "Restore" from destroyed account dialog — recreate user doc then launch RestoreWizard */
+const handleDestroyedRestore = async () => {
+  const uid = destroyedUserId.value;
+  if (!uid) return;
+  cloudHealthLoading.value = true;
+  try {
+    // Step 1: Recreate the user doc in CouchDB
+    const recreateResp = await fetch('/api/account/recreate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify({ userId: uid })
+    });
+    const recreateData = await recreateResp.json();
+    if (!recreateResp.ok || !recreateData.authenticated) {
+      throw new Error(recreateData.error || 'Failed to recreate account');
+    }
+    // Sign in with the recreated user
+    setAuthenticatedUser(recreateData.user, null);
+    showDestroyedRestoreDialog.value = false;
+
+    // Step 2: Read local state from folder or IndexedDB
+    let localState: MaiaState | null = null;
+    if (localFolderHandle.value) {
+      const { readStateFile } = await import('./utils/localFolder');
+      localState = await readStateFile(localFolderHandle.value);
+    }
+    if (!localState) {
+      const snapshot = await getUserSnapshot(uid);
+      if (snapshot) {
+        localState = {
+          version: 1,
+          userId: uid,
+          displayName: recreateData.user?.displayName || uid,
+          updatedAt: snapshot.updatedAt || new Date().toISOString(),
+          files: Array.isArray(snapshot.fileStatusSummary) ? snapshot.fileStatusSummary.map((f: any) => ({
+            fileName: f.fileName,
+            bucketKey: f.bucketKey,
+            cloudStatus: f.chipStatus
+          })) : undefined,
+          currentMedications: snapshot.currentMedications || null,
+          patientSummary: snapshot.patientSummary || null,
+          savedChats: snapshot.savedChats || undefined,
+          currentChat: snapshot.currentChat || undefined
+        };
+      }
+    }
+
+    // Step 3: Check cloud health (everything should be missing)
+    const healthResp = await fetch(
+      `/api/cloud-health?userId=${encodeURIComponent(uid)}`,
+      { credentials: 'include' }
+    );
+    if (healthResp.ok) {
+      const health = await healthResp.json();
+      cloudHealthDetails.value = health.details || {
+        database: { ok: true },
+        agent: { ok: false, error: 'Not deployed' },
+        knowledgeBase: { ok: false, error: 'Not created' },
+        spacesFiles: { ok: false, error: 'No files' }
+      };
+    }
+
+    // Step 4: Launch the Restore Wizard
+    if (localState) {
+      restoreWizardLocalState.value = localState;
+      showRestoreWizard.value = true;
+    } else {
+      // No local state — just notify, they'll need to re-upload manually
+      if ($q && typeof $q.notify === 'function') {
+        $q.notify({
+          type: 'warning',
+          message: 'Account recreated but no local backup found. Please re-upload your files.',
+          timeout: 5000
+        });
+      }
+    }
+  } catch (e) {
+    console.error('[DESTROYED-RESTORE] Error:', e);
+    if ($q && typeof $q.notify === 'function') {
+      $q.notify({ type: 'negative', message: 'Restore failed: ' + (e instanceof Error ? e.message : String(e)), timeout: 5000 });
+    }
+  } finally {
+    cloudHealthLoading.value = false;
+  }
+};
+
+/** Handle "Start Fresh" from destroyed account dialog — clear cookie and create new account */
+const handleDestroyedStartFresh = async () => {
+  showDestroyedRestoreDialog.value = false;
+  destroyedUserId.value = null;
+  tempStartLoading.value = true;
+  try {
+    const response = await fetch('/api/temporary/start', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify({ forceNew: true })
+    });
+    const data = await response.json();
+    if (data.authenticated && data.user) {
+      setAuthenticatedUser(data.user, null);
+    }
+  } catch (e) {
+    console.error('[DESTROYED-FRESH] Error:', e);
+  } finally {
+    tempStartLoading.value = false;
   }
 };
 
@@ -1890,6 +2529,13 @@ const createTemporarySession = async () => {
     passkeyPrefillUserId.value = data.user.userId;
     passkeyPrefillAction.value = 'signin';
     showAuth.value = true;
+    return null;
+  }
+  // Account was destroyed but cookie still exists — offer restore from local folder
+  if (data.destroyed && data.destroyedUserId) {
+    destroyedUserId.value = data.destroyedUserId;
+    showDestroyedRestoreDialog.value = true;
+    tempStartLoading.value = false;
     return null;
   }
   if (!data.authenticated || !data.user) {
@@ -2019,7 +2665,6 @@ const handleRestoreSnapshot = async () => {
         console.warn('Failed to restore patient summary:', summaryError);
       }
     }
-    clearLastSnapshotUserId();
     if ($q && typeof $q.notify === 'function') {
       $q.notify({
         type: 'positive',
@@ -2134,104 +2779,7 @@ const handleSignOut = async (snapshot?: SignOutSnapshot) => {
     console.warn('Unable to check deep links for sign-out:', error);
   }
 
-  const hasLocalBackup = getLastSnapshotUserId() === user.value?.userId;
-  if (!hasLocalBackup && !getPasskeyBackupPromptSkip()) {
-    passkeyBackupDoNotAskAgain.value = false;
-    showPasskeyBackupPromptModal.value = true;
-    return;
-  }
   await handleDormantSignOut();
-};
-
-const onPasskeyBackupNo = () => {
-  if (passkeyBackupDoNotAskAgain.value) {
-    setPasskeyBackupPromptSkip(true);
-  }
-  showPasskeyBackupPromptModal.value = false;
-  void handleDormantSignOut();
-};
-
-// onPasskeyBackupYes removed — backup prompt replaced with info-only modal
-
-const closePasskeyBackupPinDialog = () => {
-  showPasskeyBackupPinDialog.value = false;
-  passkeyBackupPin.value = '';
-  passkeyBackupPinError.value = '';
-  passkeyBackupPinLoading.value = false;
-  void handleDormantSignOut();
-};
-
-const buildSnapshotPayloadForUser = async (): Promise<{
-  user: { userId: string; displayName?: string; isTemporary?: boolean; isAdmin?: boolean };
-  files: any;
-  savedChats: any;
-  currentChat: any;
-  currentMedications: any;
-  initialFile: any;
-  fileStatusSummary: any[];
-  patientSummary: any;
-} | null> => {
-  if (!user.value?.userId) return null;
-  const [filesResponse, chatsResponse, statusResponse, summaryResponse] = await Promise.all([
-    fetch(`/api/user-files?userId=${encodeURIComponent(user.value.userId)}`, { credentials: 'include' }),
-    fetch(`/api/user-chats?userId=${encodeURIComponent(user.value.userId)}`, { credentials: 'include' }),
-    fetch(`/api/user-status?userId=${encodeURIComponent(user.value.userId)}`, { credentials: 'include' }),
-    fetch(`/api/patient-summary?userId=${encodeURIComponent(user.value.userId)}`, { credentials: 'include' })
-  ]);
-  const files = filesResponse.ok ? await filesResponse.json() : null;
-  const savedChats = chatsResponse.ok ? await chatsResponse.json() : null;
-  const status = statusResponse.ok ? await statusResponse.json() : null;
-  const summary = summaryResponse.ok ? await summaryResponse.json() : null;
-  const filesList = Array.isArray(files?.files) ? files.files : [];
-  const indexedSet = new Set(Array.isArray(files?.indexedFiles) ? files.indexedFiles : []);
-  const kbName = files?.kbName || null;
-  const fileStatusSummary = filesList.map((file: any) => {
-    const bucketKey = file.bucketKey || '';
-    const kbFolderPrefix = kbName ? `${user.value?.userId}/${kbName}/` : null;
-    const inKnowledgeBase = kbFolderPrefix ? (file.bucketKey || '').startsWith(kbFolderPrefix) : false;
-    let chipStatus: 'indexed' | 'pending' | 'not_in_kb' = 'not_in_kb';
-    if (inKnowledgeBase && indexedSet.has(bucketKey)) chipStatus = 'indexed';
-    else if (inKnowledgeBase && !indexedSet.has(bucketKey)) chipStatus = 'pending';
-    return { fileName: file.fileName, bucketKey, chipStatus };
-  });
-  return {
-    user: {
-      userId: user.value.userId,
-      displayName: user.value.displayName,
-      isTemporary: user.value.isTemporary,
-      isAdmin: user.value.isAdmin
-    },
-    files,
-    savedChats,
-    currentChat: signOutSnapshot.value?.currentChat || null,
-    currentMedications: status?.currentMedications || null,
-    initialFile: status?.initialFile || null,
-    fileStatusSummary,
-    patientSummary: summary?.summary || null
-  };
-};
-
-const submitPasskeyBackupPin = async () => {
-  const pin = (passkeyBackupPin.value || '').trim();
-  if (pin.length !== 4 || !/^\d{4}$/.test(pin)) {
-    passkeyBackupPinError.value = 'Enter a 4-digit PIN';
-    return;
-  }
-  passkeyBackupPinError.value = '';
-  passkeyBackupPinLoading.value = true;
-  try {
-    const payload = await buildSnapshotPayloadForUser();
-    if (!payload) throw new Error('Could not build backup');
-    await saveUserSnapshotEncrypted(payload, pin);
-    showPasskeyBackupPinDialog.value = false;
-    passkeyBackupPin.value = '';
-    passkeyBackupPinError.value = '';
-    passkeyBackupPinLoading.value = false;
-    await handleDormantSignOut();
-  } catch (e) {
-    passkeyBackupPinError.value = e instanceof Error ? e.message : 'Failed to save encrypted backup';
-    passkeyBackupPinLoading.value = false;
-  }
 };
 
 const handleTemporarySignOut = async () => {
@@ -2243,19 +2791,20 @@ const startTemporarySession = async () => {
   tempStartLoading.value = true;
   tempStartError.value = '';
   try {
-    const lastSnapshotUserId = getLastSnapshotUserId();
-    if (lastSnapshotUserId) {
+    // Use the selected user from multi-user selector, fall back to active user in knownUsers
+    const activeUserId = selectedWelcomeUserId.value || getActiveUserId();
+    if (activeUserId) {
       // If the stored user has a passkey, guide them to sign in instead of restoring as temporary
       try {
-        const checkResponse = await fetch(`/api/passkey/check-user?userId=${encodeURIComponent(lastSnapshotUserId)}`, {
+        const checkResponse = await fetch(`/api/passkey/check-user?userId=${encodeURIComponent(activeUserId)}`, {
           credentials: 'include'
         });
         if (checkResponse.ok) {
           const checkData = await checkResponse.json();
           if (checkData.exists && checkData.hasPasskey) {
-            passkeyPrefillUserId.value = lastSnapshotUserId;
+            passkeyPrefillUserId.value = activeUserId;
             passkeyPrefillAction.value = 'signin';
-            welcomeBackPasskeyUserId.value = lastSnapshotUserId;
+            welcomeBackPasskeyUserId.value = activeUserId;
             showAuth.value = true;
             return;
           }
@@ -2264,7 +2813,7 @@ const startTemporarySession = async () => {
         // If check fails, continue with restore flow
       }
 
-      const agentResponse = await fetch(`/api/agent-exists?userId=${encodeURIComponent(lastSnapshotUserId)}`);
+      const agentResponse = await fetch(`/api/agent-exists?userId=${encodeURIComponent(activeUserId)}`);
       const agentData = agentResponse.ok ? await agentResponse.json() : null;
       if (agentData && agentData.exists) {
         const restoreResponse = await fetch('/api/temporary/restore', {
@@ -2273,7 +2822,7 @@ const startTemporarySession = async () => {
             'Content-Type': 'application/json'
           },
           credentials: 'include',
-          body: JSON.stringify({ userId: lastSnapshotUserId })
+          body: JSON.stringify({ userId: activeUserId })
         });
         const restoreData = await restoreResponse.json();
         if (restoreResponse.ok && restoreData.authenticated && restoreData.user) {
@@ -2282,28 +2831,42 @@ const startTemporarySession = async () => {
           throw new Error(restoreData.error || 'Unable to restore temporary account');
         }
       } else if (agentResponse.ok) {
-        pendingLocalUserId.value = lastSnapshotUserId;
-        missingAgentUserId.value = lastSnapshotUserId;
-        showMissingAgentDialog.value = true;
+        // Agent missing — update cloud status to show RESTORE card on Welcome page
+        const statusMap = { ...welcomeUserCloudStatus.value };
+        statusMap[activeUserId] = 'restore';
+        welcomeUserCloudStatus.value = statusMap;
         tempStartLoading.value = false;
         return;
       }
     } else {
+      // Phase 4: If known users exist, confirm before creating a new account
+      if (knownUsers.value.length > 0) {
+        const names = knownUsers.value.map(u => u.displayName).join(', ');
+        newAccountConfirmMessage.value = `You already have account(s) on this device (${names}). Create a new account for a different family member?`;
+        showNewAccountConfirmDialog.value = true;
+        pendingNewAccountCallback.value = async () => {
+          const newUser = await createTemporarySession();
+          if (!newUser) return;
+          tempStartLoading.value = false;
+        };
+        tempStartLoading.value = false;
+        return;
+      }
       const newUser = await createTemporarySession();
       if (!newUser) return;
     }
 
     const effectiveUserId = user.value?.userId;
-    if (lastSnapshotUserId && lastSnapshotUserId === effectiveUserId) {
+    if (activeUserId && activeUserId === effectiveUserId) {
       // Skip restore dialog if cloud is already valid (agent + spaces in sync)
       if (welcomeCloudValid.value !== true) {
         try {
-          const snapshot = await getUserSnapshot(lastSnapshotUserId);
+          const snapshot = await getUserSnapshot(activeUserId);
           if (snapshot) {
             restoreSnapshot.value = snapshot;
             showRestoreDialog.value = true;
             suppressWizard.value = true;
-            clearWizardPendingKey(lastSnapshotUserId);
+            clearWizardPendingKey(activeUserId);
             clearWizardPendingKey(effectiveUserId);
           }
         } catch (restoreError) {
@@ -2371,6 +2934,8 @@ const destroyTemporaryAccount = async () => {
       throw new Error(data.error || 'Failed to delete temporary account');
     }
     await clearUserSnapshot(userIdToDelete);
+    removeKnownUser(userIdToDelete);
+    knownUsers.value = knownUsers.value.filter(u => u.userId !== userIdToDelete);
     resetAuthState();
     showDestroyDialog.value = false;
   } catch (error) {
@@ -2387,22 +2952,19 @@ const handleDeepLinkInfoUpdate = (info: DeepLinkInfo | null) => {
   deepLinkInfo.value = info;
 };
 
-const loadWelcomeCaption = async () => {
+const loadWelcomeIntro = async () => {
   try {
-    const response = await fetch('/api/welcome-caption', {
-      credentials: 'include'
-    });
-    
-    if (response.ok) {
-      const data = await response.json();
-      welcomeCaption.value = data.caption || '';
-    } else {
-      console.warn('Failed to load welcome caption:', response.statusText);
-      // Fallback to empty string - will show "Loading..." in template
-    }
+    const response = await fetch('/welcome.md', { cache: 'no-cache' });
+    if (!response.ok) return;
+    const text = await response.text();
+    const marker = '<!-- SECTION:introduction -->';
+    const start = text.indexOf(marker);
+    if (start === -1) return;
+    const contentStart = start + marker.length;
+    const nextMarker = text.indexOf('<!-- SECTION:', contentStart);
+    welcomeIntro.value = (nextMarker === -1 ? text.slice(contentStart) : text.slice(contentStart, nextMarker)).trim();
   } catch (error) {
-    console.error('Error loading welcome caption:', error);
-    // Fallback to empty string - will show "Loading..." in template
+    console.error('Error loading welcome intro:', error);
   }
 };
 
@@ -2431,9 +2993,25 @@ if (typeof document !== 'undefined') {
   document.title = DEFAULT_TITLE;
 }
 
+// Phase 6: beforeunload warning for non-Chrome browsers with unsaved changes
+const beforeUnloadHandler = (e: BeforeUnloadEvent) => {
+  if (authenticated.value && sessionDirty.value && folderAccessTier.value !== 'chrome') {
+    e.preventDefault();
+    e.returnValue = '';
+  }
+};
+
 onMounted(async () => {
-  // Load welcome caption
-  loadWelcomeCaption();
+  // Migrate single-user localStorage to multi-user registry (one-time)
+  migrateToKnownUsers();
+  // Reconcile: recover userIds from IndexedDB folder handles (survives localStorage clear)
+  await reconcileKnownUsers();
+
+  // Phase 6: Register beforeunload listener
+  window.addEventListener('beforeunload', beforeUnloadHandler);
+
+  // Load welcome introduction from welcome.md
+  loadWelcomeIntro();
   
   // Check for admin page route
   const isAdminPage = window.location.pathname === '/admin';
@@ -2526,11 +3104,7 @@ onMounted(async () => {
 
   if (!share) {
     await loadWelcomeStatus();
-    // Auto-launch for returning cookie users — skip welcome page
-    if (welcomeStatus.value.tempCookieUserId) {
-      startTemporarySession();
-      return;
-    }
+    // Welcome page always shows — user clicks CONTINUE/SIGN IN on their card
   }
 
   if (share) {
@@ -2595,26 +3169,24 @@ onMounted(async () => {
   padding: 0 !important;
 }
 
-.welcome-caption {
+.welcome-intro {
   background-color: #f5f5f5;
   border-radius: 4px;
-  column-count: 2;
-  column-gap: 24px;
-  column-fill: balance;
 }
 
-.welcome-caption hr:last-child {
-  display: none;
+.welcome-footer-link {
+  color: #1976d2;
+  text-decoration: none;
+  font-size: 0.9rem;
+  cursor: pointer;
+}
+
+.welcome-footer-link:hover {
+  text-decoration: underline;
 }
 
 .more-choices-card .more-choices-actions .q-btn {
   min-height: 44px;
-}
-
-@media (max-width: 768px) {
-  .welcome-caption {
-    column-count: 1;
-  }
 }
 </style>
 
