@@ -4401,10 +4401,9 @@ app.post('/api/save-group-chat', async (req, res) => {
     const result = await cloudant.saveDocument('maia_chats', groupChatDoc);
     
     // Set workflowStage to link_stored when chat is saved with shareId
-    // but don't downgrade from patient_summary (wizard already completed)
     try {
       const userDoc = await cloudant.getDocument('maia_users', effectiveUserId);
-      if (userDoc && userDoc.workflowStage !== 'patient_summary') {
+      if (userDoc) {
         userDoc.workflowStage = 'link_stored';
         await cloudant.saveDocument('maia_users', userDoc);
       }
@@ -4527,10 +4526,9 @@ app.put('/api/save-group-chat/:chatId', async (req, res) => {
     await cloudant.saveDocument('maia_chats', existingChat);
 
     // Keep workflowStage in sync when chats are updated
-    // but don't downgrade from patient_summary (wizard already completed)
     try {
       const userDoc = await cloudant.getDocument('maia_users', effectiveUserId);
-      if (userDoc && userDoc.workflowStage !== 'patient_summary') {
+      if (userDoc) {
         userDoc.workflowStage = 'link_stored';
         await cloudant.saveDocument('maia_users', userDoc);
       }
@@ -8645,18 +8643,16 @@ app.post('/api/restore', async (req, res) => {
       }
     }
 
-    // 7. Mark wizard as complete so setup wizard doesn't re-appear after restore
+    // 7. Update restore metadata (wizard completion is now derived from data presence,
+    // not from flags — having patientSummary + currentMedications + agent + KB = complete)
     try {
       await saveUserDocWithRetry(cloudant, userId, (doc) => {
         doc.workflowStage = 'patient_summary';
-        doc.wizardComplete = true;
-        doc.medsVerified = !!(currentMedications || doc.currentMedications);
-        doc.summaryVerified = !!(patientSummary || doc.patientSummary);
         doc.restoredAt = new Date().toISOString();
         doc.updatedAt = new Date().toISOString();
       });
     } catch (err) {
-      results.errors.push(`Wizard flags: ${err.message}`);
+      results.errors.push(`Restore metadata: ${err.message}`);
     }
 
     res.json({ success: true, results });
