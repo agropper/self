@@ -952,17 +952,17 @@ const welcomeUserType = computed(() => {
 });
 
 /** [AUTH] True when cloud account is fully set up: KB exists with saved files, agent linked, wizard complete. */
+// wizardComplete from the server is derived from data presence (has agent + KB + endpoint +
+// patientSummary + currentMedications), so it already implies kb and linked are ok.
 const welcomeCloudValid = computed(() => {
   if (!welcomeLocalUserId.value) return null;
   const snap = welcomeLocalSnapshot.value;
   const savedCount = welcomeSavedFileCount.value;
-  const kbOk = welcomeKbExists.value === true;
-  const linkedOk = welcomeAgentLinkedToKb.value === true;
   const wizardOk = welcomeWizardComplete.value === true;
   // Saved files in cloud match or exceed local snapshot count
   const filesOk = savedCount !== null && (!snap || snap.fileCount === 0 || savedCount >= snap.fileCount);
-  const valid = kbOk && linkedOk && wizardOk && filesOk;
-  console.log(`[WELCOME] cloudValid: kb=${kbOk}, linked=${linkedOk}, wizard=${wizardOk}, files=${savedCount}/${snap?.fileCount ?? '?'} → ${valid}`);
+  const valid = wizardOk && filesOk;
+  console.log(`[WELCOME] cloudValid: wizard=${wizardOk}, files=${savedCount}/${snap?.fileCount ?? '?'} → ${valid}`);
   return valid;
 });
 
@@ -983,10 +983,9 @@ const checkAllUserCloudStatus = async () => {
       const resp = await fetch(`/api/agent-exists?userId=${encodeURIComponent(u.userId)}`);
       if (resp.ok) {
         const data = await resp.json();
-        const kbOk = !!data.kbExists;
-        const linkedOk = !!data.agentLinkedToKb;
-        const wizardOk = !!data.wizardComplete;
-        statusMap[u.userId] = (kbOk && linkedOk && wizardOk) ? 'ready' : 'restore';
+        // wizardComplete is derived from data presence on the server
+        // (has agent + KB + endpoint + patientSummary + currentMedications)
+        statusMap[u.userId] = data.wizardComplete ? 'ready' : 'restore';
       } else {
         statusMap[u.userId] = 'restore';
       }
@@ -1304,7 +1303,7 @@ const loadWelcomeStatus = async () => {
             localIndexedCount = Array.isArray(folderState.files) ? folderState.files.filter(f => f.cloudStatus === 'indexed').length : 0;
             localMedsVerified = !!(folderState.currentMedications != null && String(folderState.currentMedications).trim() !== '');
             localSummaryVerified = !!(folderState.patientSummary != null && String(folderState.patientSummary).trim() !== '');
-            localWizardComplete = !!folderState.wizardComplete;
+            localWizardComplete = localMedsVerified && localSummaryVerified;
             console.log(`[WELCOME] local folder state for ${localId}: files=${localFileCount}, indexed=${localIndexedCount}, medsVerified=${localMedsVerified}, summaryVerified=${localSummaryVerified}, wizardComplete=${localWizardComplete}`);
           }
         } catch (e) {
@@ -1862,7 +1861,11 @@ const saveLocalSnapshot = async (snapshot?: SignOutSnapshot | null) => {
           kbStats: indexedCount > 0
             ? { fileCount: indexedCount, tokenCount: files?.tokenCount || 0 }
             : existingState?.kbStats || { fileCount: 0, tokenCount: 0 },
-          wizardComplete: status?.wizardComplete || status?.workflowStage === 'patient_summary' || existingState?.wizardComplete || false
+          // Derive wizard completion from data presence: has meds + summary + files = complete
+          wizardComplete: !!(
+            ((status?.currentMedications && status.currentMedications.trim()) || existingState?.currentMedications) &&
+            ((summary?.summary && summary.summary.trim()) || existingState?.patientSummary)
+          )
         };
         await writeStateFile(localFolderHandle.value, state);
 
