@@ -8646,11 +8646,13 @@ app.post('/api/restore', async (req, res) => {
     // 7. Update restore metadata (wizard completion is now derived from data presence,
     // not from flags — having patientSummary + currentMedications + agent + KB = complete)
     try {
-      await saveUserDocWithRetry(cloudant, userId, (doc) => {
-        doc.workflowStage = 'patient_summary';
-        doc.restoredAt = new Date().toISOString();
-        doc.updatedAt = new Date().toISOString();
-      });
+      const userDoc = await cloudant.getDocument('maia_users', userId);
+      if (userDoc) {
+        userDoc.workflowStage = 'patient_summary';
+        userDoc.restoredAt = new Date().toISOString();
+        userDoc.updatedAt = new Date().toISOString();
+        await cloudant.saveDocument('maia_users', userDoc);
+      }
     } catch (err) {
       results.errors.push(`Restore metadata: ${err.message}`);
     }
