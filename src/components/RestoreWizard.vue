@@ -268,8 +268,28 @@ const executeRestore = async () => {
       if (!syncResp.ok) throw new Error(syncData.error || 'Agent deployment failed');
       if (syncData.success || syncData.agentId) {
         agentDeployed = true;
-        updateItem('agent', { status: 'done', progress: syncData.created ? 'Created' : 'Synced' });
-        console.log(`[RestoreWizard] Agent deployed: agentId=${syncData.agentId}, created=${syncData.created}`);
+        const agentId = syncData.agentId || syncData.agent?.id;
+        console.log(`[RestoreWizard] Agent created: agentId=${agentId}, created=${syncData.created}`);
+        // Poll for agent endpoint to become ready (deployment takes ~30-90s)
+        updateItem('agent', { progress: 'Deploying...' });
+        let endpointReady = !!syncData.agentEndpoint;
+        let pollAttempts = 0;
+        while (!endpointReady && pollAttempts < 40) {
+          await new Promise(r => setTimeout(r, 5000));
+          pollAttempts++;
+          try {
+            const statusResp = await fetch('/api/agent-setup-status', { credentials: 'include' });
+            if (statusResp.ok) {
+              const statusData = await statusResp.json();
+              if (statusData.endpointReady) {
+                endpointReady = true;
+              } else {
+                updateItem('agent', { progress: `Deploying... (${pollAttempts * 5}s)` });
+              }
+            }
+          } catch { /* continue polling */ }
+        }
+        updateItem('agent', { status: 'done', progress: endpointReady ? 'Deployed' : 'Deploying in background' });
       } else {
         throw new Error(syncData.error || 'Agent not available');
       }
@@ -339,95 +359,61 @@ const executeRestore = async () => {
       updateItem('kb', { status: 'error', errorMsg: 'No files uploaded' });
     }
 
-    // 4. Restore Current Medications
-    console.log(`[RestoreWizard] Step 4: Restore medications. has=${!!state?.currentMedications}`);
-    const medsItem = restoreItems.value.find(i => i.key === 'medications' && i.needed);
-    if (medsItem && state?.currentMedications) {
-      updateItem('medications', { status: 'running' });
+    // 4-7. Restore metadata via single server-side coordinator
+    // This batches medications, summary, chats, and instructions into one call
+    const hasMetadata = state?.currentMedications || state?.patientSummary || state?.savedChats?.chats?.length || state?.agentInstructions;
+    if (hasMetadata) {
+      console.log(`[RestoreWizard] Step 4: Restore metadata via /api/restore. meds=${!!state?.currentMedications}, summary=${!!state?.patientSummary}, chats=${state?.savedChats?.chats?.length || 0}, instructions=${!!state?.agentInstructions}`);
+      // Mark all metadata items as running
+      for (const key of ['medications', 'summary', 'chats', 'instructions']) {
+        const item = restoreItems.value.find(i => i.key === key && i.needed);
+        if (item) updateItem(key, { status: 'running' });
+      }
+
       try {
-        const resp = await fetch('/api/user-current-medications', {
+        const restoreResp = await fetch('/api/restore', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           credentials: 'include',
-          body: JSON.stringify({ userId: uid, currentMedications: state.currentMedications })
+          body: JSON.stringify({
+            currentMedications: state?.currentMedications || null,
+            patientSummary: state?.patientSummary || null,
+            savedChats: state?.savedChats || null,
+            agentInstructions: agentDeployed ? (state?.agentInstructions || null) : null
+          })
         });
-        if (!resp.ok) throw new Error(`Save failed: ${resp.status}`);
-        updateItem('medications', { status: 'done', progress: 'Saved' });
-      } catch (e: any) {
-        updateItem('medications', { status: 'error', errorMsg: e?.message || 'Failed' });
-      }
-    }
 
-    // 5. Restore Patient Summary
-    console.log(`[RestoreWizard] Step 5: Restore summary. has=${!!state?.patientSummary}`);
-    const summaryItem = restoreItems.value.find(i => i.key === 'summary' && i.needed);
-    if (summaryItem && state?.patientSummary) {
-      updateItem('summary', { status: 'running' });
-      try {
-        const resp = await fetch('/api/patient-summary', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          credentials: 'include',
-          body: JSON.stringify({ userId: uid, summary: state.patientSummary })
-        });
-        if (!resp.ok) throw new Error(`Save failed: ${resp.status}`);
-        updateItem('summary', { status: 'done', progress: 'Saved' });
-      } catch (e: any) {
-        updateItem('summary', { status: 'error', errorMsg: e?.message || 'Failed' });
-      }
-    }
-
-    // 6. Restore Saved Chats
-    console.log(`[RestoreWizard] Step 6: Restore chats. count=${state?.savedChats?.chats?.length || 0}`);
-    const chatsItem = restoreItems.value.find(i => i.key === 'chats' && i.needed);
-    if (chatsItem && state?.savedChats?.chats) {
-      updateItem('chats', { status: 'running' });
-      try {
-        const chats = state.savedChats.chats;
-        let restored = 0;
-        for (const chat of chats) {
-          try {
-            await fetch('/api/save-group-chat', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              credentials: 'include',
-              body: JSON.stringify({
-                userId: uid,
-                chatId: chat._id || chat.chatId,
-                messages: chat.messages || [],
-                title: chat.title || 'Restored chat',
-                providerKey: chat.providerKey || 'Private AI'
-              })
-            });
-            restored++;
-          } catch { /* continue */ }
+        if (!restoreResp.ok) {
+          const errData = await restoreResp.json().catch(() => ({}));
+          throw new Error(errData.error || `Restore failed: ${restoreResp.status}`);
         }
-        updateItem('chats', { status: 'done', progress: `${restored} restored` });
-      } catch (e: any) {
-        updateItem('chats', { status: 'error', errorMsg: e?.message || 'Failed' });
-      }
-    }
 
-    // 7. Restore Agent Instructions (only if agent was deployed)
-    console.log(`[RestoreWizard] Step 7: Restore instructions. has=${!!state?.agentInstructions}, agentDeployed=${agentDeployed}`);
-    const instrItem = restoreItems.value.find(i => i.key === 'instructions' && i.needed);
-    if (instrItem && state?.agentInstructions) {
-      if (!agentDeployed) {
-        console.warn(`[RestoreWizard] Skipping instructions — agent not deployed`);
-        updateItem('instructions', { status: 'error', errorMsg: 'Agent not deployed' });
-      } else {
-        updateItem('instructions', { status: 'running' });
-        try {
-          const resp = await fetch('/api/agent-instructions', {
-            method: 'PUT',
-            headers: { 'Content-Type': 'application/json' },
-            credentials: 'include',
-            body: JSON.stringify({ userId: uid, instructions: state.agentInstructions })
-          });
-          if (!resp.ok) throw new Error(`Save failed: ${resp.status}`);
-          updateItem('instructions', { status: 'done', progress: 'Saved' });
-        } catch (e: any) {
-          updateItem('instructions', { status: 'error', errorMsg: e?.message || 'Failed' });
+        const restoreData = await restoreResp.json();
+        const r = restoreData.results || {};
+        console.log(`[RestoreWizard] /api/restore response:`, JSON.stringify(r));
+
+        // Update individual item statuses based on results
+        if (restoreItems.value.find(i => i.key === 'medications' && i.needed)) {
+          updateItem('medications', r.medications ? { status: 'done', progress: 'Saved' } : { status: 'error', errorMsg: 'Not saved' });
+        }
+        if (restoreItems.value.find(i => i.key === 'summary' && i.needed)) {
+          updateItem('summary', r.summary ? { status: 'done', progress: 'Saved' } : { status: 'error', errorMsg: 'Not saved' });
+        }
+        if (restoreItems.value.find(i => i.key === 'chats' && i.needed)) {
+          updateItem('chats', { status: 'done', progress: r.chats > 0 ? `${r.chats} restored` : 'None' });
+        }
+        if (restoreItems.value.find(i => i.key === 'instructions' && i.needed)) {
+          if (!agentDeployed) {
+            updateItem('instructions', { status: 'error', errorMsg: 'Agent not deployed' });
+          } else {
+            updateItem('instructions', r.instructions ? { status: 'done', progress: 'Saved' } : { status: 'error', errorMsg: 'Not saved' });
+          }
+        }
+      } catch (e: any) {
+        console.error(`[RestoreWizard] /api/restore failed:`, e?.message);
+        for (const key of ['medications', 'summary', 'chats', 'instructions']) {
+          const item = restoreItems.value.find(i => i.key === key && i.needed && i.status === 'running');
+          if (item) updateItem(key, { status: 'error', errorMsg: e?.message || 'Failed' });
         }
       }
     }
