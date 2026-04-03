@@ -894,13 +894,6 @@ const agentSetupPollingActive = ref(false);
 let agentSetupTimer: ReturnType<typeof setInterval> | null = null;
 const wizardOtherFilesCount = ref(0);
 const wizardSlideIndex = ref(0);
-const wizardSlides = [
-  { lines: [] },
-  { image: '/wizard-slides/slide-1.png', alt: 'Wizard slide 1' },
-  { image: '/wizard-slides/slide-2.png', alt: 'Wizard slide 2' },
-  { image: '/wizard-slides/slide-3.png', alt: 'Wizard slide 3' },
-  { image: '/wizard-slides/slide-4.png', alt: 'Wizard slide 4' }
-];
 const wizardHasFilesInKB = ref(false);
 const wizardCurrentMedications = ref(false);
 const wizardPatientSummary = ref(false);
@@ -924,14 +917,6 @@ const wizardStage2Complete = ref(false);
 const wizardStage3Complete = ref(false);
 const wizardStage2Pending = ref(false);
 const stage3LastImportedName = ref<string | null>(null);
-const wizardStage1TimerActive = computed(() =>
-  agentSetupElapsed.value > 0 && !wizardStage1Complete.value && !agentSetupTimedOut.value
-);
-const wizardIntroHeaderHtml = computed(() => {
-  const firstLine = wizardIntroLines.value.find(line => line.trim().length > 0);
-  if (!firstLine) return '';
-  return markdownParser.renderInline(firstLine);
-});
 const wizardIntroBodyHtml = computed(() => {
   if (wizardIntroLines.value.length === 0) {
     return '';
@@ -966,12 +951,6 @@ const wizardStage2NoDeviceKey = computed(() => props.user?.userId ? `wizardStage
 const wizardAgentSetupStartedKey = (userId: string | undefined) => userId ? `wizard_agent_setup_started_${userId}` : null;
 const wizardStage3IndexingStartedKey = (userId: string | undefined) => userId ? `wizard_stage3_indexing_started_${userId}` : null;
 const wizardRestoreActive = computed(() => !!props.rehydrationActive && (Array.isArray(props.rehydrationFiles) ? props.rehydrationFiles.length > 0 : false));
-const firstUnrestoredFileName = computed(() => {
-  if (!wizardRestoreActive.value) return null;
-  const files = Array.isArray(props.rehydrationFiles) ? props.rehydrationFiles : [];
-  const first = files.find((f: { restored?: boolean }) => !f.restored);
-  return first ? (first.fileName || (first.bucketKey ? first.bucketKey.split('/').pop() : null)) : null;
-});
 const showRestoreCompleteDialog = ref(false);
 const restoreIndexingActive = ref(false);
 const restoreIndexingQueued = ref(false);
@@ -1018,7 +997,6 @@ const wizardKbIndexedKeys = ref<string[]>([]);
 const wizardKbTogglePending = ref<Set<string>>(new Set());
 const wizardAutoCheckedKeys = ref<Set<string>>(new Set());
 const wizardHasAppleHealthFile = computed(() => stage3DisplayFiles.value.some(file => !!file.isAppleHealth));
-const wizardKbAttached = computed(() => !!(userResourceStatus.value?.hasKB && userResourceStatus.value?.hasAgent));
 const stage2StatusDisplay = computed(() => {
   const isIndexing = indexingStatus.value?.phase === 'indexing' || indexingStatus.value?.phase === 'indexing_started';
   const files = indexingStatus.value?.filesIndexed ?? stage3DisplayFiles.value.length;
@@ -1074,20 +1052,6 @@ const stage3DisplayFiles = computed(() => {
     }));
 });
 const stage3HasFiles = computed(() => stage3DisplayFiles.value.length > 0);
-const wizardNeedsIndexing = computed(() => {
-  if (wizardRestoreActive.value) {
-    const files = Array.isArray(props.rehydrationFiles) ? props.rehydrationFiles : [];
-    const unrestored = files.filter((f: { restored?: boolean }) => !f.restored);
-    return unrestored.length === 0 && files.length > 0;
-  }
-  const indexedKeys = new Set(wizardKbIndexedKeys.value || []);
-  return stage3DisplayFiles.value.some(file => !!file.inKnowledgeBase && !!file.bucketKey && !indexedKeys.has(file.bucketKey));
-});
-const stage3PendingUploadActive = computed(() => {
-  const name = stage3PendingUploadName.value;
-  if (!name) return false;
-  return !wizardStage3Files.value.some(file => file.name === name);
-});
 
 
 
@@ -2345,24 +2309,6 @@ const triggerFileInput = () => {
   fileInput.value?.click();
 };
 
-const triggerWizardFileInput = async () => {
-  logWizardEvent('stage2_file_input_trigger', {
-    hasRef: !!fileInput.value,
-    intent: wizardUploadIntent.value
-  });
-  if (fileInput.value) {
-    (fileInput.value as HTMLInputElement | null)?.click();
-    return;
-  }
-  await nextTick();
-  if (fileInput.value) {
-    (fileInput.value as HTMLInputElement | null)?.click();
-    return;
-  }
-  const fallbackInput = document.querySelector<HTMLInputElement>('input[type="file"]');
-  fallbackInput?.click();
-};
-
 const handleWizardFileSelect = () => {
   logWizardEvent('stage2_file_selected', { tab: 'wizard' });
   wizardUploadIntent.value = null;
@@ -3223,23 +3169,6 @@ const handleStage3Index = async (overrideNames?: string[], fromRestore = false) 
   }
 };
 
-const handleStage3Action = () => {
-  if (stage3IndexingActive.value) return;
-  if (wizardRestoreActive.value) {
-    const files = Array.isArray(props.rehydrationFiles) ? props.rehydrationFiles : [];
-    const firstUnrestored = files.find((f: { restored?: boolean }) => !f.restored);
-    const firstName = firstUnrestored ? (firstUnrestored.fileName || (firstUnrestored.bucketKey ? firstUnrestored.bucketKey.split('/').pop() : null)) : null;
-    if (!firstName) {
-      return;
-    }
-    wizardUploadIntent.value = 'restore';
-    wizardRestoreTargetName.value = firstName;
-    triggerWizardFileInput();
-    return;
-  }
-  wizardUploadIntent.value = 'other';
-  triggerWizardFileInput();
-};
 
 
 const handleFileSelect = async (event: Event) => {
