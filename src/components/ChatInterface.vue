@@ -817,6 +817,7 @@ interface Props {
   } | null;
   rehydrationFiles?: any[] | null;
   rehydrationActive?: boolean;
+  restoreActive?: boolean;
   suppressWizard?: boolean;
   folderAccessTier?: 'chrome' | 'safari' | 'basic';
   passkeyWithoutFolder?: boolean;
@@ -1639,7 +1640,7 @@ const loadProviders = async () => {
         selectedProvider.value = providerLabels.digitalocean;
         showPrivateUnavailableDialog.value = false; // clear in case it was shown before refetch
       } else {
-        if (initialLoadComplete.value && !showAgentSetupDialog.value) {
+        if (initialLoadComplete.value && !showAgentSetupDialog.value && !props.restoreActive) {
           showPrivateUnavailableDialog.value = true;
         }
         selectFirstNonPrivateProvider();
@@ -1657,7 +1658,7 @@ const loadProviders = async () => {
       selectedProvider.value = providerLabels.digitalocean;
       showPrivateUnavailableDialog.value = false;
     } else {
-      if (initialLoadComplete.value && !showAgentSetupDialog.value) {
+      if (initialLoadComplete.value && !showAgentSetupDialog.value && !props.restoreActive) {
         showPrivateUnavailableDialog.value = true;
       }
       selectFirstNonPrivateProvider();
@@ -1690,7 +1691,7 @@ watch(
       return;
     }
     if (getProviderKey(selectedProvider.value) === 'digitalocean') {
-      if (initialLoadComplete.value && !showAgentSetupDialog.value) {
+      if (initialLoadComplete.value && !showAgentSetupDialog.value && !props.restoreActive) {
         showPrivateUnavailableDialog.value = true;
       }
       selectFirstNonPrivateProvider();
@@ -2477,10 +2478,16 @@ const parseUserAgent = (): string => {
   return `${browser} on ${os}`;
 };
 
+// Steps that should only appear once per session (watcher-driven, can re-fire on remount)
+const oneTimeLogSteps = new Set(['Indexing Complete', 'Current Medications', 'Wizard Flow']);
+
 const addSetupLogLine = (step: string, detail: string, ok: boolean) => {
-  // Deduplicate: skip if the most recent entry in the current session has the same step + detail
+  // Deduplicate within current session
   const lastSessionIdx = setupLogLines.value.map(l => l.step).lastIndexOf('Session Start');
   const sessionLines = lastSessionIdx >= 0 ? setupLogLines.value.slice(lastSessionIdx) : setupLogLines.value;
+  // For one-time steps, skip if ANY entry in the session has the same step + detail
+  if (oneTimeLogSteps.has(step) && sessionLines.some(l => l.step === step && l.detail === detail)) return;
+  // For other steps, skip only if the immediately preceding entry is identical
   const last = sessionLines[sessionLines.length - 1];
   if (last && last.step === step && last.detail === detail) return;
   setupLogLines.value.push({
