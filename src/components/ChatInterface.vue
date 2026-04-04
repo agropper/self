@@ -3144,14 +3144,25 @@ const handleStage3Index = async (overrideNames?: string[], fromRestore = false) 
           }
           const statusResult = await statusResponse.json();
           const kbStatus = statusResult.kbIndexingStatus || {};
+          const liveActive = !!statusResult?.kbIndexingActive;
+          const backendDone = kbStatus.backendCompleted === true;
+          const tokens = kbStatus.tokens || statusResult?.kbTotalTokens || '0';
+          console.log(`[KB-POLL] backendCompleted=${backendDone} liveActive=${liveActive} tokens=${tokens} phase=${kbStatus.phase || '?'}`);
           if (indexingStatus.value) {
             indexingStatus.value.phase = kbStatus.phase || indexingStatus.value.phase;
-            indexingStatus.value.tokens = kbStatus.tokens || indexingStatus.value.tokens;
+            indexingStatus.value.tokens = tokens;
             indexingStatus.value.filesIndexed = kbStatus.filesIndexed || 0;
             indexingStatus.value.progress = kbStatus.progress || 0;
           }
-          const isCompleted = kbStatus.backendCompleted === true;
+          // Trust backendCompleted; also infer completion if DO API says not active and tokens > 0
+          const inferredComplete = !liveActive && Number(tokens) > 0;
+          const isCompleted = backendDone || inferredComplete;
+          if (inferredComplete && !backendDone) {
+            console.log(`[KB-POLL] ⚠️ Inferred completion: liveActive=${liveActive} tokens=${tokens}`);
+          }
           if (isCompleted) {
+            console.log(`[KB-POLL] ✅ Indexing complete! tokens=${tokens} files=${kbStatus.filesIndexed || 0}`);
+            addSetupLogLine('Indexing Complete', `${kbStatus.filesIndexed || 0} file(s) indexed, ${tokens} tokens`, true);
             if (stage3IndexingPoll.value) {
               clearInterval(stage3IndexingPoll.value);
               stage3IndexingPoll.value = null;
@@ -3172,8 +3183,8 @@ const handleStage3Index = async (overrideNames?: string[], fromRestore = false) 
               showRestoreCompleteDialog.value = true;
             }
           }
-        } catch (error) {
-          // ignore polling errors
+        } catch (pollError) {
+          console.warn('[KB-POLL] Error:', pollError);
         }
       }, 10000);
     }
