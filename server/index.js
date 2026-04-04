@@ -6917,6 +6917,8 @@ app.post('/api/update-knowledge-base', async (req, res) => {
     let notFoundLogged = false;
     let lastKbStatusKey = '';
     let errorPollLogged = false;
+    let lastTokenValue = '0';
+    let tokenStableCount = 0;
 
     const clearPollTimer = () => {
       if (pollTimer) {
@@ -7100,7 +7102,7 @@ const runPoll = async () => {
            const fileCount = job.data_source_jobs?.[0]?.indexed_file_count || indexedFiles.length;
 
           // Only mark as complete if this is the job we're tracking AND it's actually completed
-          const isCompleted = (status === 'INDEX_JOB_STATUS_COMPLETED' || 
+          const statusCompleted = (status === 'INDEX_JOB_STATUS_COMPLETED' ||
                              status === 'INDEX_JOB_STATUS_NO_CHANGES' ||
                              status === 'completed' ||
                              status === 'COMPLETED' ||
@@ -7109,6 +7111,23 @@ const runPoll = async () => {
                             (job.phase === 'BATCH_JOB_PHASE_SUCCEEDED')) &&
                             // Only complete if this is EXACTLY the job we started
                             currentJobId === activeJobId;
+
+          // Token-stable completion: if tokens > 0 and haven't changed for 4+ consecutive
+          // polls (60+ seconds), the DO API job status is unreliable — treat as complete.
+          // This handles the common case where DO reports job as "active" long after
+          // indexing has actually finished.
+          if (Number(tokens) > 0 && tokens === lastTokenValue) {
+            tokenStableCount++;
+          } else {
+            tokenStableCount = 0;
+          }
+          lastTokenValue = tokens;
+          const tokenStableCompleted = Number(tokens) > 0 && tokenStableCount >= 4;
+          if (tokenStableCompleted && !statusCompleted) {
+            console.log(`[KB AUTO] ✅ Token-stable completion for job ${activeJobId}: tokens=${tokens} stable for ${tokenStableCount} polls (status still=${status})`);
+          }
+
+          const isCompleted = statusCompleted || tokenStableCompleted;
 
            const phase = isCompleted
              ? 'complete'
@@ -7129,9 +7148,10 @@ const runPoll = async () => {
            }
 
            if (isCompleted) {
-            console.log(`[KB AUTO] ✅ Completion detected for job ${activeJobId} (status=${status})`);
-            await completeIndexing(job, fileCount, tokens, indexedFiles, 'status_completed');
-            await logFinalIndexingStatus('completed_status');
+            const reason = statusCompleted ? 'status_completed' : 'token_stable';
+            console.log(`[KB AUTO] ✅ Completion detected for job ${activeJobId} (reason=${reason} status=${status} tokens=${tokens})`);
+            await completeIndexing(job, fileCount, tokens, indexedFiles, reason);
+            await logFinalIndexingStatus(reason);
              return;
            }
           const statusKey = `${status}|${fileCount}|${tokens}`;
