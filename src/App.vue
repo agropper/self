@@ -142,7 +142,7 @@
                     <a href="#" @click.prevent="welcomeDialogSection = 'faq'; showWelcomeContentDialog = true" class="welcome-footer-link">FAQ</a>
                     <span class="text-grey-5 q-mx-sm">|</span>
                     <a href="#" @click.prevent="welcomeDialogSection = 'about'; showWelcomeContentDialog = true" class="welcome-footer-link">About</a>
-                    <div class="text-caption text-grey-6 q-mt-sm">CC-BY MAIA by Adrian Gropper, MD</div>
+                    <div class="text-caption text-grey-6 q-mt-sm">CC-BY MAIA v{{ appVersion }} by Adrian Gropper, MD</div>
                   </div>
                 </div>
 
@@ -823,6 +823,9 @@ import {
   readStateFileByUserId,
   type MaiaState, type MaiaIdentity, type KnownUser
 } from './utils/localFolder';
+import packageJson from '../package.json';
+
+const appVersion = packageJson.version;
 
 interface User {
   userId: string;

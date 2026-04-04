@@ -1264,7 +1264,7 @@ const startRestoreIndexing = async () => {
  * Dismissed with NOT YET stays until reload.
  */
 const checkAndShowNeedsIndexingPrompt = async () => {
-  if (!props.user?.userId || props.rehydrationActive || isDeepLink.value || needsIndexingPromptDismissedThisSession.value) return;
+  if (!props.user?.userId || props.rehydrationActive || props.restoreActive || isDeepLink.value || needsIndexingPromptDismissedThisSession.value) return;
   try {
     const [filesRes, statusRes] = await Promise.all([
       fetch(`/api/user-files?userId=${encodeURIComponent(props.user.userId)}`, { credentials: 'include' }),
