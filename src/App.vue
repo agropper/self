@@ -310,6 +310,40 @@
       </q-card>
     </q-dialog>
 
+    <!-- Get Started choice dialog — shown when restorable users exist -->
+    <q-dialog v-model="showGetStartedChoiceDialog" persistent>
+      <q-card style="min-width: 460px; max-width: 600px">
+        <q-card-section>
+          <div class="text-h6">What would you like to do?</div>
+          <div class="text-body2 text-grey-7 q-mt-xs">
+            You have saved accounts on this device.
+          </div>
+        </q-card-section>
+        <q-card-section class="q-pt-none q-gutter-sm" style="display: flex; flex-direction: column;">
+          <q-btn
+            v-for="ku in restorableUsers"
+            :key="ku.userId"
+            unelevated
+            color="primary"
+            class="full-width"
+            :label="'Restore ' + ku.displayName"
+            :loading="tempStartLoading && selectedWelcomeUserId === ku.userId"
+            @click="showGetStartedChoiceDialog = false; handleUserCardRestore(ku)"
+          />
+          <q-btn
+            outline
+            color="primary"
+            class="full-width"
+            label="Add a new family member"
+            @click="showGetStartedChoiceDialog = false; handleAddFamilyMember()"
+          />
+        </q-card-section>
+        <q-card-actions align="right">
+          <q-btn flat label="Cancel" color="grey-7" @click="showGetStartedChoiceDialog = false" />
+        </q-card-actions>
+      </q-card>
+    </q-dialog>
+
     <!-- Shared device warning -->
     <q-dialog v-model="showSharedDeviceWarning" persistent>
       <q-card style="min-width: 460px; max-width: 640px">
@@ -866,6 +900,7 @@ const restoreWizardKbName = ref<string | null>(null);
 const showDestroyedRestoreDialog = ref(false);
 const destroyedUserId = ref<string | null>(null);
 const showDevicePrivacyDialog = ref(false);
+const showGetStartedChoiceDialog = ref(false);
 const showSharedDeviceWarning = ref(false);
 const deviceChoiceResolved = ref(false);
 const sharedComputerMode = ref(false);
@@ -936,6 +971,11 @@ const welcomeKbExists = ref<boolean | null>(null);
 const welcomeAgentLinkedToKb = ref<boolean | null>(null);
 /** [AUTH] Whether wizard is complete (verified patient summary). */
 const welcomeWizardComplete = ref<boolean | null>(null);
+
+/** Known users whose cloud status is 'restore' (account needs restoring). */
+const restorableUsers = computed(() =>
+  knownUsers.value.filter(ku => welcomeUserCloudStatus.value[ku.userId] === 'restore')
+);
 
 /** [AUTH] Classify welcome into New / Local / Cloud for status line and copy (USER_AUTH.md §1–2). */
 const welcomeUserType = computed(() => {
@@ -2115,7 +2155,7 @@ const handleSharedWarningOk = () => {
 
 const handleGetStartedNoPassword = () => {
   if (typeof console !== 'undefined' && console.log) {
-    console.log('[AUTH] Get Started (No Password): newClient=', isNewClient.value, 'deviceResolved=', deviceChoiceResolved.value, 'userType=', welcomeUserType.value);
+    console.log('[AUTH] Get Started (No Password): newClient=', isNewClient.value, 'deviceResolved=', deviceChoiceResolved.value, 'userType=', welcomeUserType.value, 'restorableUsers=', restorableUsers.value.length);
   }
   // Cloud user (has passkey) → challenge passkey directly
   if (welcomeUserType.value === 'cloud') {
@@ -2123,6 +2163,12 @@ const handleGetStartedNoPassword = () => {
     passkeyPrefillUserId.value = userId || null;
     passkeyPrefillAction.value = 'signin';
     showAuth.value = true;
+    return;
+  }
+  // If there are known users needing restore, ask the user what they want to do
+  // instead of silently creating a new account
+  if (restorableUsers.value.length > 0) {
+    showGetStartedChoiceDialog.value = true;
     return;
   }
   if (isNewClient.value) {
