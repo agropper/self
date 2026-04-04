@@ -827,11 +827,16 @@ const persistKbIndexingStatus = async (userId, statusPayload) => {
     };
     try {
       await cloudant.saveDocument('maia_users', doc);
+      if (statusPayload.backendCompleted || statusPayload.phase === 'complete') {
+        console.log(`[KB Status] ✅ Persisted kbIndexingStatus for ${userId}: phase=${statusPayload.phase} tokens=${statusPayload.tokens} backendCompleted=${statusPayload.backendCompleted}`);
+      }
       return;
     } catch (error) {
       if (error?.statusCode === 409 && attempts < 3) {
+        console.log(`[KB Status] ⚠️ CouchDB conflict writing kbIndexingStatus (attempt ${attempts}/3)`);
         continue;
       }
+      console.error(`[KB Status] ❌ Failed to persist kbIndexingStatus for ${userId}:`, error.message);
       return;
     }
   }
@@ -6894,7 +6899,7 @@ app.post('/api/update-knowledge-base', async (req, res) => {
           return;
         }
         
-        console.log(`[KB Update] ✅ Verified job ${jobId} is active (status: ${verifyStatus}) - starting polling`);
+        console.log(`[KB Update] ✅ Verified job ${jobId} is active (status: ${verifyStatus}) - starting polling for kbId=${kbId} userId=${userId}`);
       } catch (verifyError) {
         console.warn(`[KB Update] ⚠️ Could not verify job before polling:`, verifyError.message);
         // Continue with polling if verification fails (might be a transient error)
@@ -7078,7 +7083,12 @@ const runPoll = async () => {
            }
 
            const kbDetails = await getCachedKB(kbId);
-           const tokens = String(kbDetails?.total_tokens || kbDetails?.token_count || kbDetails?.tokens || job.tokens || job.total_tokens || 0);
+           const kbTotalTokens = kbDetails?.total_tokens || kbDetails?.token_count || kbDetails?.tokens || 0;
+           const jobTokens = job.tokens || job.total_tokens || 0;
+           const tokens = String(kbTotalTokens || jobTokens || 0);
+           if (pollCount <= 3 || pollCount % 10 === 0) {
+             console.log(`[KB Status] kbDetails keys=${kbDetails ? Object.keys(kbDetails).join(',') : 'null'} total_tokens=${kbDetails?.total_tokens} token_count=${kbDetails?.token_count} jobTokens=${jobTokens}`);
+           }
 
            const kbNameForFiles = getKBNameFromUserDoc(currentUserDoc, userId);
            const kbFolderPrefix = kbNameForFiles ? `${userId}/${kbNameForFiles}/` : null;
