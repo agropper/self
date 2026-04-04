@@ -2223,6 +2223,7 @@ const refreshWizardState = async () => {
             if (stage3IndexingPoll.value) {
               clearInterval(stage3IndexingPoll.value);
             }
+            let prevPollState2 = '';
             stage3IndexingPoll.value = setInterval(async () => {
               try {
                 const statusResponse = await fetch(`/api/user-files?userId=${encodeURIComponent(props.user?.userId || '')}&source=wizard`, {
@@ -2242,7 +2243,12 @@ const refreshWizardState = async () => {
                 const elapsedPollMs = stage3IndexingStartedAt.value ? Date.now() - stage3IndexingStartedAt.value : 0;
                 const elapsedPollMin = Math.floor(elapsedPollMs / 60000);
                 const elapsedPollSec = Math.floor((elapsedPollMs % 60000) / 1000);
-                console.log(`[KB-POLL] backendCompleted=${backendDone} liveActive=${liveActive} storedTokens=${storedTokens} liveTokens=${liveTokens} tokens=${tokens} phase=${storedStatus.phase || '?'} elapsed=${elapsedPollMin}m${elapsedPollSec}s jobId=${storedStatus.jobId || '?'}`);
+                // Only log to console when state changes
+                const curPollState2 = `${backendDone}|${liveActive}|${tokens}|${storedStatus.phase || '?'}`;
+                if (curPollState2 !== prevPollState2) {
+                  console.log(`[KB-POLL] backendCompleted=${backendDone} liveActive=${liveActive} tokens=${tokens} phase=${storedStatus.phase || '?'} elapsed=${elapsedPollMin}m${elapsedPollSec}s`);
+                  prevPollState2 = curPollState2;
+                }
                 if (storedStatus.jobId && indexingJobIdFromFiles && storedStatus.jobId !== indexingJobIdFromFiles) {
                   return;
                 }
@@ -2266,21 +2272,9 @@ const refreshWizardState = async () => {
                 // Pure time-based fallback: 20+ min with no completion signal at all (0-token "no changes" case)
                 const pureTimeoutComplete = !backendDone && !inferredComplete && !tokenTimeoutComplete && elapsedPollMs > 20 * 60 * 1000;
                 const isCompleted = backendDone || inferredComplete || timedOutInactive || tokenTimeoutComplete || pureTimeoutComplete;
-                if (inferredComplete && !backendDone) {
-                  console.log(`[KB-POLL] ⚠️ Inferred completion: liveActive=${liveActive} tokens=${tokens} (backendCompleted not yet set)`);
-                }
-                if (timedOutInactive && !backendDone && !inferredComplete) {
-                  console.log(`[KB-POLL] ⚠️ Timed-out inactive fallback: liveActive=${liveActive} tokens=${tokens} elapsed=${elapsedPollMin}m`);
-                }
-                if (tokenTimeoutComplete) {
-                  console.log(`[KB-POLL] ⚠️ Token-timeout completion: liveActive=${liveActive} tokens=${tokens} elapsed=${elapsedPollMin}m`);
-                }
-                if (pureTimeoutComplete) {
-                  console.log(`[KB-POLL] ⚠️ Pure timeout completion: elapsed=${elapsedPollMin}m (no completion signal after 20 min)`);
-                }
+                const completionReason = backendDone ? 'backendCompleted' : inferredComplete ? 'inferredComplete' : timedOutInactive ? 'timedOutInactive' : tokenTimeoutComplete ? 'tokenTimeout' : 'pureTimeout';
                 if (isCompleted) {
-                  const completionReason = backendDone ? 'backendCompleted' : inferredComplete ? 'inferredComplete' : timedOutInactive ? 'timedOutInactive' : tokenTimeoutComplete ? 'tokenTimeout' : 'pureTimeout';
-                  console.log(`[KB-POLL] ✅ Indexing complete! tokens=${tokens} files=${storedStatus.filesIndexed || 0} reason=${completionReason}`);
+                  console.log(`[KB-POLL] ✅ Indexing complete: tokens=${tokens} files=${storedStatus.filesIndexed || 0} reason=${completionReason} elapsed=${elapsedPollMin}m${elapsedPollSec}s`);
                   if (stage3IndexingPoll.value) {
                     clearInterval(stage3IndexingPoll.value);
                     stage3IndexingPoll.value = null;
@@ -3185,6 +3179,7 @@ const handleStage3Index = async (overrideNames?: string[], fromRestore = false) 
         const hasInitialFile = files.some((item: { isInitial?: boolean }) => !!item?.isInitial);
         emit('rehydration-complete', { hasInitialFile });
       }
+      let prevPollState = '';
       stage3IndexingPoll.value = setInterval(async () => {
         try {
           const statusResponse = await fetch(`/api/user-files?userId=${encodeURIComponent(props.user?.userId || '')}&source=wizard`, {
@@ -3204,7 +3199,12 @@ const handleStage3Index = async (overrideNames?: string[], fromRestore = false) 
           const elapsedPollMs = stage3IndexingStartedAt.value ? Date.now() - stage3IndexingStartedAt.value : 0;
           const elapsedPollMin = Math.floor(elapsedPollMs / 60000);
           const elapsedPollSec = Math.floor((elapsedPollMs % 60000) / 1000);
-          console.log(`[KB-POLL] backendCompleted=${backendDone} liveActive=${liveActive} storedTokens=${storedTokens} liveTokens=${liveTokens} tokens=${tokens} phase=${kbStatus.phase || '?'} elapsed=${elapsedPollMin}m${elapsedPollSec}s jobId=${kbStatus.jobId || '?'}`);
+          // Only log to console when state changes
+          const curPollState = `${backendDone}|${liveActive}|${tokens}|${kbStatus.phase || '?'}`;
+          if (curPollState !== prevPollState) {
+            console.log(`[KB-POLL] backendCompleted=${backendDone} liveActive=${liveActive} tokens=${tokens} phase=${kbStatus.phase || '?'} elapsed=${elapsedPollMin}m${elapsedPollSec}s`);
+            prevPollState = curPollState;
+          }
           if (indexingStatus.value) {
             indexingStatus.value.phase = kbStatus.phase || indexingStatus.value.phase;
             indexingStatus.value.tokens = tokens;
@@ -3226,21 +3226,9 @@ const handleStage3Index = async (overrideNames?: string[], fromRestore = false) 
           // the DO API is stuck. Complete to unblock the wizard (handles 0-token "no changes" case).
           const pureTimeoutComplete = !backendDone && !inferredComplete && !tokenTimeoutComplete && elapsedPollMs > 20 * 60 * 1000;
           const isCompleted = backendDone || inferredComplete || timedOutInactive || tokenTimeoutComplete || pureTimeoutComplete;
-          if (inferredComplete && !backendDone) {
-            console.log(`[KB-POLL] ⚠️ Inferred completion: liveActive=${liveActive} tokens=${tokens}`);
-          }
-          if (timedOutInactive && !backendDone && !inferredComplete) {
-            console.log(`[KB-POLL] ⚠️ Timed-out inactive fallback: liveActive=${liveActive} tokens=${tokens} elapsed=${elapsedPollMin}m`);
-          }
-          if (tokenTimeoutComplete) {
-            console.log(`[KB-POLL] ⚠️ Token-timeout completion: liveActive=${liveActive} tokens=${tokens} elapsed=${elapsedPollMin}m (DO API job status unreliable)`);
-          }
-          if (pureTimeoutComplete) {
-            console.log(`[KB-POLL] ⚠️ Pure timeout completion: liveActive=${liveActive} tokens=${tokens} elapsed=${elapsedPollMin}m (no completion signal after 20 min)`);
-          }
           const completionReason = backendDone ? 'backendCompleted' : inferredComplete ? 'inferredComplete' : timedOutInactive ? 'timedOutInactive' : tokenTimeoutComplete ? 'tokenTimeout' : pureTimeoutComplete ? 'pureTimeout' : '';
           if (isCompleted) {
-            console.log(`[KB-POLL] ✅ Indexing complete! tokens=${tokens} files=${kbStatus.filesIndexed || 0} reason=${completionReason}`);
+            console.log(`[KB-POLL] ✅ Indexing complete: tokens=${tokens} files=${kbStatus.filesIndexed || 0} reason=${completionReason} elapsed=${elapsedPollMin}m${elapsedPollSec}s`);
             addSetupLogLine('Indexing Complete', `${kbStatus.filesIndexed || 0} file(s) indexed, ${tokens} tokens (${completionReason})`, true);
             if (stage3IndexingPoll.value) {
               clearInterval(stage3IndexingPoll.value);
