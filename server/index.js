@@ -1341,6 +1341,27 @@ const slugifyName = (value = '') => {
 
 const ensureArray = (value) => (Array.isArray(value) ? value : value ? [value] : []);
 
+/**
+ * Resolve userId from session, body, and query — and enforce that body/query
+ * cannot override the session userId.  Returns the resolved userId or null
+ * (after sending a 403 response) when there is a mismatch.
+ */
+function resolveUserId(req, res) {
+  const sessionUserId = req.session?.userId || null;
+  const requestUserId = req.body?.userId || req.query?.userId || null;
+
+  if (sessionUserId && requestUserId && sessionUserId !== requestUserId) {
+    res.status(403).json({
+      success: false,
+      message: 'User ID mismatch',
+      error: 'USER_ID_MISMATCH'
+    });
+    return null;
+  }
+
+  return sessionUserId || requestUserId;
+}
+
 const getChatByShareId = async (shareId) => {
   if (!shareId) return null;
   const result = await cloudant.findDocuments('maia_chats', {
@@ -1783,16 +1804,9 @@ app.post('/api/deep-link/login', async (req, res) => {
 // Agent sync endpoint - find and configure user's agent
 app.post('/api/sync-agent', async (req, res) => {
   try {
-    const userId = req.session?.userId || req.body?.userId;
-    
-    if (!userId) {
-      return res.status(401).json({ 
-        success: false, 
-        message: 'User not authenticated',
-        error: 'NOT_AUTHENTICATED'
-      });
-    }
-    
+    const userId = resolveUserId(req, res);
+    if (!userId) return; // 403 already sent on mismatch
+
     // First, validate existing resources to clean up any stale references
     const { userDoc: validatedUserDoc } = await validateUserResources(userId);
     
@@ -2293,11 +2307,9 @@ function getProvisionPage(userId) {
 // Provision status endpoint - for polling
 app.get('/api/admin/provision-status', async (req, res) => {
   try {
-    const { userId } = req.query;
-    if (!userId) {
-      return res.status(400).json({ error: 'User ID required' });
-    }
-    
+    const userId = resolveUserId(req, res);
+    if (!userId) return; // 403 already sent on mismatch
+
     const status = provisioningStatus.get(userId);
     if (!status) {
       return res.json({ status: 'not_started' });
@@ -2312,11 +2324,10 @@ app.get('/api/admin/provision-status', async (req, res) => {
 // Provision logs endpoint - for viewing server logs
 app.get('/api/admin/provision-logs', async (req, res) => {
   try {
-    const { userId, since } = req.query;
-    if (!userId) {
-      return res.status(400).json({ error: 'User ID required' });
-    }
-    
+    const userId = resolveUserId(req, res);
+    if (!userId) return; // 403 already sent on mismatch
+    const { since } = req.query;
+
     const logs = provisioningLogs.get(userId) || [];
     
     // Filter by timestamp if 'since' parameter provided
@@ -2339,19 +2350,8 @@ app.get('/api/admin/provision-logs', async (req, res) => {
 // Admin agent diagnostic endpoint - identify which agent is connected to a user
 app.get('/api/admin/agent-diagnostic', async (req, res) => {
   try {
-    const { userId } = req.query;
-    
-    if (!userId) {
-      return res.status(400).send(`
-        <html>
-          <head><title>Agent Diagnostic</title></head>
-          <body style="font-family: Arial, sans-serif; max-width: 800px; margin: 50px auto; padding: 20px;">
-            <h2 style="color: #d32f2f;">❌ Missing Parameter</h2>
-            <p>User ID is required. Use: <code>/api/admin/agent-diagnostic?userId=USERNAME</code></p>
-          </body>
-        </html>
-      `);
-    }
+    const userId = resolveUserId(req, res);
+    if (!userId) return; // 403 already sent on mismatch
 
     // Get user document
     let userDoc;
@@ -4759,12 +4759,14 @@ app.delete('/api/delete-chat/:chatId', async (req, res) => {
 // User file metadata endpoint - updates user document with file info
 app.post('/api/user-file-metadata', async (req, res) => {
   try {
-    const { userId, fileMetadata, updateInitialFile } = req.body;
-    
-    if (!userId || !fileMetadata) {
-      return res.status(400).json({ 
-        success: false, 
-        message: 'User ID and file metadata are required',
+    const userId = resolveUserId(req, res);
+    if (!userId) return; // 403 already sent on mismatch
+    const { fileMetadata, updateInitialFile } = req.body;
+
+    if (!fileMetadata) {
+      return res.status(400).json({
+        success: false,
+        message: 'File metadata is required',
         error: 'MISSING_REQUIRED_FIELDS'
       });
     }
@@ -4888,19 +4890,12 @@ app.post('/api/user-file-metadata', async (req, res) => {
 // Called on page reload to remove files that were imported but not explicitly saved
 app.post('/api/cleanup-imported-files', async (req, res) => {
   try {
-    const { userId } = req.body;
-    
-    if (!userId) {
-      return res.status(400).json({ 
-        success: false, 
-        message: 'User ID is required',
-        error: 'MISSING_USER_ID'
-      });
-    }
+    const userId = resolveUserId(req, res);
+    if (!userId) return; // 403 already sent on mismatch
 
     // Get the user document
     let userDoc = await cloudant.getDocument('maia_users', userId);
-    
+
     if (!userDoc) {
       return res.status(404).json({ 
         success: false, 
@@ -5018,19 +5013,12 @@ app.post('/api/cleanup-imported-files', async (req, res) => {
 // Only called when user explicitly opens Saved Files tab
 app.post('/api/archive-user-files', async (req, res) => {
   try {
-    const { userId } = req.body;
-    
-    if (!userId) {
-      return res.status(400).json({ 
-        success: false, 
-        message: 'User ID is required',
-        error: 'MISSING_USER_ID'
-      });
-    }
+    const userId = resolveUserId(req, res);
+    if (!userId) return; // 403 already sent on mismatch
 
     // Get the user document
     let userDoc = await cloudant.getDocument('maia_users', userId);
-    
+
     if (!userDoc) {
       return res.status(404).json({ 
         success: false, 
@@ -5950,13 +5938,14 @@ app.get('/api/user-settings', async (req, res) => {
 // Save current medications to user document
 app.post('/api/user-current-medications', async (req, res) => {
   try {
-    const userId = req.body.userId || req.session?.userId;
+    const userId = resolveUserId(req, res);
+    if (!userId) return; // 403 already sent on mismatch
     const currentMedications = req.body.currentMedications;
 
-    if (!userId || currentMedications === undefined) {
+    if (currentMedications === undefined) {
       return res.status(400).json({
         success: false,
-        message: 'User ID and currentMedications are required',
+        message: 'currentMedications is required',
         error: 'MISSING_REQUIRED_FIELDS'
       });
     }
@@ -6017,22 +6006,15 @@ app.post('/api/user-current-medications', async (req, res) => {
 // This allows testing the deep link flow without creating a new patient
 app.post('/api/test-medications-token', async (req, res) => {
   try {
-    const userId = req.session?.userId || req.body?.userId;
-    
-    if (!userId) {
-      return res.status(400).json({ 
-        success: false, 
-        message: 'User ID is required',
-        error: 'MISSING_USER_ID'
-      });
-    }
+    const userId = resolveUserId(req, res);
+    if (!userId) return; // 403 already sent on mismatch
 
     // Get the user document
     const userDoc = await cloudant.getDocument('maia_users', userId);
-    
+
     if (!userDoc) {
-      return res.status(404).json({ 
-        success: false, 
+      return res.status(404).json({
+        success: false,
         message: 'User not found',
         error: 'USER_NOT_FOUND'
       });
@@ -6150,12 +6132,14 @@ app.get('/api/verify-medications-token', async (req, res) => {
 // Update user settings
 app.put('/api/user-settings', async (req, res) => {
   try {
-    const { userId, allowDeepLinkPrivateAI } = req.body;
-    
-    if (!userId || typeof allowDeepLinkPrivateAI !== 'boolean') {
-      return res.status(400).json({ 
-        success: false, 
-        message: 'User ID and allowDeepLinkPrivateAI (boolean) are required',
+    const userId = resolveUserId(req, res);
+    if (!userId) return; // 403 already sent on mismatch
+    const { allowDeepLinkPrivateAI } = req.body;
+
+    if (typeof allowDeepLinkPrivateAI !== 'boolean') {
+      return res.status(400).json({
+        success: false,
+        message: 'allowDeepLinkPrivateAI (boolean) is required',
         error: 'MISSING_REQUIRED_FIELDS'
       });
     }
@@ -6215,12 +6199,14 @@ app.put('/api/user-settings', async (req, res) => {
 // Delete file from Spaces and user document
 app.delete('/api/delete-file', async (req, res) => {
   try {
-    const { userId, bucketKey } = req.body;
-    
-    if (!userId || !bucketKey) {
-      return res.status(400).json({ 
-        success: false, 
-        message: 'User ID and bucket key are required',
+    const userId = resolveUserId(req, res);
+    if (!userId) return; // 403 already sent on mismatch
+    const { bucketKey } = req.body;
+
+    if (!bucketKey) {
+      return res.status(400).json({
+        success: false,
+        message: 'Bucket key is required',
         error: 'MISSING_REQUIRED_FIELDS'
       });
     }
@@ -6441,18 +6427,11 @@ async function setupKnowledgeBase(userId, kbName, filesInKB, bucketName, existin
 // Update knowledge base - setup KB and trigger indexing (files already moved by checkboxes)
 app.post('/api/update-knowledge-base', async (req, res) => {
   try {
-    const { userId } = req.body;
+    const userId = resolveUserId(req, res);
+    if (!userId) return; // 403 already sent on mismatch
     let cleanupEphemeralIndexing = async () => {};
-    
+
     originalConsoleLog(`[KB-INDEX] Received request for userId: ${userId}`);
-    
-    if (!userId) {
-      return res.status(400).json({ 
-        success: false, 
-        message: 'User ID is required',
-        error: 'MISSING_USER_ID'
-      });
-    }
 
     // Get user document (files may need relocation to KB folder)
     let userDoc = await cloudant.getDocument('maia_users', userId);
@@ -8554,10 +8533,8 @@ app.get('/api/user-status', async (req, res) => {
 // Update user workflow stage (used by RestoreWizard completion)
 app.post('/api/user-status', async (req, res) => {
   try {
-    const userId = req.session?.userId || req.body?.userId;
-    if (!userId) {
-      return res.status(401).json({ success: false, error: 'Authentication required' });
-    }
+    const userId = resolveUserId(req, res);
+    if (!userId) return; // 403 already sent on mismatch
     const { workflowStage } = req.body;
     if (!workflowStage) {
       return res.status(400).json({ success: false, error: 'workflowStage required' });
