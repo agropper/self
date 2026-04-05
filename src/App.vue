@@ -1211,9 +1211,12 @@ const refreshKnownUsers = () => {
 
 /** When user switches in the multi-user toggle, reload welcome status for that user. */
 /** Add family member: go through new-account flow */
+const addingFamilyMember = ref(false);
 const handleAddFamilyMember = () => {
-  // Clear any existing user context and start fresh
+  // Clear any existing user context so startTemporarySession creates a new account
+  addingFamilyMember.value = true;
   welcomeLocalUserId.value = null;
+  selectedWelcomeUserId.value = null;
   welcomeStatus.value = {};
   showDevicePrivacyDialog.value = true;
 };
@@ -2923,9 +2926,13 @@ const startTemporarySession = async () => {
   tempStartLoading.value = true;
   tempStartError.value = '';
   try {
-    // Use the selected user from multi-user selector, fall back to active user in knownUsers
-    const activeUserId = selectedWelcomeUserId.value || getActiveUserId();
-    if (activeUserId) {
+    // When adding a family member, skip restore and go straight to new account creation
+    const activeUserId = addingFamilyMember.value ? null : (selectedWelcomeUserId.value || getActiveUserId());
+    if (addingFamilyMember.value) {
+      addingFamilyMember.value = false;
+      const newUser = await createTemporarySession();
+      if (!newUser) return;
+    } else if (activeUserId) {
       // If the stored user has a passkey, guide them to sign in instead of restoring as temporary
       try {
         const checkResponse = await fetch(`/api/passkey/check-user?userId=${encodeURIComponent(activeUserId)}`, {
