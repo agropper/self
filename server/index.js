@@ -9860,4 +9860,3 @@ const providers = chatClient.getAvailableProviders();
 console.log(`📊 Available Chat Providers: ${providers.join(', ')}`);
 
 export default app;
-
