@@ -11,6 +11,7 @@ import cors from 'cors';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { readFileSync, existsSync, readdirSync } from 'fs';
+import { createHmac } from 'crypto';
 
 import { CloudantClient, CloudantSessionStore, AuditLogService } from '../lib/cloudant/index.js';
 import { DigitalOceanClient } from '../lib/do-client/index.js';
@@ -42,6 +43,15 @@ import {
 
 dotenv.config();
 const storageConfig = normalizeStorageEnv();
+
+/** Derive a stable session secret from the DO token (same approach as CouchDB password). */
+function deriveSessionSecret() {
+  const token = process.env.DIGITALOCEAN_TOKEN;
+  if (token) {
+    return createHmac('sha256', token).update('maia-session-secret').digest('base64url').slice(0, 32);
+  }
+  return 'change-this-secret';
+}
 
 const SUPPRESSED_LOG_PATTERN = /\[(NEW FLOW 2|STARTUP|STORAGE|WELCOME|WIZARD|LOCAL|KB UPDATE|KB AUTO|KB|WIZ|CATCH-ALL)\]/i;
 const shouldSuppressLog = (args) =>
@@ -604,9 +614,9 @@ if (process.env.USE_COUCHDB_DROPLET === 'true') {
 
 // Initialize clients
 const cloudant = new CloudantClient({
-  url: process.env.CLOUDANT_URL,
-  username: process.env.CLOUDANT_USERNAME,
-  password: process.env.CLOUDANT_PASSWORD
+  url: process.env.CLOUDANT_URL || 'http://localhost:5984',
+  username: process.env.CLOUDANT_USERNAME || 'admin',
+  password: process.env.CLOUDANT_PASSWORD || 'adminpass'
 });
 
 logStorageConfig(storageConfig);
@@ -1301,11 +1311,11 @@ app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true }));
 
 app.use(session({
-  secret: process.env.SESSION_SECRET || 'change-this-secret',
+  secret: process.env.SESSION_SECRET || deriveSessionSecret(),
   resave: false,
   saveUninitialized: false,
   cookie: {
-    secure: process.env.NODE_ENV === 'production',
+    secure: (process.env.PUBLIC_APP_URL || '').startsWith('https://'),
     httpOnly: true,
     maxAge: 24 * 60 * 60 * 1000 // 24 hours
   },
@@ -7489,7 +7499,7 @@ app.get('/api/admin/users', async (req, res) => {
     // If not localhost, require authentication and check for ADMIN_USERNAME
     if (!isLocalhost) {
       const sessionUserId = req.session?.userId;
-      const adminUsername = process.env.ADMIN_USERNAME;
+      const adminUsername = (process.env.ADMIN_USERNAME || 'admin');
       
       if (!sessionUserId) {
         return res.status(401).json({
@@ -7687,7 +7697,7 @@ app.post('/api/admin/users/:userId/recover', async (req, res) => {
     // If not localhost, require authentication and check for ADMIN_USERNAME
     if (!isLocalhost) {
       const sessionUserId = req.session?.userId;
-      const adminUsername = process.env.ADMIN_USERNAME;
+      const adminUsername = (process.env.ADMIN_USERNAME || 'admin');
       
       if (!sessionUserId) {
         return res.status(401).json({
@@ -8244,7 +8254,7 @@ app.delete('/api/admin/users/:userId', async (req, res) => {
     // If not localhost, require authentication and check for ADMIN_USERNAME
     if (!isLocalhost) {
       const sessionUserId = req.session?.userId;
-      const adminUsername = process.env.ADMIN_USERNAME;
+      const adminUsername = (process.env.ADMIN_USERNAME || 'admin');
       
       if (!sessionUserId) {
         return res.status(401).json({
@@ -8349,7 +8359,7 @@ app.post('/api/local/delete', async (req, res) => {
       return res.status(400).json({ success: false, error: 'Invalid userId format' });
     }
     // Never allow deleting the admin user
-    const adminUsername = process.env.ADMIN_USERNAME?.trim();
+    const adminUsername = (process.env.ADMIN_USERNAME || 'admin')?.trim();
     if (adminUsername && userId.trim().toLowerCase() === adminUsername.toLowerCase()) {
       return res.status(403).json({ success: false, error: 'Forbidden' });
     }
