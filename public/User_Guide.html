@@ -86,7 +86,19 @@
     </li>
     <li><a href="#ai-access">2. Which AI Sees What</a></li>
     <li><a href="#deep-links">3. Deep Links and Invited Users</a></li>
-    <li><a href="#backup-restore">4. Backup and Restore</a>
+    <li><a href="#my-stuff">4. My Stuff Tabs</a>
+      <ul>
+        <li><a href="#tab-saved-files">Saved Files</a></li>
+        <li><a href="#tab-agent">My AI Agent</a></li>
+        <li><a href="#tab-chats">Saved Chats</a></li>
+        <li><a href="#tab-summary">Patient Summary</a></li>
+        <li><a href="#tab-lists">My Lists</a></li>
+        <li><a href="#tab-privacy">Privacy Filter</a></li>
+        <li><a href="#tab-diary">Patient Diary</a></li>
+        <li><a href="#tab-references">References</a></li>
+      </ul>
+    </li>
+    <li><a href="#backup-restore">5. Backup and Restore</a>
       <ul>
         <li><a href="#local-folder">Local Folder Contents</a></li>
       </ul>
@@ -161,7 +173,45 @@
 <p>You can invite other people, such as your physicians, to chat with your Private AI using a deep link. By default, deep-link users can query your knowledge base through your Private AI. You can disable this permission at the top of the <strong>My Stuff &gt; My Agent</strong> tab.</p>
 
 <!-- ============================================================ -->
-<h2 id="backup-restore">4. Backup and Restore</h2>
+<h2 id="my-stuff">4. My Stuff Tabs</h2>
+
+<p>The <strong>My Stuff</strong> dialog is your central dashboard. It contains eight tabs:</p>
+
+<h3 id="tab-saved-files">Saved Files</h3>
+<p>Manage your archived and indexed files. When you open this tab, any temporary files are automatically archived. Each file shows a color-coded badge:</p>
+<ul>
+  <li><strong>Amber "Add to Knowledge Base"</strong> — file is archived; click to mark it for indexing.</li>
+  <li><strong>Orange "To be added and indexed"</strong> — file is marked for KB but not yet indexed. Click <strong>Update and Index KB</strong> to start.</li>
+  <li><strong>Blue "Indexing in progress"</strong> — indexing is running.</li>
+  <li><strong>Blue "Indexed in Knowledge Base"</strong> — file is indexed and available to your Private AI. Click to remove it from KB.</li>
+</ul>
+<p>You can delete any file with the trash icon. You can cancel an active indexing job; cancelled files return to archived.</p>
+
+<h3 id="tab-agent">My AI Agent</h3>
+<p>View and edit the system instructions for your Private AI agent. These instructions guide how your agent responds to you and to invited users.</p>
+<p>At the top of this tab is a toggle: <strong>Deep link users can chat with your Private AI</strong>. Turn this off to prevent invited users from querying your knowledge base.</p>
+<p>Below the instructions, the <strong>Agent Knowledge Base</strong> section shows which knowledge base is connected, its last indexing time, and the list of indexed files.</p>
+
+<h3 id="tab-chats">Saved Chats</h3>
+<p>Browse your saved group chats. Each entry shows the date, last query, and participants. You can copy a deep link to share a chat or delete it. Click a chat to reopen it in the main chat window.</p>
+
+<h3 id="tab-summary">Patient Summary</h3>
+<p>View, edit, and verify your AI-generated patient summary. The summary is created from your indexed files and can be edited directly. If MAIA detects changes to your records, a <strong>Verify</strong> button appears prompting you to review. Previous versions of the summary are available as buttons so you can compare or restore an earlier version.</p>
+
+<h3 id="tab-lists">My Lists</h3>
+<p>Manage structured lists extracted from your records, such as your current medications. Lists are editable and are included in your local backup.</p>
+
+<h3 id="tab-privacy">Privacy Filter</h3>
+<p>Replace real names in your chat with pseudonyms before sharing. MAIA scans your chat for names and builds a mapping table (e.g., "Adrian Gropper" becomes "Alex Rivers"). Click <strong>Filter Current Chat</strong> to apply the pseudonyms. The mapping is shown as a table you can review.</p>
+
+<h3 id="tab-diary">Patient Diary</h3>
+<p>A private journal for health notes, symptoms, or observations. Entries are grouped into bubbles by time. You can post a diary bubble into the chat to discuss it with your AI. Entries are stored in your cloud database.</p>
+
+<h3 id="tab-references">References</h3>
+<p>Upload and manage reference files (PDFs, text, markdown) that you want available in chats without indexing them into your knowledge base. Click a reference to add it to the current chat. References are stored separately from your archived and indexed files.</p>
+
+<!-- ============================================================ -->
+<h2 id="backup-restore">5. Backup and Restore</h2>
 
 <p>MAIA automatically backs up your account data to a local folder on your computer whenever you are signed in and have connected a local folder. If your cloud account is ever lost or reset, MAIA can restore everything from this local backup.</p>
 
@@ -187,16 +237,28 @@
   </thead>
   <tbody>
     <tr>
-      <td><code>identity.json</code></td>
-      <td>Your user ID, display name, and last sync timestamp. Used to identify which account this folder belongs to.</td>
+      <td><code>maia-identity.json</code></td>
+      <td>Your user ID, display name, and last sync timestamp. Identifies which account this folder belongs to.</td>
     </tr>
     <tr>
-      <td><code>state.json</code></td>
+      <td><code>maia-state.json</code></td>
       <td>Full account snapshot: file list with indexing status, medications, patient summary, agent instructions, saved chats, and lists.</td>
     </tr>
     <tr>
+      <td><code>maia-setup-log.json</code></td>
+      <td>Setup and provisioning log in JSON format. Records the steps taken during account creation.</td>
+    </tr>
+    <tr>
+      <td><code>maia-setup-log.pdf</code></td>
+      <td>Printable PDF version of the setup log, including version and API model info.</td>
+    </tr>
+    <tr>
+      <td><code>maia-for-&lt;name&gt;.webloc</code></td>
+      <td>A bookmark to your MAIA instance. Double-click to open MAIA in your browser.</td>
+    </tr>
+    <tr>
       <td><code>*.PDF</code> / <code>*.pdf</code></td>
-      <td>Your uploaded files. These are the actual documents that get re-uploaded during a restore.</td>
+      <td>Your uploaded documents. These are re-uploaded from this folder during a restore.</td>
     </tr>
   </tbody>
 </table>
