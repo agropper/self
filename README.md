@@ -6,11 +6,11 @@ MAIA introduces a patient-controlled Private AI agent that sits between a patien
 
 ### Trust Model
 
-MAIA reduces the number of parties that must be trusted with private information. The host running the service (DigitalOcean in this implementation) must be trusted to run the code without modification. The publisher of the open source code and any verifier also need to be trusted for the integrity of the code they release or audit.
+Unlike Public AI agents, MAIA's trust model does not bundle the AI model policies with the AI hosting policies. The host running the service (DigitalOcean in this implementation) is to be trusted to run this open source code and opoen source Private AI without modification. The publisher of the open source code and any verifier also needs to be trusted for the integrity of the code they release. Independent verification of code and host is facilitated by the open source design of MAIA.
 
-The design goal is that the author does not need access to anyone's private data. A verifier, even an excellent coding AI, can help confirm the code has no back doors, but they cannot attest to the operational access of whoever provisions a patient's account. This is why MAIA supports user-driven provisioning without third-party assistance.
+A key design goal is that the MAIA software author does not need access to anyone's private data. A verifier, even an excellent coding AI, can help confirm the code has no back doors, but they cannot attest to the operational access of whoever provisions a patient's account. This is why MAIA supports user-driven provisioning without third-party access.
 
-When running MAIA, use your own credit card to pay for hosting. If someone else pays for the service, they control the billing account and can likely control access to your data even if the code has been verified.
+When running MAIA, use your own credit card to pay for hosting. If someone else pays for the service, they control the billing account and can likely control access to your data even if the MAIA code has been verified free of back doors.
 
 ---
 
@@ -40,15 +40,12 @@ When running MAIA, use your own credit card to pay for hosting. If someone else 
 
 ## Key User Account Provisioning Steps
 
-1. **Passkey registration** creates the user document and session.
+1. **Local folder registration** creates the user document and session.
 2. **Agent provisioning** (admin-triggered or auto in some flows):
    - Creates agent, waits for deployment, stores endpoint + API key.
-3. **File import**:
-   - Uploads land in root, metadata stored in Cloudant.
-4. **KB build and indexing**:
-   - Files are moved into `userId/<kbName>/`.
-   - Indexing starts on the folder datasource.
-   - Polling persists status to `userDoc.kbIndexingStatus`.
+3. **File(s) upload**:
+   - Records are prepared for access by the knowledge base (KB)
+4. **KB indexing**:
 5. **KB attachment**:
    - Automatically attaches when agent is ready and indexing is complete.
 6. **Current Medications / Patient Summary**:
@@ -56,52 +53,17 @@ When running MAIA, use your own credit card to pay for hosting. If someone else 
 
 ---
 
-## Hosting Configuration Notes (Key Env Vars)
-
-### Passkeys / WebAuthn (single env)
-- `PUBLIC_APP_URL`  
-  **Single source:** passkey origin and allowed origins are derived from this; RPID is derived as the apex domain (e.g. `https://maia.adriang.xyz` → origin `https://maia.adriang.xyz`, RPID `adriang.xyz`). Used for deep links and app URL.
-- `PASSKEY_RPID` (optional)  
-  Override RPID if you need a different domain scope (e.g. full hostname instead of apex).
-- `PASSKEY_ORIGINS` (optional)  
-  Comma-separated allowlist if you need more than the single derived origin.
-
-### Cloudant (users, sessions, audit log)
-- `CLOUDANT_URL`, `CLOUDANT_USERNAME`, `CLOUDANT_PASSWORD`  
-  Required for user docs, sessions, and audit logs.
-
-### CouchDB Droplet (optional, self-hosted database)
-When `USE_COUCHDB_DROPLET=true`, the server auto-creates a DigitalOcean droplet (`ubuntu-s-1vcpu-1gb-tor1-01`) with Dockerized CouchDB and sets `CLOUDANT_*` from it. Credentials are stored in Spaces at `couchdb/credentials.json` so they survive redeploys. Requires `DIGITALOCEAN_TOKEN`, `DIGITALOCEAN_AWS_ACCESS_KEY_ID`, `DIGITALOCEAN_AWS_SECRET_ACCESS_KEY` (bucket name is from NEW-AGENT.txt).
-
-### DigitalOcean GenAI (agents, KBs, indexing)
-- `DIGITALOCEAN_TOKEN`  
-  Auth for DO GenAI REST API.
-- `DO_REGION`, `DO_PROJECT_ID`  
-  Required to create agents and KBs.
-- `DO_EMBEDDING_MODEL_ID` (optional)  
-  Overrides default embedding model. OpenSearch database UUID is parsed from env `OPENSEARCH_URL` (DO dashboard URL).
-
-### DigitalOcean Spaces (file storage)
-- Bucket name is fixed in code (see NEW-AGENT.txt; `getSpacesBucketName()`).
-- `DIGITALOCEAN_AWS_ACCESS_KEY_ID`, `DIGITALOCEAN_AWS_SECRET_ACCESS_KEY`  
-  S3-compatible access to Spaces (endpoint derived from `DO_REGION`).
-
-### OpenSearch (KB creation only)
-- Set **`OPENSEARCH_URL`** in .env to your DO database dashboard URL; the app parses the database UUID from the path (e.g. `https://cloud.digitalocean.com/databases/<uuid>?i=...`).
-
-### App + Email
-- **`PUBLIC_APP_URL`** — Canonical app URL (also drives passkey config; see Passkeys above).
-- `PORT` — Server listen port.
+## Hosting Configuration Notes and more are in the Environment.md file
 
 ---
 
 ## Hosting Environment
 
 - **App Platform**: Runs the frontend + Node server.
-- **Droplet with Dockerized CouchDB**: Cloudant-compatible data store for users, chats, sessions, and audit log. Can be auto-provisioned via `USE_COUCHDB_DROPLET=true` (see CouchDB Droplet env vars).
+- **Droplet with Dockerized CouchDB**: Cloudant-compatible data store for users, chats, sessions, and audit log. Can be auto-provisioned via `USE_COUCHDB_DROPLET=true` (see Environment.md).
 - **GenAI Agent**: DigitalOcean Private AI agent per user.
 - **Knowledge Base**: DigitalOcean KB per user, indexed from the Spaces folder datasource.
-- **OpenSearch 2 Database**: Clinical notes indexing/search store.
+- **OpenSearch 2 Database**: Clinical notes indexing/search store with embeddings.
 - **Spaces File Store**: S3-compatible storage for all user files and lists.
 
 ---
