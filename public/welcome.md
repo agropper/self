@@ -51,7 +51,7 @@ With MAIA, public AIs like Claude or ChatGPT will not have access to your record
   * MAIA hosting costs about $35/month. That would cover up to a dozen family and friends as long as they are not concerned about the account owner invading their privacy.
   * A single user or small family can run MAIA as needed for about $1/day by destroying the cloud resources when the chats and deep-links are inactive. The records, chats, and deep links are backed up on the user's computer and can be restored to their cloud account or a new cloud account in less than 15 minutes for 1,000 pages of records.
 * **Can I host MAIA on my own computer instead of the cloud?**
-  * Maybe, but it's not practical. Even with a computer costing $thousnds, performace would be abysmal and technical knowledge for privacy and security would be extreme.
+  * Maybe, but it's not practical. Even with a computer costing $thousnds, performace would be abysmal and technical knowledge needed for privacy and security would be significant.
 
 <!-- SECTION:about -->
 
