@@ -49,8 +49,7 @@ passkey or create a new account.
   vue-markdown.
 - **Footer links**: Privacy | User Guide | FAQ | About — each opens a static HTML
   page (`/privacy.html`, `/User_Guide.html`, `/faq.html`, `/about.html`) in a new
-  tab. Privacy/FAQ/About are generated from `public/welcome.md` by
-  `scripts/build-welcome-pages.js` (run as part of `npm run build`).
+  tab. These HTML files live in `public/` and are hand-edited.
 
 ### Get Started Disambiguation
 

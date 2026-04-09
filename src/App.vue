@@ -3110,12 +3110,7 @@ const loadWelcomeIntro = async () => {
     const response = await fetch('/welcome.md', { cache: 'no-cache' });
     if (!response.ok) return;
     const text = await response.text();
-    const marker = '<!-- SECTION:introduction -->';
-    const start = text.indexOf(marker);
-    if (start === -1) return;
-    const contentStart = start + marker.length;
-    const nextMarker = text.indexOf('<!-- SECTION:', contentStart);
-    welcomeIntro.value = (nextMarker === -1 ? text.slice(contentStart) : text.slice(contentStart, nextMarker)).trim();
+    welcomeIntro.value = text.trim();
   } catch (error) {
     console.error('Error loading welcome intro:', error);
   }
