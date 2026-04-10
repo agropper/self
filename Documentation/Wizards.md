@@ -89,10 +89,11 @@ immediately after authentication.
 
 ### Step 3: Setup Wizard (ChatInterface)
 
-**Modal: `showAgentSetupDialog`** (persistent, non-dismissible until
-complete)
+**Modal: `showAgentSetupDialog`** (persistent, dismissible via Continue
+button or X once agent deployment completes)
 
-The wizard has three stages displayed as a vertical checklist:
+The wizard displays a vertical checklist of steps. The first three run
+in parallel; the last two require user verification.
 
 **Stage 1 — Private AI Agent Deployment**
 - Triggered automatically on ChatInterface mount.
@@ -101,17 +102,14 @@ The wizard has three stages displayed as a vertical checklist:
   exists.
 - A countdown timer shows elapsed time (typically 2-5 minutes).
 - Complete when `assignedAgentId` exists and agent is deployed.
-- Status line: "Ready to chat" when done.
+- Status line: "Ready" when done.
 
 **Stage 2 — File Upload and Import**
-- User can pick a local folder (via File System Access API) or select
-  individual files.
+- User picks a local folder (via File System Access API) or selects
+  individual files (Safari/other browsers).
 - Files are uploaded via `POST /api/files/upload`.
 - If an Apple Health PDF is detected, it becomes the `initialFile` and
-  triggers Current Medications extraction.
-- Medications verification: user reviews AI-extracted medication list
-  before proceeding to Stage 3.
-- "No device" option: user can skip file upload entirely.
+  is marked for list/medication extraction after indexing.
 
 **Stage 3 — Knowledge Base Indexing**
 - Triggered by `POST /api/update-knowledge-base`.
@@ -131,17 +129,78 @@ The wizard has three stages displayed as a vertical checklist:
 - Console logging is state-change-only (logs only when poll state
   differs from previous poll).
 
-**Wizard Completion**
-- All three stages green → FINISH button enabled.
-- `handleWizardComplete()` writes `maia-state.json` and a personalized
-  `.webloc` shortcut to the user's local folder.
-- Wizard state is persisted to localStorage so it survives page reload.
+### Guided Flow: Post-Indexing Transition
+
+When both Stage 1 (agent) and Stage 3 (indexing) complete, the wizard
+enters a **guided flow** controlled by `wizardFlowPhase`:
+
+```
+'running' → 'medications' → 'summary' → 'done'
+```
+
+**Phase: 'running' → 'medications' (automatic)**
+
+The wizard dialog stays open with "Preparing..." spinners on the
+Current Medications and Patient Summary checklist items while:
+1. Patient Summary is generated via `/api/generate-patient-summary`
+   and saved to the server.
+2. The subtitle changes to "Preparing health records... Almost done."
+3. The Continue/X buttons are hidden to prevent premature dismissal.
+
+Once the summary is saved, the wizard dialog closes and the My Stuff
+dialog opens on the **My Lists** tab. Lists.vue auto-processes the
+Apple Health file (if present), extracts category lists, and uses AI
+to generate Current Medications from the medication records.
+
+The user reviews, edits, and verifies the Current Medications.
+
+**Phase: 'medications' → 'summary'**
+
+When the user saves/verifies medications, the My Stuff dialog switches
+to the **Patient Summary** tab. If a pre-generated summary exists, it
+is updated with the verified medications. Otherwise, a new summary is
+generated.
+
+**Phase: 'summary' → 'done'**
+
+When the user saves or verifies the Patient Summary, the guided flow
+completes. The wizard emits `'wizard-complete'` and My Stuff stays
+open for the user to explore.
+
+**Guided Flow Dismissal Handling**
+
+If the user closes My Stuff during the guided flow:
+- First dismissal: dialog reopens on the same tab (via `nextTick`).
+- Second dismissal in 'medications' phase: skips to 'summary' phase,
+  reopens on Patient Summary tab.
+- Second dismissal in 'summary' phase: completes the wizard without
+  summary verification.
+
+`guidedFlowDismissCount` tracks dismissals per phase and resets on
+each phase transition.
+
+### Wizard State Persistence
+
+- `wizardFlowPhase` is **not persisted** to storage — it resets to
+  `'done'` on page reload.
+- On reload, a resume watcher checks whether indexing is complete and
+  agent is ready but medications/summary are still pending. If so, it
+  re-enters the appropriate phase and reopens My Stuff.
+- `wizardAutoFlow` flag is stored in `sessionStorage.wizardMyListsAuto`
+  to tell Lists.vue to auto-process files.
+- `autoProcessInitialFile` flag is stored in
+  `sessionStorage.autoProcessInitialFile`.
 
 ### Wizard Logging
 
 Every stage transition and modal open/close is logged to the setup log
-file via `POST /api/wizard-event`. Progress entries are written every
-~60 seconds during polling.
+file via `POST /api/wizard-log`. The `logWizardEvent()` function in
+Lists.vue and `addSetupLogLine()` in ChatInterface.vue handle this.
+Progress entries are written every ~60 seconds during polling.
+
+Tab opens are emitted by MyStuffDialog via `'tab-opened'` events and
+logged by ChatInterface's `handleMyStuffTabOpened()`. Brief Saved Files
+tab opens (< 1 second) are suppressed.
 
 ---
 
@@ -367,3 +426,114 @@ The version is stored in `package.json` and can be displayed in the
 app's About section. A major version bump signals that existing backups
 or CouchDB documents may not be compatible and migration steps are
 needed.
+
+---
+
+## 10. Known Issues and Improvement Suggestions
+
+### Issue: Lists Source File footer shown during wizard
+
+The "LISTS SOURCE FILE" section at the bottom of My Lists (showing
+total pages, file name, REPLACE/SHOW/DOWNLOAD buttons) appears whenever
+`pdfData` or `markdownBucketKey` exists. It has no wizard-mode guard, so
+it displays during the guided flow when the user should be focused on
+verifying medications.
+
+**Suggestion**: Hide the footer when `wizardAutoFlow` is active. The
+footer is only useful during manual My Stuff updates.
+
+### Issue: Lists component not wrapped in KeepAlive
+
+The Lists component inside MyStuffDialog's tab panel is recreated every
+time the user switches away and back. This means `onMounted` re-runs,
+triggering `loadCurrentMedications()`, `checkInitialFile()`, and
+potentially `attemptAutoProcessInitialFile()` again. During the wizard
+flow, this can cause redundant API calls and brief UI flashes.
+
+**Suggestion**: Either wrap Lists in `<KeepAlive>` so it preserves
+state across tab switches, or add guards in `onMounted` to detect that
+the component was previously initialized for this session.
+
+### Issue: Dialog-to-dialog transition flash
+
+When the wizard dialog closes (`showAgentSetupDialog = false`) and My
+Stuff opens (`showMyStuffDialog = true`) on the next line, there can be
+a single frame where neither dialog is visible — the user briefly sees
+the empty chat behind.
+
+**Suggestion**: Open My Stuff BEFORE closing the wizard dialog, or use
+a single transition that swaps one for the other atomically.
+
+### Issue: Tab switch flash during guided flow
+
+When medications are saved and `myStuffInitialTab` changes from 'lists'
+to 'summary' while the dialog is open, the tab panel may briefly show
+the default 'files' tab or an intermediate state before settling on
+'summary'.
+
+**Suggestion**: Set `loadingSummary = true` in MyStuffDialog before
+the tab switch (this is partially done but could be more robust), or
+use a loading overlay that covers the entire dialog during transitions.
+
+### Issue: Two separate onActivated hooks in Lists.vue
+
+Lists.vue has two `onActivated()` hooks at different locations. Both
+fire independently when the component is re-activated. The first handles
+wizard/verify state; the second handles category reloading and
+auto-processing. This separation makes the activation flow harder to
+reason about and increases the risk of competing triggers.
+
+**Suggestion**: Merge into a single `onActivated` hook with clear
+sequential logic.
+
+### Issue: Reload handling is fragile
+
+`wizardFlowPhase` resets to `'done'` on every page reload. A resume
+watcher tries to detect mid-flow state by checking server-side flags,
+but this has gaps:
+- If the user reloads during the 'running' phase (indexing in progress),
+  the wizard dialog disappears. When indexing later completes, the
+  wizard dialog suddenly reappears — potentially confusing.
+- The resume logic does not log its transitions, making debugging harder.
+- There is no indication to the user that a resume happened.
+
+**Suggestion**: Either persist `wizardFlowPhase` to sessionStorage, or
+make the resume watcher's behavior more visible (log it, show a brief
+"Resuming setup..." message).
+
+### Issue: Logging gaps
+
+The following transitions are not logged to the setup log:
+- Wizard initially entering 'running' phase (only the completion of
+  running → medications is logged).
+- Reload-triggered phase resumption.
+- First guided-flow dismissal (only the second dismiss is logged as a
+  warning).
+- User manually switching tabs during guided flow.
+- Medication verify/edit/save actions within Lists.vue (only generation
+  and loading are logged, not user verification).
+
+**Suggestion**: Add logging for all of the above. The setup log should
+be a complete narrative of what happened during account creation.
+
+### Issue: Rapid status changes in medication loading
+
+The `loadCurrentMedications()` function cycles through multiple status
+values (`waiting` → `reviewing` → `consulting` → `''`) with only a
+1-second gap. Template sections render conditionally on each status.
+On slower devices, this can cause visible UI flickering.
+
+**Suggestion**: Use a single "loading" state with a progress message
+rather than cycling through multiple distinct UI states.
+
+### Issue: No guard rails on user tab switching during guided flow
+
+During the guided flow, the user can freely click other tabs (Saved
+Files, Privacy, Diary, etc.), breaking the expected flow. There are no
+warnings, no prevention, and no easy way back.
+
+**Suggestion**: Either disable non-relevant tabs during the guided
+flow, or show a "Return to {current step}" banner when the user
+navigates away. An even simpler approach: let the guided flow work
+regardless of tab switches by not relying on the user being on a
+specific tab.
