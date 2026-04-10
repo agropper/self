@@ -997,7 +997,6 @@ const clearWizardAutoFlow = () => {
 const attemptAutoProcessInitialFile = async () => {
   if (isProcessing.value) return;
   if (hasSavedResults.value) return; // Already processed — don't redo
-  if (currentMedications.value || isCurrentMedicationsEdited.value) return; // Medications already loaded
   const autoProcess = sessionStorage.getItem('autoProcessInitialFile');
   const shouldAutoProcess = autoProcess === 'true' || wizardAutoFlow.value;
   if (!shouldAutoProcess) return;
@@ -2114,8 +2113,8 @@ onMounted(async () => {
   await checkInitialFile();
   await loadSavedResults();
 
-  // Only start auto-processing if no medications were loaded AND no saved results
-  if (!hasSavedResults.value && !currentMedications.value) {
+  // Only start auto-processing if no saved results (file not yet processed into lists)
+  if (!hasSavedResults.value) {
     await nextTick();
     attemptAutoProcessInitialFile();
   }
@@ -2511,7 +2510,7 @@ const hasMedicationRecords = computed(() => {
 onActivated(() => {
   if (mountInitializing) return; // onMounted still running — skip
   reloadCategories();
-  if (!hasSavedResults.value && !currentMedications.value) {
+  if (!hasSavedResults.value) {
     attemptAutoProcessInitialFile();
   }
 });
@@ -2520,7 +2519,7 @@ watch(hasInitialFile, (value) => {
   if (!value) return;
   const autoProcess = sessionStorage.getItem('autoProcessInitialFile');
   const shouldAutoProcess = autoProcess === 'true' || wizardAutoFlow.value;
-  if (shouldAutoProcess && !isProcessing.value && !hasSavedResults.value && !currentMedications.value) {
+  if (shouldAutoProcess && !isProcessing.value && !hasSavedResults.value) {
     attemptAutoProcessInitialFile();
   }
 });
