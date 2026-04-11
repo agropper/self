@@ -1223,15 +1223,15 @@ watch(
   }
 );
 
-// Log wizard stage transitions
+// Log wizard stage transitions — only when the wizard is actively running
 watch(() => wizardStage1Complete.value, (done, was) => {
-  if (done && !was) addSetupLogLine('Wizard Stage', 'Stage 1 complete — Agent deployed', true);
+  if (done && !was && showAgentSetupDialog.value) addSetupLogLine('Wizard Stage', 'Agent deployed', true);
 });
 watch(() => wizardStage2Complete.value, (done, was) => {
-  if (done && !was) addSetupLogLine('Wizard Stage', 'Stage 2 complete — Medications imported', true);
+  if (done && !was && showAgentSetupDialog.value) addSetupLogLine('Wizard Stage', 'Medications imported', true);
 });
 watch(() => wizardStage3Complete.value, (done, was) => {
-  if (done && !was) addSetupLogLine('Wizard Stage', 'Stage 3 complete — KB indexing done', true);
+  if (done && !was && showAgentSetupDialog.value) addSetupLogLine('Wizard Stage', 'KB indexing done', true);
 });
 watch(() => showPrivateUnavailableDialog.value, (open) => {
   if (open) addSetupLogLine('Dialog', 'Private AI Unavailable dialog shown', false);
