@@ -2424,8 +2424,6 @@ const dismissWizard = () => {
 
 // ── Local Folder: pick, auto-run, PDF log ────────────────────────
 
-const SETUP_LOG_JSON = 'maia-setup-log.json';
-
 /** Parse navigator.userAgent into a human-readable string, e.g. "Chrome 145 on macOS". */
 const parseUserAgent = (): string => {
   if (typeof navigator === 'undefined') return 'unknown';
@@ -2471,20 +2469,22 @@ const addSetupLogLine = (step: string, detail: string, ok: boolean, bold = false
   });
 };
 
-const persistSetupLogJson = async () => {
+const restoreSetupLogFromState = async () => {
   if (!localFolderHandle.value) return;
   try {
-    await writeFileToFolder(localFolderHandle.value, SETUP_LOG_JSON, JSON.stringify(setupLogLines.value, null, 2));
-  } catch { /* ignore */ }
-};
-
-const restoreSetupLogFromJson = async () => {
-  if (!localFolderHandle.value) return;
-  try {
-    const file = await readFileFromFolder(localFolderHandle.value, SETUP_LOG_JSON);
-    if (!file) return;
-    const parsed = JSON.parse(await file.text());
-    if (Array.isArray(parsed)) setupLogLines.value = parsed;
+    const state = await readStateFile(localFolderHandle.value);
+    if (state?.setupLog && Array.isArray(state.setupLog)) {
+      setupLogLines.value = state.setupLog;
+    } else {
+      // Migration: try legacy maia-setup-log.json and delete it
+      const file = await readFileFromFolder(localFolderHandle.value, 'maia-setup-log.json');
+      if (file) {
+        const parsed = JSON.parse(await file.text());
+        if (Array.isArray(parsed)) setupLogLines.value = parsed;
+        // Clean up legacy file
+        try { await localFolderHandle.value.removeEntry('maia-setup-log.json'); } catch { /* ignore */ }
+      }
+    }
   } catch { /* ignore */ }
 };
 
@@ -2497,7 +2497,7 @@ const handlePickLocalFolder = async () => {
   localFolderName.value = result.folderName;
   emit('local-folder-connected', { handle: result.handle, folderName: result.folderName });
   // Restore previous session history before adding new entries
-  await restoreSetupLogFromJson();
+  await restoreSetupLogFromState();
 
   // Detect user change — if the log has entries from a different user, insert a divider
   const prevUserEntry = [...setupLogLines.value].reverse().find(l => l.step === 'Session Info' && l.detail?.startsWith('User: '));
@@ -2608,7 +2608,7 @@ const runSafariFolderWizard = async (files: File[]) => {
   try {
     // Phase 1: Upload PDFs
     localFolderAutoRunPhase.value = 'Uploading files...';
-    const MAIA_GENERATED_FILES = ['maia-setup-log.pdf', 'maia-setup-log.json'];
+    const MAIA_GENERATED_FILES = ['maia-setup-log.pdf'];
     const filesToUpload = files.filter(f => !MAIA_GENERATED_FILES.includes(f.name.toLowerCase()));
     addSetupLogLine('Upload Phase', `Starting upload of ${filesToUpload.length} PDF file(s)`, true);
 
@@ -2724,7 +2724,7 @@ const tryReconnectLocalFolder = async () => {
     // ignore — folder may be unavailable
   }
   // Restore previous session history
-  await restoreSetupLogFromJson();
+  await restoreSetupLogFromState();
 };
 
 /** Auto-run wizard: upload folder files → deploy agent → index KB → detect Apple Health → generate summary. */
@@ -2737,7 +2737,7 @@ const runAutoWizard = async () => {
   try {
     // Phase 1: Upload PDFs from folder to Spaces
     localFolderAutoRunPhase.value = 'Uploading files...';
-    const MAIA_GENERATED_FILES = ['maia-setup-log.pdf', 'maia-setup-log.json'];
+    const MAIA_GENERATED_FILES = ['maia-setup-log.pdf'];
     const filesToUpload = localFolderFiles.value.filter(f => {
       const name = f.name.toLowerCase();
       return name.endsWith('.pdf') && !MAIA_GENERATED_FILES.includes(name);
@@ -2953,9 +2953,9 @@ const generateSetupLogPdf = async () => {
       y += 2;
       doc.setFontSize(10);
       doc.setFont('helvetica', 'bold');
-      const statusIcon = line.ok ? '[OK]' : '[FAIL]';
+      const prefix = line.ok ? '' : '[FAIL] ';
       const timestamp = new Date(line.time).toLocaleTimeString();
-      const text = `${statusIcon} [${timestamp}] ${line.step}: ${line.detail}`;
+      const text = `${prefix}[${timestamp}] ${line.step}: ${line.detail}`;
       const splitLines = doc.splitTextToSize(text, maxWidth);
       for (const sl of splitLines) {
         if (y > 270) {
@@ -2970,9 +2970,9 @@ const generateSetupLogPdf = async () => {
       y += 2;
       continue;
     }
-    const statusIcon = line.ok ? '[OK]' : '[FAIL]';
+    const prefix = line.ok ? '' : '[FAIL] ';
     const timestamp = new Date(line.time).toLocaleTimeString();
-    const text = `${statusIcon} [${timestamp}] ${line.step}: ${line.detail}`;
+    const text = `${prefix}[${timestamp}] ${line.step}: ${line.detail}`;
     const splitLines = doc.splitTextToSize(text, maxWidth);
     for (const sl of splitLines) {
       if (y > 270) {
@@ -2987,8 +2987,8 @@ const generateSetupLogPdf = async () => {
 
   const pdfBlob = doc.output('blob');
   await writeFileToFolder(localFolderHandle.value, 'maia-setup-log.pdf', pdfBlob);
-  // Also persist JSON for history restoration across sessions
-  await persistSetupLogJson();
+  // Persist setup log in maia-state.json (no separate JSON file)
+  await saveStateToLocalFolder();
 };
 
 /** Save current app state to maia-state.json in the local folder. */
@@ -3007,7 +3007,8 @@ const saveStateToLocalFolder = async () => {
     currentMedications: wizardCurrentMedications.value ? 'verified' : null,
     patientSummary: wizardPatientSummary.value ? 'verified' : null,
     savedChats: undefined,
-    currentChat: undefined
+    currentChat: undefined,
+    setupLog: setupLogLines.value.length > 0 ? setupLogLines.value : undefined
   };
   await writeStateFile(localFolderHandle.value, state);
 };
@@ -5525,7 +5526,7 @@ const setupChecklistFiles = computed(() => {
 
   // Files from local folder scan (not yet uploaded)
   for (const f of localFolderFiles.value) {
-    if (f.name.toLowerCase() === 'maia-setup-log.pdf' || f.name.toLowerCase() === 'maia-setup-log.json') continue;
+    if (f.name.toLowerCase() === 'maia-setup-log.pdf') continue;
     if (seen.has(f.name)) continue;
     seen.add(f.name);
     const isApple = stage3DisplayFiles.value.some(df => df.name === f.name && df.isAppleHealth);
