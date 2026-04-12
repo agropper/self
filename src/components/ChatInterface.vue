@@ -5904,19 +5904,21 @@ const handleCurrentMedicationsSaved = async () => {
   wizardStage2Complete.value = true;
   wizardStage2Pending.value = false;
   wizardStage2NoDevice.value = false;
-  await refreshWizardState();
-  // Guided flow: advance from medications → summary
+  // Guided flow: advance from medications → summary IMMEDIATELY (before network calls)
+  // to avoid a flash where the medications tab sits in "saved" state.
   if (wizardFlowPhase.value === 'medications') {
     wizardFlowPhase.value = 'summary';
     guidedFlowDismissCount.value = 0;
     console.log('[Wizard] Current Medications saved — opening Patient Summary tab');
     addSetupLogLine('Wizard Flow', 'Current Medications saved — opening Patient Summary', true);
     void generateSetupLogPdf();
-    // Switch to Patient Summary tab. Summary was generated before My Lists opened,
+    // Switch to Patient Summary tab immediately. Summary was generated before My Lists opened,
     // so update it with the verified medications.
     myStuffInitialTab.value = 'summary';
     wizardRequestAction.value = preGeneratedSummary.value ? 'update-summary-meds' : 'generate-summary';
   }
+  // Refresh wizard state in background (non-blocking)
+  void refreshWizardState();
 };
 
 const handleMyStuffShowSummary = () => {

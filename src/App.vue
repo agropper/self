@@ -42,32 +42,32 @@
                 <div class="text-h6 text-center q-mb-sm">
                   Welcome to MAIA
                 </div>
-                <!-- Account status cards for known users -->
-                <div v-if="knownUsers.length > 0" class="q-mb-md">
+                <!-- Account status cards derived from IndexedDB + .webloc -->
+                <div v-if="discoveredUsers.length > 0" class="q-mb-md">
                   <div
-                    v-for="ku in knownUsers"
-                    :key="ku.userId"
+                    v-for="du in discoveredUsers"
+                    :key="du.userId"
                     class="q-mb-xs q-pa-sm rounded-borders"
                     :style="{
-                      border: '1px solid ' + (welcomeUserCloudStatus[ku.userId] === 'ready' ? '#c8e6c9' : welcomeUserCloudStatus[ku.userId] === 'loading' ? '#e0e0e0' : '#ffe0b2'),
-                      background: welcomeUserCloudStatus[ku.userId] === 'ready' ? '#f1f8e9' : welcomeUserCloudStatus[ku.userId] === 'loading' ? '#fafafa' : '#fff8e1'
+                      border: '1px solid ' + (welcomeUserCloudStatus[du.userId] === 'ready' ? '#c8e6c9' : welcomeUserCloudStatus[du.userId] === 'loading' ? '#e0e0e0' : '#ffe0b2'),
+                      background: welcomeUserCloudStatus[du.userId] === 'ready' ? '#f1f8e9' : welcomeUserCloudStatus[du.userId] === 'loading' ? '#fafafa' : '#fff8e1'
                     }"
                   >
                     <div class="row items-center no-wrap">
                       <q-icon
-                        :name="welcomeUserCloudStatus[ku.userId] === 'ready' ? 'check_circle' : welcomeUserCloudStatus[ku.userId] === 'loading' ? 'hourglass_empty' : 'warning'"
-                        :color="welcomeUserCloudStatus[ku.userId] === 'ready' ? 'green' : welcomeUserCloudStatus[ku.userId] === 'loading' ? 'grey' : 'orange'"
+                        :name="welcomeUserCloudStatus[du.userId] === 'ready' ? 'check_circle' : welcomeUserCloudStatus[du.userId] === 'loading' ? 'hourglass_empty' : 'warning'"
+                        :color="welcomeUserCloudStatus[du.userId] === 'ready' ? 'green' : welcomeUserCloudStatus[du.userId] === 'loading' ? 'grey' : 'orange'"
                         size="sm"
                         class="q-mr-sm"
                       />
                       <div class="col text-body2">
-                        <strong>{{ ku.displayName }}</strong>
-                        <span v-if="ku.displayName.toLowerCase() !== ku.userId.toLowerCase()" class="text-grey-7"> ({{ ku.userId }})</span>
-                        <span v-if="ku.folderName" class="text-grey-6"> &mdash; {{ ku.folderName }}</span>
-                        <div v-if="welcomeUserCloudStatus[ku.userId] === 'ready'" class="text-caption text-green-8">
-                          Cloud account ready{{ ku.hasPasskey ? ' (passkey)' : '' }}
+                        <strong>{{ du.displayName }}</strong>
+                        <span v-if="du.displayName.toLowerCase() !== du.userId.toLowerCase()" class="text-grey-7"> ({{ du.userId }})</span>
+                        <span v-if="du.folderName" class="text-grey-6"> &mdash; {{ du.folderName }}</span>
+                        <div v-if="welcomeUserCloudStatus[du.userId] === 'ready'" class="text-caption text-green-8">
+                          Cloud account ready
                         </div>
-                        <div v-else-if="welcomeUserCloudStatus[ku.userId] === 'loading'" class="text-caption text-grey-6">
+                        <div v-else-if="welcomeUserCloudStatus[du.userId] === 'loading'" class="text-caption text-grey-6">
                           Checking account...
                         </div>
                         <div v-else class="text-caption text-orange-9">
@@ -76,24 +76,10 @@
                       </div>
                       <div class="row no-wrap q-gutter-xs">
                         <q-btn
-                          v-if="welcomeUserCloudStatus[ku.userId] === 'ready'"
-                          flat dense size="sm" color="primary"
-                          :label="ku.hasPasskey ? 'SIGN IN' : 'CONTINUE'"
-                          :loading="tempStartLoading && selectedWelcomeUserId === ku.userId"
-                          @click="handleUserCardContinue(ku)"
-                        />
-                        <q-btn
-                          v-else-if="welcomeUserCloudStatus[ku.userId] === 'restore'"
-                          flat dense size="sm" color="primary"
-                          label="RESTORE"
-                          :loading="tempStartLoading && selectedWelcomeUserId === ku.userId"
-                          @click="handleUserCardRestore(ku)"
-                        />
-                        <q-btn
                           flat dense round size="xs" icon="close" color="grey-5"
-                          @click="handleDeleteLocalUser(ku.userId)"
+                          @click="handleDeleteUser(du.userId)"
                         >
-                          <q-tooltip>Remove from this device</q-tooltip>
+                          <q-tooltip>Delete cloud account</q-tooltip>
                         </q-btn>
                       </div>
                     </div>
@@ -102,7 +88,7 @@
                     <q-btn flat dense size="sm" color="grey-6" icon="person_add" label="Add family member" @click="handleAddFamilyMember" />
                   </div>
                 </div>
-                <!-- No known users: passkey link -->
+                <!-- No discovered users: passkey link -->
                 <div v-else class="text-center q-mb-md">
                   <p class="q-ma-none text-body2" style="color: #1a1a1a">
                     Get started with a new account or
@@ -476,7 +462,7 @@
             Signing out ends this session and keeps your account for later. You can restore it on this device.
           </p>
           <p class="q-mt-md">
-            Use <strong>DESTROY ACCOUNT</strong> only if you want to permanently delete your cloud data.
+            Use <strong>DELETE CLOUD ACCOUNT</strong> only if you want to permanently delete your cloud data.
           </p>
           <div class="q-mt-md q-pa-md" style="border: 1px solid #e0e0e0; border-radius: 4px;">
             <strong>Note:</strong> You can add a passkey to your account instead of destroying it. You will then be able to sign-out the usual way and sign-in from other computers.
@@ -492,7 +478,7 @@
           </div>
         </q-card-section>
         <q-card-actions align="between" class="full-width">
-          <q-btn flat label="DESTROY ACCOUNT" color="negative" @click="openDestroyDialog" />
+          <q-btn flat label="DELETE CLOUD ACCOUNT" color="negative" @click="openDestroyDialog" />
           <div class="row items-center">
             <q-btn flat label="CANCEL" color="primary" @click="showTempSignOutDialog = false" />
             <q-btn flat label="SIGN OUT" color="primary" @click="handleTemporarySignOut" />
@@ -578,11 +564,12 @@
         </q-card-section>
         <q-card-section class="text-body2">
           <p>
-            This will permanently delete all cloud data for <strong>{{ welcomeDisplayUserId }}</strong>
-            (files, knowledge base, agent) and remove the local backup from this device.
+            This will delete the cloud account for <strong>{{ welcomeDisplayUserId }}</strong>
+            (files, knowledge base, agent). Your local folder and health record PDFs are kept so
+            you can restore the account later.
           </p>
           <p class="q-mt-md">
-            The next time you click GET STARTED, a new account will be created.
+            Click GET STARTED to restore or create a new account.
           </p>
         </q-card-section>
         <q-card-actions align="right">
@@ -757,15 +744,15 @@
     <q-dialog v-model="showDestroyDialog" persistent>
       <q-card style="min-width: 520px; max-width: 640px">
         <q-card-section>
-          <div class="text-h6">Destroy Account</div>
+          <div class="text-h6">Delete Cloud Account</div>
         </q-card-section>
         <q-card-section class="text-body2">
           <p>
-            This deletes your cloud data for <strong>{{ user?.userId }}</strong>.
+            This deletes the cloud account for <strong>{{ user?.userId }}</strong>.
             Deep links and passkey access will not work until you restore the account.
           </p>
           <p class="q-mt-sm">
-            You will need to restore the cloud account from the local backup on the computer that created the account.
+            Your local folder and health record PDFs are kept so you can restore the account later.
           </p>
         </q-card-section>
         <q-card-actions align="right">
@@ -776,7 +763,7 @@
             v-close-popup
           />
           <q-btn
-            label="DESTROY"
+            label="DELETE"
             color="negative"
             :loading="destroyLoading"
             @click="destroyTemporaryAccount"
@@ -815,11 +802,10 @@ import AdminUsers from './components/AdminUsers.vue';
 import { useQuasar } from 'quasar';
 import { saveUserSnapshot, getUserSnapshot, clearUserSnapshot } from './utils/localDb';
 import {
-  writeStateFile, clearDirectoryHandle, readIdentityFile, writeIdentityFile,
-  addOrUpdateKnownUser, removeKnownUser, migrateToKnownUsers, reconcileKnownUsers,
-  getKnownUsers, getActiveUserId, setActiveUserId,
+  writeStateFile, clearDirectoryHandle, scanWeblocOwner,
+  getActiveUserId, setActiveUserId, discoverUsers,
   readStateFileByUserId,
-  type MaiaState, type MaiaIdentity, type KnownUser
+  type MaiaState, type DiscoveredUser
 } from './utils/localFolder';
 import packageJson from '../package.json';
 
@@ -971,9 +957,9 @@ const welcomeAgentLinkedToKb = ref<boolean | null>(null);
 /** [AUTH] Whether wizard is complete (verified patient summary). */
 const welcomeWizardComplete = ref<boolean | null>(null);
 
-/** Known users whose cloud status is 'restore' (account needs restoring). */
+/** Discovered users whose cloud status is 'restore' (account needs restoring). */
 const restorableUsers = computed(() =>
-  knownUsers.value.filter(ku => welcomeUserCloudStatus.value[ku.userId] === 'restore')
+  discoveredUsers.value.filter(du => welcomeUserCloudStatus.value[du.userId] === 'restore')
 );
 
 /** [AUTH] Classify welcome into New / Local / Cloud for status line and copy (USER_AUTH.md §1–2). */
@@ -1008,9 +994,9 @@ const welcomeCloudValid = computed(() => {
 /** Per-user cloud status for Welcome page cards: 'loading' | 'ready' | 'restore' */
 const welcomeUserCloudStatus = ref<Record<string, 'loading' | 'ready' | 'restore'>>({});
 
-/** Check cloud status for all known users (called from loadWelcomeStatus). */
+/** Check cloud status for all discovered users (called from loadWelcomeStatus). */
 const checkAllUserCloudStatus = async () => {
-  const users = knownUsers.value;
+  const users = discoveredUsers.value;
   if (users.length === 0) return;
   // Set all to loading initially
   const statusMap: Record<string, 'loading' | 'ready' | 'restore'> = {};
@@ -1035,25 +1021,11 @@ const checkAllUserCloudStatus = async () => {
   }));
 };
 
-/** Handle CONTINUE/SIGN IN on a user card */
-const handleUserCardContinue = (ku: KnownUser) => {
-  selectedWelcomeUserId.value = ku.userId;
-  setActiveUserId(ku.userId);
-  welcomeLocalUserId.value = ku.userId;
-  if (ku.hasPasskey) {
-    passkeyPrefillUserId.value = ku.userId;
-    passkeyPrefillAction.value = 'signin';
-    showAuth.value = true;
-  } else {
-    startTemporarySession();
-  }
-};
-
-/** Handle RESTORE on a user card — uses /api/account/recreate to preserve original userId */
-const handleUserCardRestore = async (ku: KnownUser) => {
-  selectedWelcomeUserId.value = ku.userId;
-  setActiveUserId(ku.userId);
-  welcomeLocalUserId.value = ku.userId;
+/** Handle RESTORE on a discovered user card — uses /api/account/recreate to preserve original userId */
+const handleUserCardRestore = async (du: DiscoveredUser) => {
+  selectedWelcomeUserId.value = du.userId;
+  setActiveUserId(du.userId);
+  welcomeLocalUserId.value = du.userId;
   tempStartLoading.value = true;
   tempStartError.value = '';
   // Clear stale wizard flags from previous session to prevent My Lists auto-reload loop
@@ -1076,7 +1048,7 @@ const handleUserCardRestore = async (ku: KnownUser) => {
     if (!localState && ku.userId) {
       try {
         // requestWrite: true — we're inside the user gesture (RESTORE click)
-        const result = await readStateFileByUserId(ku.userId, { requestWrite: true });
+        const result = await readStateFileByUserId(du.userId, { requestWrite: true });
         if (result) {
           localState = result.state;
           localFolderHandle.value = result.handle;
@@ -1089,7 +1061,7 @@ const handleUserCardRestore = async (ku: KnownUser) => {
     if (!localState && !localFolderHandle.value) {
       try {
         const { pickLocalFolder, readStateFile: readState } = await import('./utils/localFolder');
-        const picked = await pickLocalFolder(ku.userId);
+        const picked = await pickLocalFolder(du.userId);
         if (picked) {
           localFolderHandle.value = picked.handle;
           localFolderName.value = picked.folderName;
@@ -1099,31 +1071,31 @@ const handleUserCardRestore = async (ku: KnownUser) => {
       }
     }
 
-    // Validate folder identity matches the userId being restored
+    // Validate folder ownership via .webloc matches the userId being restored
     if (localState && localFolderHandle.value) {
       try {
-        const folderIdentity = await readIdentityFile(localFolderHandle.value);
-        if (folderIdentity && folderIdentity.userId && folderIdentity.userId !== ku.userId) {
-          console.warn(`[RESTORE] Folder identity mismatch: folder=${folderIdentity.userId} restore=${ku.userId}`);
+        const weblocOwner = await scanWeblocOwner(localFolderHandle.value);
+        if (weblocOwner && weblocOwner.userId && weblocOwner.userId !== du.userId) {
+          console.warn(`[RESTORE] Folder owner mismatch: folder=${weblocOwner.userId} restore=${du.userId}`);
           if ($q && typeof $q.notify === 'function') {
             $q.notify({
               type: 'warning',
-              message: `This folder belongs to ${folderIdentity.displayName || folderIdentity.userId}, not ${ku.userId}. Cannot restore from a mismatched folder.`,
+              message: `This folder belongs to ${weblocOwner.displayName || weblocOwner.userId}, not ${du.userId}. Cannot restore from a mismatched folder.`,
               timeout: 7000
             });
           }
           localState = null;
         }
-      } catch { /* identity file unreadable — proceed with caution */ }
+      } catch { /* .webloc unreadable — proceed with caution */ }
     }
 
     if (!localState) {
-      const snapshot = await getUserSnapshot(ku.userId);
+      const snapshot = await getUserSnapshot(du.userId);
       if (snapshot) {
         localState = {
           version: 1,
-          userId: ku.userId,
-          displayName: ku.displayName,
+          userId: du.userId,
+          displayName: du.displayName,
           updatedAt: snapshot.updatedAt || new Date().toISOString(),
           files: Array.isArray(snapshot.fileStatusSummary) ? snapshot.fileStatusSummary.map((f: any) => ({
             fileName: f.fileName, bucketKey: f.bucketKey, cloudStatus: f.chipStatus
@@ -1152,7 +1124,7 @@ const handleUserCardRestore = async (ku: KnownUser) => {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       credentials: 'include',
-      body: JSON.stringify({ userId: ku.userId, displayName: ku.displayName })
+      body: JSON.stringify({ userId: du.userId, displayName: du.displayName })
     });
     const recreateData = await recreateResp.json();
     if (!recreateResp.ok || !recreateData.authenticated) {
@@ -1164,7 +1136,7 @@ const handleUserCardRestore = async (ku: KnownUser) => {
 
     // Cloud health check
     try {
-      const healthResp = await fetch(`/api/cloud-health?userId=${encodeURIComponent(ku.userId)}`, { credentials: 'include' });
+      const healthResp = await fetch(`/api/cloud-health?userId=${encodeURIComponent(du.userId)}`, { credentials: 'include' });
       if (healthResp.ok) {
         const health = await healthResp.json();
         cloudHealthDetails.value = health.details || null;
@@ -1191,17 +1163,17 @@ const handleUserCardRestore = async (ku: KnownUser) => {
 /** [AUTH] New client = no local backup and no temp cookie. */
 const isNewClient = computed(() => !welcomeLocalUserId.value && !welcomeStatus.value.tempCookieUserId);
 
-/** [MULTI-USER] Known family members on this device. */
-const knownUsers = ref<KnownUser[]>([]);
+/** [MULTI-USER] Users discovered from IndexedDB folder handles + .webloc scan. */
+const discoveredUsers = ref<DiscoveredUser[]>([]);
 /** [MULTI-USER] Currently selected userId in the Welcome page selector. */
 const selectedWelcomeUserId = ref<string | null>(null);
 
-/** Refresh knownUsers from localStorage. */
-const refreshKnownUsers = () => {
-  knownUsers.value = getKnownUsers();
-  // Auto-select: active user, or first known user
-  if (!selectedWelcomeUserId.value || !knownUsers.value.some(u => u.userId === selectedWelcomeUserId.value)) {
-    selectedWelcomeUserId.value = getActiveUserId() || knownUsers.value[0]?.userId || null;
+/** Refresh discoveredUsers from IndexedDB + .webloc scan. */
+const refreshDiscoveredUsers = async () => {
+  discoveredUsers.value = await discoverUsers();
+  // Auto-select: active user, or first discovered user
+  if (!selectedWelcomeUserId.value || !discoveredUsers.value.some(u => u.userId === selectedWelcomeUserId.value)) {
+    selectedWelcomeUserId.value = getActiveUserId() || discoveredUsers.value[0]?.userId || null;
   }
 };
 
@@ -1255,10 +1227,10 @@ const moreChoicesConfirmUserId = ref<string | null>(null);
 
 /** [AUTH] Load welcome-status and localStorage for status line and branching. */
 const loadWelcomeStatus = async () => {
-  refreshKnownUsers();
-  // Check cloud status for all known users (parallel, non-blocking)
+  await refreshDiscoveredUsers();
+  // Check cloud status for all discovered users (parallel, non-blocking)
   void checkAllUserCloudStatus();
-  // Use selected user from multi-user selector, fall back to active user in knownUsers
+  // Use selected user from multi-user selector, fall back to active user
   welcomeLocalUserId.value = selectedWelcomeUserId.value || getActiveUserId();
   welcomeLocalSnapshot.value = null;
   welcomeLocalHasPasskey.value = null;
@@ -1444,26 +1416,9 @@ const setAuthenticatedUser = (userData: any, deepLink: DeepLinkInfo | null = nul
     deepLinkInfo.value = deepLink;
   }
 
-  // Register in the multi-user registry (skip deep-link users)
+  // Track active user (skip deep-link users)
   if (!normalizedUser.isDeepLink) {
-    addOrUpdateKnownUser({
-      userId: normalizedUser.userId,
-      displayName: normalizedUser.displayName || normalizedUser.userId,
-      folderName: localFolderName.value || null,
-      hasPasskey: !!userData.hasPasskey || !!userData.credentialID,
-      lastActive: new Date().toISOString()
-    });
     setActiveUserId(normalizedUser.userId);
-
-    // Write identity file at account creation (Goal B) — fire-and-forget
-    if (localFolderHandle.value) {
-      writeIdentityFile(localFolderHandle.value, {
-        userId: normalizedUser.userId,
-        displayName: normalizedUser.displayName || normalizedUser.userId,
-        createdAt: new Date().toISOString(),
-        lastSync: new Date().toISOString()
-      }).catch((e) => console.warn('[AUTH] Identity file write failed:', e));
-    }
   }
 };
 
@@ -1725,26 +1680,18 @@ const handleAuthenticated = async (userData: any) => {
   if (userData?.hasPasskey || userData?.credentialID) {
     passkeyWithoutFolder.value = !localFolderHandle.value;
     // Prompt to connect a local folder if one isn't already connected
-    // Check if this user has a known folder on this device (knownUsers registry)
+    // Check if this user has a stored folder handle in IndexedDB
     if (!localFolderHandle.value && typeof window !== 'undefined') {
-      const known = getKnownUsers().find(u => u.userId === userData.userId);
-      if (known?.folderName) {
-        // User has used a folder on this device before — try silent reconnect
-        try {
-          const result = await readStateFileByUserId(userData.userId);
-          if (result) {
-            localFolderHandle.value = result.handle;
-            localFolderName.value = known.folderName;
-            passkeyWithoutFolder.value = false;
-          } else {
-            // Handle exists in registry but can't reconnect — prompt user
-            showConnectFolderDialog.value = true;
-          }
-        } catch {
+      try {
+        const result = await readStateFileByUserId(userData.userId);
+        if (result) {
+          localFolderHandle.value = result.handle;
+          localFolderName.value = result.handle.name;
+          passkeyWithoutFolder.value = false;
+        } else {
           showConnectFolderDialog.value = true;
         }
-      } else {
-        // No known folder — show connect prompt (user may have the folder on this computer)
+      } catch {
         showConnectFolderDialog.value = true;
       }
     }
@@ -1882,22 +1829,13 @@ const saveLocalSnapshot = async (snapshot?: SignOutSnapshot | null) => {
           wizardComplete: !!(
             ((status?.currentMedications && status.currentMedications.trim()) || existingState?.currentMedications) &&
             ((summary?.summary && summary.summary.trim()) || existingState?.patientSummary)
-          )
+          ),
+          // Preserve setup log from existing state (written by ChatInterface)
+          setupLog: existingState?.setupLog || undefined
         };
         await writeStateFile(localFolderHandle.value, state);
 
-        // Update identity file lastSync
-        try {
-          const identity = await readIdentityFile(localFolderHandle.value);
-          if (identity) {
-            identity.lastSync = now;
-            await writeIdentityFile(localFolderHandle.value, identity);
-          }
-        } catch {
-          // non-critical
-        }
-
-        // Extract patient name for webloc and known-user display
+        // Extract patient name for webloc shortcut
         let extractedPatientName: string | null = null;
         try {
           const folderUtils = await import('./utils/localFolder');
@@ -1906,7 +1844,7 @@ const saveLocalSnapshot = async (snapshot?: SignOutSnapshot | null) => {
             : null;
         } catch { /* extraction not critical */ }
 
-        // Always update webloc shortcut at sign-out
+        // Always update webloc shortcut at sign-out (this is the ownership marker)
         if (user.value?.userId) {
           try {
             const folderUtils = await import('./utils/localFolder');
@@ -1917,29 +1855,9 @@ const saveLocalSnapshot = async (snapshot?: SignOutSnapshot | null) => {
           } catch (e: any) {
           }
         }
-
-        // Update known-user registry with patient name if available
-        addOrUpdateKnownUser({
-          userId: user.value.userId,
-          displayName: extractedPatientName || user.value.displayName || user.value.userId,
-          folderName: localFolderName.value || localFolderHandle.value.name || null,
-          hasPasskey: !!user.value.hasPasskey,
-          lastActive: new Date().toISOString()
-        });
       } catch (e: any) {
       }
     } else {
-    }
-
-    // Update known-user registry (fallback when no folder handle)
-    if (!localFolderHandle.value) {
-      addOrUpdateKnownUser({
-        userId: user.value.userId,
-        displayName: user.value.displayName || user.value.userId,
-        folderName: null,
-        hasPasskey: !!user.value.hasPasskey,
-        lastActive: new Date().toISOString()
-      });
     }
   } catch (error) {
     console.warn('Failed to save local snapshot:', error);
@@ -1961,30 +1879,19 @@ const handleConnectFolderFromDialog = async () => {
       if (user.value?.userId) {
         await storeDirectoryHandle(user.value.userId, handle);
       }
-      // Read/create identity file — reject if folder belongs to a different known user
-      const existing = await readIdentityFile(handle);
-      if (existing && existing.userId && user.value?.userId && existing.userId !== user.value.userId) {
-        const otherKnown = getKnownUsers().find(u => u.userId === existing.userId);
-        if (otherKnown) {
-          if ($q && typeof $q.notify === 'function') {
-            $q.notify({
-              type: 'warning',
-              message: `This folder belongs to ${existing.displayName || existing.userId}. Please choose a different folder.`,
-              timeout: 7000
-            });
-          }
-          localFolderHandle.value = null;
-          localFolderName.value = '';
-          return;
+      // Safety check: reject if folder .webloc belongs to a different user
+      const weblocOwner = await scanWeblocOwner(handle);
+      if (weblocOwner && weblocOwner.userId && user.value?.userId && weblocOwner.userId !== user.value.userId) {
+        if ($q && typeof $q.notify === 'function') {
+          $q.notify({
+            type: 'warning',
+            message: `This folder belongs to ${weblocOwner.displayName || weblocOwner.userId}. Please choose a different folder.`,
+            timeout: 7000
+          });
         }
-      }
-      if (!existing && user.value?.userId) {
-        await writeIdentityFile(handle, {
-          userId: user.value.userId,
-          displayName: user.value.displayName || user.value.userId,
-          createdAt: new Date().toISOString(),
-          lastSync: new Date().toISOString()
-        });
+        localFolderHandle.value = null;
+        localFolderName.value = '';
+        return;
       }
     } catch (e: any) {
       if (e?.name !== 'AbortError') {
@@ -1999,50 +1906,28 @@ const handleLocalFolderConnected = async (payload: { handle: FileSystemDirectory
   localFolderHandle.value = payload.handle;
   localFolderName.value = payload.folderName;
 
-  // Read or create the identity file inside the folder
+  // Safety check: reject if folder .webloc belongs to a different user
   try {
-    const existing = await readIdentityFile(payload.handle);
-    if (existing) {
-      // Folder already belongs to a user — reject if it's a different known user
-      if (user.value?.userId && existing.userId && existing.userId !== user.value.userId) {
-        const otherKnown = getKnownUsers().find(u => u.userId === existing.userId);
-        if (otherKnown) {
-          console.warn(`[IDENTITY] Folder "${payload.folderName}" belongs to ${existing.userId}, rejecting for ${user.value.userId}`);
-          if ($q && typeof $q.notify === 'function') {
-            $q.notify({
-              type: 'warning',
-              message: `This folder belongs to ${existing.displayName || existing.userId}. Please choose a different folder.`,
-              timeout: 7000
-            });
-          }
-          localFolderHandle.value = null;
-          localFolderName.value = '';
-          return;
-        }
+    const weblocOwner = await scanWeblocOwner(payload.handle);
+    if (weblocOwner && weblocOwner.userId && user.value?.userId && weblocOwner.userId !== user.value.userId) {
+      console.warn(`[FOLDER] Folder "${payload.folderName}" belongs to ${weblocOwner.userId}, rejecting for ${user.value.userId}`);
+      if ($q && typeof $q.notify === 'function') {
+        $q.notify({
+          type: 'warning',
+          message: `This folder belongs to ${weblocOwner.displayName || weblocOwner.userId}. Please choose a different folder.`,
+          timeout: 7000
+        });
       }
-    } else if (user.value?.userId) {
-      // New folder — stamp it with the current user's identity
-      const identity: MaiaIdentity = {
-        userId: user.value.userId,
-        displayName: user.value.displayName || user.value.userId,
-        createdAt: new Date().toISOString(),
-        lastSync: new Date().toISOString()
-      };
-      await writeIdentityFile(payload.handle, identity);
+      localFolderHandle.value = null;
+      localFolderName.value = '';
+      return;
     }
   } catch (e) {
-    console.warn('[localFolder] Identity file check failed:', e);
+    console.warn('[localFolder] Folder ownership check failed:', e);
   }
 
-  // Register in the multi-user registry
+  // Track active user
   if (user.value?.userId) {
-    addOrUpdateKnownUser({
-      userId: user.value.userId,
-      displayName: user.value.displayName || user.value.userId,
-      folderName: payload.folderName,
-      hasPasskey: false,
-      lastActive: new Date().toISOString()
-    });
     setActiveUserId(user.value.userId);
   }
 };
@@ -2309,9 +2194,8 @@ const clearWizardPendingKey = (userId?: string | null) => {
   }
 };
 
-/** [AUTH] Open delete confirmation dialog for local userId from welcome page. */
-const handleDeleteLocalUser = (userIdOrEvent?: string | Event) => {
-  // Accept userId from card close button or use current welcomeLocalUserId
+/** [AUTH] Open delete confirmation dialog for a user from welcome page badge X. */
+const handleDeleteUser = (userIdOrEvent?: string | Event) => {
   if (typeof userIdOrEvent === 'string') {
     welcomeLocalUserId.value = userIdOrEvent;
     selectedWelcomeUserId.value = userIdOrEvent;
@@ -2319,7 +2203,7 @@ const handleDeleteLocalUser = (userIdOrEvent?: string | Event) => {
   showDeleteLocalUserDialog.value = true;
 };
 
-/** [AUTH] Confirmed delete: clear local snapshot and best-effort delete cloud resources. */
+/** [AUTH] Confirmed delete: delete cloud account, keep local folder data for restore. */
 const confirmDeleteLocalUser = async () => {
   const localId = welcomeLocalUserId.value;
   if (!localId) return;
@@ -2333,43 +2217,15 @@ const confirmDeleteLocalUser = async () => {
         body: JSON.stringify({ userId: localId })
       });
     } catch {
-      // Non-fatal – clear local data regardless
+      // Non-fatal
     }
-    // Clear all local data
+    // Clear IndexedDB snapshot (but keep folder handle + local files for restore)
     await clearUserSnapshot(localId);
     clearWizardPendingKey(localId);
-    // Remove from known users registry, clear active user, and clear stored folder handle
-    removeKnownUser(localId);
-    // Clear active user if it matches the deleted user, so refreshKnownUsers won't resurrect it
-    if (getActiveUserId() === localId) {
-      setActiveUserId(null);
-    }
-    // Clean up MAIA files from local folder before releasing handle
-    const handleToClean = localFolderHandle.value;
-    if (handleToClean) {
-      try {
-        // Remove maia-state.json so a new user won't inherit old data
-        await handleToClean.removeEntry('maia-state.json').catch(() => {});
-        await handleToClean.removeEntry('maia-identity.json').catch(() => {});
-        // Remove webloc files (maia.webloc, maia-for-*.webloc)
-        for await (const [name] of (handleToClean as any).entries()) {
-          if (name.endsWith('.webloc')) {
-            await handleToClean.removeEntry(name).catch(() => {});
-          }
-        }
-      } catch (cleanErr) {
-        console.warn(`[WELCOME] Could not clean local folder files (may need manual cleanup):`, cleanErr);
-      }
-      localFolderHandle.value = null;
-      localFolderName.value = '';
-    }
-    try {
-      await clearDirectoryHandle(localId);
-    } catch { /* non-fatal */ }
     // Clear the httpOnly temp-user cookie so /api/welcome-status doesn't re-surface this user
     await fetch('/api/auth/clear-temp-cookie', { method: 'POST', credentials: 'include' }).catch(() => {});
-    refreshKnownUsers();
-    selectedWelcomeUserId.value = knownUsers.value[0]?.userId || null;
+    await refreshDiscoveredUsers();
+    selectedWelcomeUserId.value = discoveredUsers.value[0]?.userId || null;
     // Reset welcome state so GET STARTED creates a new userId
     welcomeLocalUserId.value = null;
     welcomeLocalSnapshot.value = null;
@@ -2455,7 +2311,6 @@ const handleCloudStartFresh = async () => {
     const uid = user.value.userId;
     await clearUserSnapshot(uid);
     await clearDirectoryHandle(uid);
-    removeKnownUser(uid);
     if (getActiveUserId() === uid) setActiveUserId(null);
     showCloudHealthDialog.value = false;
     cloudHealthDetails.value = null;
@@ -2490,30 +2345,13 @@ const handleRestoreWizardComplete = async () => {
       });
     } catch { /* non-critical */ }
   }
-  // Re-stamp maia-identity.json with the current userId (may differ from the original after restore)
+  // Store handle and update webloc ownership for the restored user
   if (localFolderHandle.value && user.value?.userId) {
     try {
-      const existing = await readIdentityFile(localFolderHandle.value);
-      const identity: MaiaIdentity = {
-        userId: user.value.userId,
-        displayName: user.value.displayName || user.value.userId,
-        createdAt: existing?.createdAt || new Date().toISOString(),
-        lastSync: new Date().toISOString()
-      };
-      await writeIdentityFile(localFolderHandle.value, identity);
-      // Also store the handle under the new userId for future reconnection
       const { storeDirectoryHandle } = await import('./utils/localFolder');
       await storeDirectoryHandle(user.value.userId, localFolderHandle.value);
-      // Update known users registry
-      addOrUpdateKnownUser({
-        userId: user.value.userId,
-        displayName: user.value.displayName || user.value.userId,
-        folderName: localFolderName.value || localFolderHandle.value.name,
-        hasPasskey: !!user.value.hasPasskey,
-        lastActive: new Date().toISOString()
-      });
     } catch (e) {
-      console.warn('[RESTORE] Failed to re-stamp identity:', e);
+      console.warn('[RESTORE] Failed to store handle:', e);
     }
     // Write personalized webloc (same as handleWizardComplete)
     try {
@@ -2974,10 +2812,10 @@ const startTemporarySession = async () => {
       } else {
         // User was destroyed or doesn't exist in cloud — delegate to restore wizard
         // which can re-request folder permission (user gesture) and recover local data
-        const ku = knownUsers.value.find(u => u.userId === activeUserId);
-        if (ku) {
+        const du = discoveredUsers.value.find(u => u.userId === activeUserId);
+        if (du) {
           tempStartLoading.value = false;
-          await handleUserCardRestore(ku);
+          await handleUserCardRestore(du);
           return;
         }
         // No known user entry — fall through to create new account
@@ -2986,8 +2824,8 @@ const startTemporarySession = async () => {
       }
     } else {
       // Phase 4: If known users exist, confirm before creating a new account
-      if (knownUsers.value.length > 0) {
-        const names = knownUsers.value.map(u => u.displayName).join(', ');
+      if (discoveredUsers.value.length > 0) {
+        const names = discoveredUsers.value.map(u => u.displayName).join(', ');
         newAccountConfirmMessage.value = `You already have account(s) on this device (${names}). Create a new account for a different family member?`;
         showNewAccountConfirmDialog.value = true;
         pendingNewAccountCallback.value = async () => {
@@ -3084,11 +2922,10 @@ const destroyTemporaryAccount = async () => {
       console.error(`[DESTROY] Server returned ${response.status}:`, data);
       throw new Error(data.error || 'Failed to delete temporary account');
     }
-    // Keep the user in knownUsers and keep the local folder handle so the
-    // Welcome page can offer RESTORE from local data.  Only clear the IndexedDB
-    // snapshot (cloud state is gone, but folder-based state remains).
+    // Keep the folder handle so the Welcome page can offer RESTORE from local data.
+    // Only clear the IndexedDB snapshot (cloud state is gone, but folder-based state remains).
     await clearUserSnapshot(userIdToDelete);
-    refreshKnownUsers();
+    await refreshDiscoveredUsers();
     resetAuthState();
     showDestroyDialog.value = false;
   } catch (error) {
@@ -3150,10 +2987,8 @@ const beforeUnloadHandler = (e: BeforeUnloadEvent) => {
 };
 
 onMounted(async () => {
-  // Migrate single-user localStorage to multi-user registry (one-time)
-  migrateToKnownUsers();
-  // Reconcile: recover userIds from IndexedDB folder handles (survives localStorage clear)
-  await reconcileKnownUsers();
+  // Discover users from IndexedDB folder handles + .webloc scan
+  await refreshDiscoveredUsers();
 
   // Phase 6: Register beforeunload listener
   window.addEventListener('beforeunload', beforeUnloadHandler);

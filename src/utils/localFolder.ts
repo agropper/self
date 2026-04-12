@@ -52,13 +52,6 @@ export interface MaiaFileEntry {
   fileHandle: FileSystemFileHandle;
 }
 
-export interface MaiaIdentity {
-  userId: string;
-  displayName: string;
-  createdAt: string;
-  lastSync: string;
-}
-
 export interface MaiaState {
   version: number;
   userId: string;
@@ -84,7 +77,6 @@ export interface MaiaState {
 }
 
 const STATE_FILE_NAME = 'maia-state.json';
-const IDENTITY_FILE_NAME = 'maia-identity.json';
 
 // ── IndexedDB handle storage ───────────────────────────────────────
 // Minimal raw IndexedDB usage — one database, one store, one entry per user.
@@ -472,77 +464,45 @@ export async function writeWeblocFile(
   } catch { /* iteration not supported or failed */ }
 }
 
-// ── Identity file (maia-identity.json) ────────────────────────────
+// ── Webloc file parsing (replaces maia-identity.json) ─────────────
+// The .webloc filename encodes ownership: maia-for-<name>-as-<userId>.webloc
 
 /**
- * Read maia-identity.json from the folder. Returns null if missing.
+ * Parse a maia .webloc filename to extract userId and displayName.
+ * Returns null for filenames that don't match the expected pattern.
  */
-export async function readIdentityFile(
+export function parseWeblocFilename(name: string): { userId: string; displayName: string } | null {
+  // maia-for-<name>-as-<userId>.webloc
+  let m = name.match(/^maia-for-(.+)-as-(.+)\.webloc$/);
+  if (m) return { displayName: m[1].replace(/-/g, ' '), userId: m[2] };
+  // maia-for-<userId>.webloc (no separate display name)
+  m = name.match(/^maia-for-(.+)\.webloc$/);
+  if (m) return { userId: m[1], displayName: m[1] };
+  // maia.webloc — no user info
+  return null;
+}
+
+/**
+ * Scan a folder for a maia .webloc file and return the owner info.
+ * Returns null if no .webloc found or folder can't be read.
+ */
+export async function scanWeblocOwner(
   handle: FileSystemDirectoryHandle
-): Promise<MaiaIdentity | null> {
-  const file = await readFileFromFolder(handle, IDENTITY_FILE_NAME);
-  if (!file) return null;
+): Promise<{ userId: string; displayName: string } | null> {
   try {
-    const text = await file.text();
-    return JSON.parse(text) as MaiaIdentity;
-  } catch {
-    console.warn('[localFolder] Failed to parse maia-identity.json');
-    return null;
-  }
+    for await (const entry of handle.values()) {
+      if (entry.kind === 'file' && entry.name.endsWith('.webloc') && entry.name.startsWith('maia')) {
+        const parsed = parseWeblocFilename(entry.name);
+        if (parsed) return parsed;
+      }
+    }
+  } catch { /* iteration failed */ }
+  return null;
 }
 
-/**
- * Write maia-identity.json to the folder.
- */
-export async function writeIdentityFile(
-  handle: FileSystemDirectoryHandle,
-  identity: MaiaIdentity
-): Promise<void> {
-  const json = JSON.stringify(identity, null, 2);
-  await writeFileToFolder(handle, IDENTITY_FILE_NAME, json);
-}
+// ── Active user tracking (localStorage) ──────────────────────────
 
-// ── Multi-user registry (localStorage) ────────────────────────────
-// Tracks all known family members who have used MAIA on this browser.
-
-export interface KnownUser {
-  userId: string;
-  displayName: string;
-  folderName: string | null;
-  hasPasskey: boolean;
-  lastActive: string;
-}
-
-const KNOWN_USERS_KEY = 'maia_known_users';
 const ACTIVE_USER_KEY = 'maia_active_user';
-
-export function getKnownUsers(): KnownUser[] {
-  if (typeof window === 'undefined' || !window.localStorage) return [];
-  try {
-    const raw = window.localStorage.getItem(KNOWN_USERS_KEY);
-    return raw ? JSON.parse(raw) : [];
-  } catch {
-    return [];
-  }
-}
-
-export function addOrUpdateKnownUser(entry: KnownUser): void {
-  if (typeof window === 'undefined' || !window.localStorage) return;
-  const users = getKnownUsers();
-  const idx = users.findIndex(u => u.userId === entry.userId);
-  if (idx >= 0) {
-    users[idx] = { ...users[idx], ...entry };
-  } else {
-    users.push(entry);
-  }
-  window.localStorage.setItem(KNOWN_USERS_KEY, JSON.stringify(users));
-}
-
-export function removeKnownUser(userId: string): void {
-  if (typeof window === 'undefined' || !window.localStorage) return;
-  const users = getKnownUsers().filter(u => u.userId !== userId);
-  window.localStorage.setItem(KNOWN_USERS_KEY, JSON.stringify(users));
-}
 
 export function getActiveUserId(): string | null {
   if (typeof window === 'undefined' || !window.localStorage) return null;
@@ -558,42 +518,27 @@ export function setActiveUserId(userId: string | null): void {
   }
 }
 
-/**
- * Migrate from the old single-user maia_last_snapshot_user key
- * to the new multi-user registry. Call once on app startup.
- */
-export function migrateToKnownUsers(): void {
-  if (typeof window === 'undefined' || !window.localStorage) return;
-  const existing = getKnownUsers();
-  if (existing.length > 0) return; // already migrated
-  const oldUserId = window.localStorage.getItem('maia_last_snapshot_user');
-  if (!oldUserId) return;
-  addOrUpdateKnownUser({
-    userId: oldUserId,
-    displayName: oldUserId,
-    folderName: null,
-    hasPasskey: false,
-    lastActive: new Date().toISOString()
-  });
-  setActiveUserId(oldUserId);
-  // Clean up the old key — knownUsers is now canonical
-  window.localStorage.removeItem('maia_last_snapshot_user');
+/** Badge info derived from IndexedDB folder handles + .webloc scan. */
+export interface DiscoveredUser {
+  userId: string;
+  displayName: string;
+  folderName: string;
+  hasPermission: boolean;
 }
 
 /**
- * Recover userIds from IndexedDB folder handles (survives localStorage clear).
+ * Discover known users from IndexedDB folder handles.
  * For each stored handle, tries queryPermission (no user gesture needed).
- * If permission is granted, reads maia-identity.json to get userId/displayName.
- * Returns recoverable users not already in knownUsers.
+ * If permission is granted, scans for .webloc files to get userId/displayName.
+ * Falls back to maia-state.json, then to the IndexedDB key.
  */
-export async function getAllStoredUserIds(): Promise<Array<{ userId: string; displayName: string; folderName: string }>> {
+export async function discoverUsers(): Promise<DiscoveredUser[]> {
   if (typeof window === 'undefined' || !window.indexedDB) return [];
-  const results: Array<{ userId: string; displayName: string; folderName: string }> = [];
+  const results: DiscoveredUser[] = [];
   try {
     const db = await openHandleDb();
     const tx = db.transaction(HANDLE_STORE_NAME, 'readonly');
     const store = tx.objectStore(HANDLE_STORE_NAME);
-    // Get all keys (userIds) from the handle store
     const allKeys: string[] = await new Promise((resolve, reject) => {
       const req = store.getAllKeys();
       req.onsuccess = () => resolve(req.result as string[]);
@@ -606,14 +551,25 @@ export async function getAllStoredUserIds(): Promise<Array<{ userId: string; dis
         const handle = await getStoredHandle(userId);
         if (!handle) continue;
         const perm = await handle.queryPermission({ mode: 'read' });
-        if (perm !== 'granted') continue;
-        // Try to read identity file
-        const identity = await readIdentityFile(handle);
-        results.push({
-          userId: identity?.userId || userId,
-          displayName: identity?.displayName || userId,
-          folderName: handle.name
-        });
+        if (perm !== 'granted') {
+          // Handle exists but no permission — still show badge with userId from key
+          results.push({ userId, displayName: userId, folderName: '', hasPermission: false });
+          continue;
+        }
+        // Try .webloc first for ownership info
+        const webloc = await scanWeblocOwner(handle);
+        if (webloc) {
+          results.push({ userId: webloc.userId, displayName: webloc.displayName, folderName: handle.name, hasPermission: true });
+        } else {
+          // Fall back to maia-state.json
+          const state = await readStateFile(handle);
+          results.push({
+            userId: state?.userId || userId,
+            displayName: state?.displayName || userId,
+            folderName: handle.name,
+            hasPermission: true
+          });
+        }
       } catch {
         // Skip handles we can't access
       }
@@ -621,42 +577,8 @@ export async function getAllStoredUserIds(): Promise<Array<{ userId: string; dis
   } catch {
     // IndexedDB not available
   }
+  // Clean up legacy localStorage if present
+  try { window.localStorage.removeItem('maia_known_users'); } catch { /* ignore */ }
+  try { window.localStorage.removeItem('maia_last_snapshot_user'); } catch { /* ignore */ }
   return results;
-}
-
-/**
- * Reconcile knownUsers with all available sources:
- * - Existing knownUsers (localStorage)
- * - Folder handles in IndexedDB (survives localStorage clear)
- * Call on app startup after migrateToKnownUsers().
- */
-export async function reconcileKnownUsers(): Promise<void> {
-  const existing = getKnownUsers();
-  const existingIds = new Set(existing.map(u => u.userId));
-
-  // Recover from IndexedDB folder handles
-  const folderUsers = await getAllStoredUserIds();
-  for (const fu of folderUsers) {
-    if (!existingIds.has(fu.userId)) {
-      addOrUpdateKnownUser({
-        userId: fu.userId,
-        displayName: fu.displayName,
-        folderName: fu.folderName,
-        hasPasskey: false, // unknown — will be checked by checkAllUserCloudStatus
-        lastActive: new Date().toISOString()
-      });
-      existingIds.add(fu.userId);
-    } else {
-      // Update folderName if we didn't have it
-      const ku = existing.find(u => u.userId === fu.userId);
-      if (ku && !ku.folderName && fu.folderName) {
-        addOrUpdateKnownUser({ ...ku, folderName: fu.folderName });
-      }
-    }
-  }
-
-  // Ensure active user is set if we have known users
-  if (!getActiveUserId() && getKnownUsers().length > 0) {
-    setActiveUserId(getKnownUsers()[0].userId);
-  }
 }
