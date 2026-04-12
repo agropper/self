@@ -6336,6 +6336,11 @@ onUnmounted(() => {
   }
   stopStage3ElapsedTimer();
 });
+
+defineExpose({
+  addSetupLogLine,
+  generateSetupLogPdf
+});
 </script>
 
 <style scoped>

@@ -154,6 +154,7 @@
           <AdminUsers v-if="showAdminPage" />
           <ChatInterface
             v-else
+            ref="chatInterfaceRef"
             :user="user"
             :is-deep-link-user="isDeepLinkUser"
             :deep-link-info="deepLinkInfo"
@@ -844,6 +845,7 @@ const DEFAULT_TITLE = 'MAIA User App';
 const authenticated = ref(false);
 const showAuth = ref(false);
 const user = ref<User | null>(null);
+const chatInterfaceRef = ref<InstanceType<typeof ChatInterface> | null>(null);
 const isDeepLinkUser = ref(false);
 const deepLinkInfo = ref<DeepLinkInfo | null>(null);
 const deepLinkShareId = ref<string | null>(null);
@@ -2932,6 +2934,17 @@ const destroyTemporaryAccount = async () => {
     } catch (snapErr) {
       console.warn(`[DESTROY] Local state save failed (non-fatal):`, snapErr);
     }
+
+    // Add "Cloud account deleted" entry to the setup log and regenerate maia-log.pdf
+    try {
+      if (chatInterfaceRef.value) {
+        chatInterfaceRef.value.addSetupLogLine('Account', 'Cloud account deleted by user (DELETE CLOUD ACCOUNT)', true, true);
+        await chatInterfaceRef.value.generateSetupLogPdf();
+      }
+    } catch (logErr) {
+      console.warn(`[DESTROY] Setup log update failed (non-fatal):`, logErr);
+    }
+
     const response = await fetch('/api/self/delete', {
       method: 'POST',
       headers: {
@@ -2946,8 +2959,8 @@ const destroyTemporaryAccount = async () => {
       throw new Error(data.error || 'Failed to delete temporary account');
     }
     // Keep the folder handle so the Welcome page can offer RESTORE from local data.
-    // Only clear the IndexedDB snapshot (cloud state is gone, but folder-based state remains).
-    await clearUserSnapshot(userIdToDelete);
+    // Only clear the PouchDB snapshot (cloud state is gone, but folder-based state remains).
+    await clearUserSnapshot(userIdToDelete, { keepDirectoryHandle: true });
     await refreshDiscoveredUsers();
     resetAuthState();
     showDestroyDialog.value = false;
