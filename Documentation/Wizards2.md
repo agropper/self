@@ -157,15 +157,17 @@ Every endpoint used by the Setup wizard, Restore wizard, and MyStuff dialog tabs
 
 Setup and Restore are two paths to the same end state: a user with files, an agent, a knowledge base, medications, a patient summary, saved chats, and agent instructions. But they are implemented as completely separate flows with divergent state management, and the wizard's client-side state leaks into MyStuff rendering.
 
-### 2.0 Critical Bug: "verified" instead of actual content
+### 2.0 Critical Bug: "verified" instead of actual content — ✅ FIXED (v1.2.x)
 
-`saveStateToLocalFolder()` in ChatInterface.vue writes:
+`saveStateToLocalFolder()` in ChatInterface.vue previously wrote:
 ```javascript
 currentMedications: wizardCurrentMedications.value ? 'verified' : null,
 patientSummary: wizardPatientSummary.value ? 'verified' : null,
 ```
 
-`wizardCurrentMedications` and `wizardPatientSummary` are **booleans**, not the actual text. So `maia-state.json` stores the literal string `"verified"`. During restore, RestoreWizard sends `"verified"` to `POST /api/restore`, which writes it into CouchDB as the medications and summary content. **This is why medications and summary say "verified" after restore.**
+`wizardCurrentMedications` and `wizardPatientSummary` are **booleans**, not the actual text. So `maia-state.json` stored the literal string `"verified"`. During restore, RestoreWizard sent `"verified"` to `POST /api/restore`, which wrote it into CouchDB as the medications and summary content.
+
+**Fix:** `saveStateToLocalFolder()` now fetches actual content from the server before writing `maia-state.json`. See Section 3.6. Additionally, RestoreWizard now normalizes both `{chats:[...]}` wrapper format and bare array format for `savedChats`.
 
 ### 2.1 Current State Tracking (the mess)
 
@@ -204,9 +206,9 @@ patientSummary: wizardPatientSummary.value ? 'verified' : null,
 
 ---
 
-## 3. Proposed Redesigns
+## 3. Redesign: Server-Side Provisioning Status
 
-### Design A: Server-Side Provisioning Status (Single Source of Truth)
+> **Implementation status:** The provisioningLog endpoint and event catalog (Sections 3.2–3.5) are implemented. The maia-state.json fix (Section 3.6) is implemented. PDF generation (Section 3.7) is partially implemented — uses client-side setupLogLines with color coding rather than rendering from the server log. The old code removal (Section 3.8) is future work — a dual-write pattern is in place today.
 
 ### 3.1 Core Principle
 
@@ -358,16 +360,11 @@ Response:
 
 The `currentState` summary is **derived** from the log on read — it scans for the latest `setup-started` or `restore-started`, then checks which events follow it. This avoids a separate state field that can get out of sync.
 
-### 3.6 `maia-state.json` Fix: Store Actual Content
+### 3.6 `maia-state.json` Fix: Store Actual Content — ✅ IMPLEMENTED
 
-The current code saves booleans as the string `"verified"`. The fix:
+The old code saved booleans as the string `"verified"`. The fix fetches actual content from the server:
 
 ```javascript
-// BEFORE (broken):
-currentMedications: wizardCurrentMedications.value ? 'verified' : null,
-patientSummary: wizardPatientSummary.value ? 'verified' : null,
-
-// AFTER (correct):
 // Fetch actual content from server before saving to local backup
 const medsResp = await fetch(`/api/user-status?userId=${userId}`);
 const medsData = await medsResp.json();
@@ -379,56 +376,42 @@ currentMedications: medsData.currentMedications || null,
 patientSummary: summaryData.summary || null,
 ```
 
-`maia-state.json` must contain the **actual text** so restore can write it back verbatim. The `saveStateToLocalFolder` function should be called:
+Additionally, `savedChats` is now wrapped as `{ chats: [...] }` to match RestoreWizard's expected format. RestoreWizard also normalizes both formats for backward compatibility.
+
+`maia-state.json` must contain the **actual text** so restore can write it back verbatim. The `saveStateToLocalFolder` function is called:
 - After setup-complete (all data finalized on server)
 - After any MyStuff save (medications edited, summary edited, chat saved)
 - Before account-deleted (final backup snapshot)
 
-### 3.7 Setup Log PDF (maia-log.pdf)
+### 3.7 Setup Log PDF (maia-log.pdf) — Partially Implemented
 
-Generated client-side from `GET /api/provisioning-log` response. The server provides the structured events; the client adds the formatting.
+> **Current implementation:** The PDF is generated client-side from the `setupLogLines` ref array in ChatInterface.vue using jsPDF. Each line has a `step`, `detail`, and `ok` field. Lines are color-coded by category. TEST mode entries are also written to setupLogLines via the dual-write `addTestLog()` helper.
+>
+> **Future (Phase D):** Rewrite PDF generation to render from `GET /api/provisioning-log` server events instead of client-side setupLogLines. This would make the PDF reproducible from the server and eliminate the need for the client-side logging system.
 
-#### Header (client-side detail from `client` field in start event)
+#### Color Coding (implemented)
 
-```
-MAIA Setup Log
-Generated: 4/12/2026, 9:09:43 PM
-Version: 1.2.0
-User: lauren87
-App URL: http://localhost:5173
-Folder: AG MAIA files
-Browser: Chrome 146 on macOS
-Chat providers: Private AI (openai-gpt-oss-120b), Anthropic (claude-opus-4-6), ChatGPT, DeepSeek
-```
+Lines in maia-log.pdf are color-coded using `getLineColor()`:
 
-#### Summary (derived from `currentState`)
+| Color | Category | When |
+|-------|----------|------|
+| **Red** (200,0,0) | Errors | Any line with `ok: false` |
+| **Red** (200,0,0) | Account events | `step === 'Account'` (e.g., "Cloud account deleted") |
+| **Orange** (200,100,0) | Test events | `step === 'TEST'` |
+| **Green** (0,120,0) | User data events | `step === 'My Stuff'`, `step === 'Current Medications'`, or Dialog lines mentioning "My Stuff" |
+| **Black** (0,0,0) | Everything else | Wizard steps, system events |
 
-```
-Summary
-  Files uploaded: 4
-  Apple Health: Yes
-  Agent ready: Yes (1m 09s)
-  KB indexed: Yes — 177,996 tokens (5m 41s)
-  Current Medications: Yes (12 lines)
-  Patient Summary: Yes (24 lines)
-  Saved Chats: 1
-```
+#### Target Format (from server provisioning log — future)
 
-Note: line counts and elapsed times come from the event metadata, not from re-reading content.
-
-#### Detailed Log (one line per event)
+The sections below describe the ideal PDF format when rendered from the server provisioning log. This is aspirational — the current implementation produces a similar but not identical layout from client-side `setupLogLines`.
 
 ```
 --- Setup ---
 [8:46:41 PM] Setup started
 [8:46:55 PM] Files uploaded: 4 files (10,821 KB total), 1 Apple Health
-             GROPPER_ADRIAN_09_24_25_1314-1.PDF, GROPPER_ADRIAN_6KB.PDF,
-             GROPPER_ADRIAN_26KB.PDF, Apple - Adrian Gropper - 2025-11-17.pdf
-[8:46:55 PM] Apple Health detected: Apple - Adrian Gropper - 2025-11-17.pdf
 [8:47:51 PM] Agent deployed (1m 09s)
 [8:52:45 PM] Knowledge Base indexed: 4 files, 177,996 tokens (5m 41s)
 [8:52:49 PM] Patient Summary generated (38 lines, 2,941 chars)
-[8:52:50 PM] Current Medications offered for verification (12 lines)
 [9:02:36 PM] Current Medications saved (12 lines)
 [9:02:50 PM] Patient Summary saved (24 lines, 1,847 chars)
 [9:02:54 PM] Setup complete
@@ -443,61 +426,35 @@ Note: line counts and elapsed times come from the event metadata, not from re-re
 [9:09:31 PM] Current Medications restored (12 lines)
 [9:09:31 PM] Patient Summary restored (24 lines, 1,847 chars)
 [9:09:31 PM] Saved chats restored (1)
-[9:09:31 PM] Agent Instructions restored
-[9:09:31 PM] My Lists restored
 [9:09:31 PM] Restore complete
 ```
 
-Compared to the current log with ~60 entry types, this is **21 event types** producing clean, readable output. No duplicate entries, no "Indexing Progress" noise, no "State Refreshed" clutter.
+### 3.8 What Gets Removed — 🔮 FUTURE WORK (Phase C/D)
 
-`elapsedMs` rendering: `formatElapsed(ms)` → `${Math.floor(ms/60000)}m ${String(Math.floor((ms%60000)/1000)).padStart(2,'0')}s` (e.g., 69000 → `1m 09s`, 341000 → `5m 41s`).
+> **Current state:** A dual-write pattern is in place. Both the old client-side logging (`setupLogLines`, `addSetupLogLine`) and new server-side provisioning log (`POST /api/provisioning-log`) are active. The old code must stay until PDF generation (Phase D) is rewritten to render from the server log. The MyStuff wizard props should be removed once the wizard no longer needs them (Phase C).
 
-### 3.8 What Gets Removed
-
-#### From ChatInterface.vue (~300 lines removed)
-
-| Remove | Reason |
-|--------|--------|
-| `wizardFlowPhase` ref and all transitions | Server log replaces phase tracking |
-| `wizardStage1Complete` ref | Derived from `currentState.agentReady` |
-| `wizardCurrentMedications` ref (boolean) | Derived from `currentState.medicationsDone` |
-| `wizardPatientSummary` ref (boolean) | Derived from `currentState.summaryDone` |
-| `wizardRequestAction` ref | MyStuff loads its own data |
-| `stage3IndexingStartedAt/CompletedAt` refs | Server records elapsed time in event |
-| `stage3IndexingPoll` interval | Polling moves to a simple loop; result written to server |
-| `setupLogLines` ref (60+ addSetupLogLine calls) | Replaced by ~8 `POST /api/provisioning-log` calls |
-| `markIndexingAlreadyCompleted()` | No duplicate-entry problem when server assigns IDs |
-| `oneTimeLogSteps` dedup set | Server events are append-only, no dedup needed |
-| `pendingSummaryRegeneration` flag | No racing watchers — MyStuff loads data independently |
-| `generateSetupLogPdf()` body (~140 lines) | Rewritten to render from server log (much simpler) |
-| `saveStateToLocalFolder()` writing `'verified'` | Rewritten to fetch actual content |
-
-#### From MyStuffDialog.vue
+#### Phase C: Remove wizard props from MyStuffDialog.vue
 
 | Remove | Reason |
 |--------|--------|
 | `wizardActive` prop | MyStuff never knows about wizard |
 | `requestAction` prop | MyStuff loads its own data |
-| `showWizardSummaryActions` computed | Gone |
+| `restoreActive` prop | MyStuff loads its own data |
 | `pendingSummaryRegeneration` ref | Gone |
 | `requestAction` watcher | Gone |
 
-#### From App.vue
+#### Phase D: Remove old client-side logging system
 
 | Remove | Reason |
 |--------|--------|
-| `restoreLogBuffer` + flush logic | Server stores events directly |
-| `handleRestoreLog()` | RestoreWizard writes to server, not via emit |
-| `markIndexingAlreadyCompleted()` call | Gone |
-| `wizardRequestAction` ref | Gone |
-| `@restore-log` event handling | Gone |
-
-#### From RestoreWizard.vue
-
-| Remove | Reason |
-|--------|--------|
-| `emit('restore-log')` and `logStep()` | Replaced by `POST /api/provisioning-log` calls |
-| 20 individual `logStep()` calls | Replaced by ~8 `POST /api/provisioning-log` calls |
+| `setupLogLines` ref (60+ addSetupLogLine calls) | Replaced by ~8 `POST /api/provisioning-log` calls |
+| `addSetupLogLine()` function | Replaced by provisioning-log calls |
+| `oneTimeLogSteps` dedup set | Server events are append-only, no dedup needed |
+| `generateSetupLogPdf()` body (~140 lines) | Rewritten to render from server log |
+| `restoreLogBuffer` + flush logic in App.vue | Server stores events directly |
+| `handleRestoreLog()` in App.vue | RestoreWizard writes to server, not via emit |
+| `@restore-log` event handling in App.vue | Gone |
+| `emit('restore-log')` and `logStep()` in RestoreWizard.vue | Replaced by `POST /api/provisioning-log` calls |
 
 ### 3.9 MyStuff Independence
 
@@ -595,143 +552,64 @@ Note: The `account-deleted` event should be saved to `maia-state.json` locally b
 
 ---
 
-## 4. Automated Setup-Restore Testing
+## 4. Automated Setup-Restore Testing — ✅ IMPLEMENTED
 
 ### 4.1 Test Cycle
 
-Once a local folder is selected, execute this full cycle automatically:
+The full automated cycle:
 
 ```
-SETUP → auto-verify → DELETE CLOUD → RESTORE → verify all tabs → compare → PASS/FAIL
+SETUP (real wizard) → auto-verify → DELETE CLOUD → RESTORE (real wizard) → verify all tabs → compare → PASS/FAIL
 ```
+
+**Key design principle:** The TEST button does NOT replace the wizard UI with a separate test runner. Instead, it sets a `testMode` flag that drives the **real wizard flow** with auto-verification at every choice point. This ensures the test exercises the actual code paths.
 
 ### 4.2 TEST Button
 
-A **TEST** button appears in the folder-select dialog, **only on localhost** (`window.location.hostname === 'localhost'`). It sits next to the existing folder-select button.
+A **TEST** button appears in the wizard's folder-select step, **only on localhost** (`window.location.hostname === 'localhost'`). It sits next to the existing folder-select button.
 
 When clicked:
 1. The user selects their local folder (same File System Access API picker as normal setup)
-2. The test runner takes over — no further user interaction needed
-3. A test progress panel replaces the wizard UI, showing real-time status
-4. At every Verify or Edit choice point, the test runner **auto-verifies** (accepts the AI-generated content without editing) and continues
+2. `testMode` ref is set to `true` on the ChatInterface component
+3. The real wizard runs normally — same UI, same code paths
+4. At every Verify or Edit choice point, auto-verify watchers accept the AI-generated content and continue automatically
+5. No further user interaction is needed
 
-### 4.3 Client-Side Test Runner
+### 4.3 Auto-Pilot Architecture
 
-A new module `src/utils/setupRestoreTest.ts` that drives the full cycle using the same API calls the wizard would make:
+The test is split across two components:
 
-```javascript
-async function runSetupRestoreCycle(folderHandle, userId, onProgress) {
-  const results = { setup: {}, delete: {}, restore: {}, verify: {} };
+**ChatInterface.vue** — Drives the Setup phase:
+- `testMode` ref: When true, auto-verify watchers fire at medications and summary steps
+- `testLogLines` ref: Accumulates test-specific log entries
+- `testFinalOutput` ref: Displayed in an orange results panel at the bottom of the wizard
+- `testSetupVerification` ref: Stores `verifyAllTabs()` result after setup for later comparison
+- `addTestLog(text, ok)`: Dual-writes to both `testLogLines` (for the results panel) and `setupLogLines` (for maia-log.pdf, color-coded orange)
+- `setTestFinalOutput(text)`: Setter exposed via `defineExpose` (avoids Vue 3 ref-unwrapping ambiguity)
+- `closeMyStuff()`: Closes MyStuff dialog so test results panel is visible
+- Emits `test-setup-complete` event with `{ verification, folderHandle }` when setup finishes
+- Phase transition watcher: watches `wizardFlowPhase` for `summary→done` transition (not a boolean expression, to avoid premature firing when testMode is first set)
 
-  // ── PHASE 1: SETUP ──
-  onProgress('setup', 'Uploading files...');
-  const files = await scanFolder(folderHandle);
-  await uploadFiles(files, userId);
-  const uploadLog = await logEvent({ event: 'files-uploaded', count: files.length, ... });
+**App.vue** — Drives the Delete → Restore → Verify phases via `handleTestSetupComplete()`:
+1. Reads and validates `maia-state.json` from the local folder
+2. Logs `account-deleted` provisioning event
+3. Calls `POST /api/self/delete` to destroy the cloud account
+4. Calls `POST /api/account/recreate` to recreate a fresh user doc
+5. Fetches cloud health to verify clean state
+6. Sets `restoreWizardLocalState` and `showRestoreWizard = true` to launch the real RestoreWizard
+7. After RestoreWizard completes (`handleRestoreWizardComplete` with `testModeActive` check):
+   - Runs `verifyAllTabs()` on post-restore state
+   - Runs `compareResults()` against the setup verification
+   - Logs each comparison check as pass/fail via `addTestLog()`
+   - Calls `closeMyStuff()` to reveal the test results panel
+   - Calls `saveLocalSnapshot(null)` to clear the orange badge
+   - Calls `generateSetupLogPdf()` to include test entries in maia-log.pdf
 
-  onProgress('setup', 'Deploying agent...');
-  const agentStart = Date.now();
-  const agent = await deployAndWaitForAgent(userId);
-  await logEvent({ event: 'agent-deployed', agentId: agent.id, elapsedMs: Date.now() - agentStart });
-
-  onProgress('setup', 'Indexing knowledge base...');
-  const kbStart = Date.now();
-  const kb = await indexAndWaitForKB(userId);
-  await logEvent({ event: 'kb-indexed', tokens: kb.tokens, fileCount: kb.fileCount, elapsedMs: Date.now() - kbStart });
-
-  onProgress('setup', 'Generating patient summary...');
-  const summary = await generateSummary(userId);
-  const summaryLines = summary.split('\n').filter(l => l.trim()).length;
-  await logEvent({ event: 'summary-generated', lines: summaryLines, chars: summary.length });
-
-  // Extract medications from summary
-  const meds = extractMedications(summary);
-  const medsLines = meds.split('\n').filter(l => l.trim()).length;
-  await logEvent({ event: 'medications-offered', lines: medsLines });
-
-  // AUTO-VERIFY: accept medications as-is (no user edit)
-  onProgress('setup', 'Auto-verifying medications...');
-  await saveMedications(userId, meds);
-  await logEvent({ event: 'medications-saved', lines: medsLines });
-
-  // AUTO-VERIFY: accept summary as-is (no user edit)
-  onProgress('setup', 'Auto-verifying patient summary...');
-  await saveSummary(userId, summary);
-  await logEvent({ event: 'summary-saved', lines: summaryLines, chars: summary.length });
-
-  await logEvent({ event: 'setup-complete' });
-
-  // 1b. Verify all tabs after setup
-  onProgress('setup', 'Verifying setup...');
-  results.setup = await verifyAllTabs(userId);
-
-  // ── PHASE 2: DELETE CLOUD ACCOUNT ──
-  onProgress('delete', 'Saving local backup...');
-  await saveStateToLocalFolder(folderHandle, userId); // fetches ACTUAL content from server
-  const savedState = await readStateFile(folderHandle);
-
-  // Validate maia-state.json before proceeding
-  assert(savedState.currentMedications && savedState.currentMedications !== 'verified',
-    'maia-state.json has actual medications text');
-  assert(savedState.patientSummary && savedState.patientSummary !== 'verified',
-    'maia-state.json has actual summary text');
-  results.delete = {
-    medsLines: savedState.currentMedications.split('\n').filter(l => l.trim()).length,
-    summaryLines: savedState.patientSummary.split('\n').filter(l => l.trim()).length,
-    chatCount: savedState.savedChats?.chats?.length || 0
-  };
-
-  onProgress('delete', 'Deleting cloud account...');
-  await deleteCloudAccount(userId);
-
-  // ── PHASE 3: RESTORE ──
-  onProgress('restore', 'Recreating account...');
-  await recreateAccount(userId);
-  await logEvent({ event: 'restore-started', client: getClientInfo() });
-
-  onProgress('restore', 'Uploading files from backup...');
-  await uploadFilesFromState(folderHandle, savedState, userId);
-  await logEvent({ event: 'files-uploaded', count: savedState.files.length, ... });
-
-  onProgress('restore', 'Deploying agent...');
-  const restoreAgentStart = Date.now();
-  const restoredAgent = await deployAndWaitForAgent(userId);
-  await logEvent({ event: 'agent-deployed', agentId: restoredAgent.id, elapsedMs: Date.now() - restoreAgentStart });
-
-  onProgress('restore', 'Indexing knowledge base...');
-  const restoreKbStart = Date.now();
-  const restoredKb = await indexAndWaitForKB(userId);
-  await logEvent({ event: 'kb-indexed', tokens: restoredKb.tokens, fileCount: restoredKb.fileCount, elapsedMs: Date.now() - restoreKbStart });
-
-  onProgress('restore', 'Restoring metadata...');
-  const restoreResult = await restoreMetadata(userId, savedState);
-  // Log individual restore events from result
-  if (restoreResult.medications)
-    await logEvent({ event: 'medications-restored', lines: results.delete.medsLines });
-  if (restoreResult.summary)
-    await logEvent({ event: 'summary-restored', lines: results.delete.summaryLines, chars: savedState.patientSummary.length });
-  if (restoreResult.chats > 0)
-    await logEvent({ event: 'chats-restored', count: restoreResult.chats });
-  if (restoreResult.instructions)
-    await logEvent({ event: 'instructions-restored' });
-  if (savedState.listsMarkdown) {
-    await restoreLists(userId, savedState.listsMarkdown);
-    await logEvent({ event: 'lists-restored' });
-  }
-
-  await logEvent({ event: 'restore-complete' });
-
-  // ── PHASE 4: VERIFY ──
-  onProgress('verify', 'Verifying restore...');
-  results.verify = await verifyAllTabs(userId);
-
-  // Compare setup vs restore
-  results.comparison = compareResults(results.setup, results.verify);
-
-  onProgress('done', results.comparison.passed ? 'ALL TESTS PASSED' : 'TESTS FAILED');
-  return results;
-}
-```
+**`src/utils/setupRestoreTest.ts`** — Verification-only utility (not a test runner):
+- `verifyAllTabs(userId)`: Fetches from 6+ endpoints via `Promise.allSettled`, returns a `TabVerification` object
+- `compareResults(setup, restore)`: Compares two `TabVerification` objects field by field
+- `validateBackupState(state)`: Checks `maia-state.json` has actual content (not `"verified"`)
+- `formatVerification()` / `formatComparison()`: Human-readable output formatters
 
 ### 4.4 `verifyAllTabs()` — What to Check
 
@@ -742,11 +620,10 @@ async function runSetupRestoreCycle(folderHandle, userId, onProgress) {
 | My AI Agent | `GET /api/agent-instructions` | `instructions` exists (if was set) |
 | Saved Chats | `GET /api/shared-group-chats` | `chats.length === expected count` |
 | Patient Summary | `GET /api/patient-summary` | `summary.length > 0`, `summary !== 'verified'` |
-| Patient Summary | — | `summary line count > 0` |
 | My Lists | `GET /api/files/lists/markdown` | `markdown.length > 0` (if was set) |
 | Medications | `GET /api/user-status` | `currentMedications.length > 0`, `currentMedications !== 'verified'` |
-| Medications | — | `medications line count > 0` |
-| KB Status | `GET /api/user-status` | `hasKB === true`, `kbStatus === 'attached'` |
+
+All fetches use `Promise.allSettled` so one endpoint failure doesn't block the rest.
 
 ### 4.5 Auto-Verify Behavior
 
@@ -754,77 +631,48 @@ During the test cycle, whenever the normal setup flow would present a Verify or 
 
 | Choice Point | Normal Flow | TEST Mode |
 |-------------|-------------|-----------|
-| Current Medications offered | MyStuff opens to My Lists tab, user can edit or verify | Auto-save as-is, log `medications-saved` |
-| Patient Summary shown | MyStuff opens to Summary tab, user can edit or verify | Auto-save as-is, log `summary-saved` |
-| Any confirmation dialog | User clicks OK | Auto-dismiss |
+| Current Medications offered | MyStuff opens to My Lists tab, user can edit or verify | Waits 10s for Apple Health auto-processing, then checks server for medications. If empty, extracts "Current Medications" section from the pre-generated patient summary. Saves to server and continues. |
+| Patient Summary shown | MyStuff opens to Summary tab, user can edit or verify | Auto-accept as-is, log `summary-saved` |
 
-The test runner calls the same save endpoints the UI would call — it just skips the user interaction. This ensures the test exercises the real code path, not a simulated one.
+The auto-verify watchers in ChatInterface.vue fire during the real wizard flow — no separate test code path. The wizard opens MyStuff tabs as usual, but the watchers auto-save and close them.
+
+**Medications fallback chain** (implemented because Lists.vue auto-processes Apple Health but requires user VERIFY click to save):
+1. Wait 10s for medications to appear on server
+2. If not found, fetch from `GET /api/user-status` → `currentMedications`
+3. If still empty, extract from `preGeneratedSummary` by finding the "Current Medications" section header
+4. Save whatever was found via `POST /api/user-current-medications`
 
 ### 4.6 Test Output
 
+Test results are displayed in two ways:
+
+**1. Orange results panel** — An orange-bordered panel at the bottom of the wizard chat interface. Shows `testFinalOutput` text with the comparison results (PASS/FAIL for each field).
+
+**2. maia-log.pdf** — Test entries are written to setupLogLines with `step: 'TEST'` and rendered in orange in the PDF. The PDF includes the full wizard log (black), user data events (green), test events (orange), and errors (red).
+
+Example test log entries in the PDF:
 ```
-Setup-Restore Test Results
-==========================
-SETUP PHASE
-  ✓ Files uploaded: 4
-  ✓ Apple Health detected: Apple - Adrian Gropper - 2025-11-17.pdf
-  ✓ Agent deployed (1m 09s)
-  ✓ KB indexed: 177,996 tokens (5m 41s)
-  ✓ Summary generated: 38 lines, 2,941 chars
-  ✓ Medications offered: 12 lines
-  ✓ Medications auto-verified: 12 lines
-  ✓ Summary auto-verified: 24 lines, 1,847 chars
-
-DELETE PHASE
-  ✓ maia-state.json saved with actual content
-  ✓ maia-state.json medications: 12 lines (not "verified")
-  ✓ maia-state.json summary: 24 lines (not "verified")
-  ✓ maia-state.json chats: 0
-  ✓ Cloud account deleted
-
-RESTORE PHASE
-  ✓ Account recreated
-  ✓ Files uploaded: 4
-  ✓ Agent deployed (0m 45s)
-  ✓ KB indexed: 177,996 tokens (4m 30s)
-  ✓ Medications restored: 12 lines
-  ✓ Summary restored: 24 lines, 1,847 chars
-
-VERIFY PHASE (post-restore data matches post-setup)
-  ✓ Saved Files: 4 === 4
-  ✓ Agent ready: true === true
-  ✓ KB tokens: 177,996 === 177,996
-  ✓ Medications lines: 12 === 12
-  ✓ Medications content: exact match
-  ✓ Summary lines: 24 === 24
-  ✓ Summary content: exact match
-  ✓ Lists: match (or both empty)
-
-RESULT: PASS (all assertions passed)
-Total time: 12m 34s
+[TEST] Setup verification: 4 files, agent ready, summary 24 lines, medications 12 lines
+[TEST] maia-state.json validated: medications 12 lines, summary 24 lines, 1 chat
+[TEST] Cloud account deleted
+[TEST] Account recreated, restore starting...
+[TEST] Post-restore: Files count: PASS (4 === 4)
+[TEST] Post-restore: Agent ready: PASS
+[TEST] Post-restore: Summary: PASS (24 lines)
+[TEST] Post-restore: Medications: PASS (12 lines)
+[TEST] Post-restore: Chats: PASS (1 === 1)
+[TEST] RESULT: ALL CHECKS PASSED
 ```
 
-### 4.7 TEST Button Location
+### 4.7 Bugs Found and Fixed During Testing
 
-In the folder-select dialog (the first thing the user sees after clicking GET STARTED):
-
-```
-┌─────────────────────────────────────┐
-│  Select Your MAIA Folder            │
-│                                     │
-│  Choose a local folder to store     │
-│  your medical records and backups.  │
-│                                     │
-│  ┌─────────────┐   ┌──────────┐    │
-│  │ SELECT FOLDER│   │   TEST   │    │
-│  └─────────────┘   └──────────┘    │
-│                     (localhost only) │
-└─────────────────────────────────────┘
-```
-
-The TEST button:
-- Only renders when `window.location.hostname === 'localhost'`
-- Opens the same folder picker as SELECT FOLDER
-- After folder selection, immediately starts the automated cycle
-- Replaces the dialog content with a live progress panel
-- Shows the test output (Section 4.6) when complete
+| Bug | Root Cause | Fix |
+|-----|-----------|-----|
+| TEST halts immediately | `wizardFlowPhase` starts as `'done'`, so boolean watcher `testMode && phase === 'done'` fired when testMode was set | Watch phase value with old/new: only fire on `summary→done` transition |
+| Medications empty after restore | `saveStateToLocalFolder` wrote `'verified'` string | Fetch actual content from server (Section 3.6) |
+| Saved chats not restored | `savedChats` stored as bare array, RestoreWizard expected `{chats:[...]}` | Wrap in `saveStateToLocalFolder`, handle both formats in RestoreWizard |
+| Medications timeout (15s hang) | Lists.vue auto-processes Apple Health but needs user VERIFY click | Reduced to 10s, added server check + patient summary extraction fallback |
+| MyStuff dialog hides results | Dialog left open after restore, covering test panel | Added `closeMyStuff()` to defineExpose, called after verification |
+| Orange badge after restore | Server reported `wizardComplete: false` due to missing medications | Medications fix + `saveLocalSnapshot(null)` after test |
+| jsPDF Unicode spacing | `✓` character spaced out in PDF | Use plain ASCII text instead |
+| Chat restore silent failures | `catch {}` swallowed all errors | Added logging: `console.warn` + `results.errors.push()` |

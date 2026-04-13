@@ -418,7 +418,7 @@ const props = defineProps<Props>();
 const emit = defineEmits<{
   'back-to-chat': [];
   'show-patient-summary': [];
-  'current-medications-saved': [data: { value: string; edited: boolean }];
+  'current-medications-saved': [data: { value: string; edited: boolean; changed?: boolean }];
 }>();
 
 

@@ -6012,7 +6012,7 @@ watch(
     if (phase !== 'done' || oldPhase !== 'summary' || !testMode.value || testSetupVerification.value) return;
     addTestLog('Setup complete — verifying all tabs...');
     try {
-      const { verifyAllTabs, formatVerification } = await import('../utils/setupRestoreTest');
+      const { verifyAllTabs } = await import('../utils/setupRestoreTest');
       const verification = await verifyAllTabs(props.user!.userId);
       testSetupVerification.value = verification;
       addTestLog(`Files: ${verification.files.count}`, verification.files.count > 0);
