@@ -89,12 +89,7 @@ const props = defineProps<{
 const emit = defineEmits<{
   'update:modelValue': [value: boolean];
   'restore-complete': [];
-  'restore-log': [payload: { step: string; detail: string; ok: boolean; bold?: boolean }];
 }>();
-
-const logStep = (step: string, detail: string, ok: boolean, bold = false) => {
-  emit('restore-log', { step, detail, ok, bold });
-};
 
 const logProvisioningEvent = async (eventData: Record<string, any>) => {
   try {
@@ -115,7 +110,6 @@ const handleClose = () => {
   } else {
     // Allow closing mid-restore — it continues in the background
     emit('update:modelValue', false);
-    logStep('Restore', 'Restore wizard closed by user (restore continues in background)', true);
   }
 };
 
@@ -215,7 +209,6 @@ const executeRestore = async () => {
   let filesUploadedToKB = 0;
 
   // Bold start entry
-  logStep('Restore', `Restore started for ${uid} — ${files.length} file(s), medications: ${state?.currentMedications ? 'yes' : 'no'}, summary: ${state?.patientSummary ? 'yes' : 'no'}`, true, true);
   await logProvisioningEvent({
     event: 'restore-started',
     method: 'restore',
@@ -291,11 +284,9 @@ const executeRestore = async () => {
           uploadedFileNames.push(fileInfo.fileName);
           if (/^apple/i.test(fileInfo.fileName) && /\.pdf$/i.test(fileInfo.fileName)) appleHealthCount++;
           updateItem(key, { status: 'done', progress: shouldGoToKB ? 'Uploaded to KB' : 'Uploaded to archive' });
-          logStep('Restore', `File uploaded: ${fileInfo.fileName}${shouldGoToKB ? ' (to KB)' : ' (archive)'}`, true);
         } catch (e: any) {
           console.error(`[RestoreWizard] File upload failed: ${fileInfo.fileName}:`, e?.message);
           updateItem(key, { status: 'error', errorMsg: e?.message || 'Upload failed' });
-          logStep('Restore', `File upload failed: ${fileInfo.fileName} — ${e?.message || 'unknown error'}`, false);
         }
       }
     } else if (files.length > 0 && props.safariFolderFiles) {
@@ -316,10 +307,8 @@ const executeRestore = async () => {
           uploadedFileNames.push(fileInfo.fileName);
           if (/^apple/i.test(fileInfo.fileName) && /\.pdf$/i.test(fileInfo.fileName)) appleHealthCount++;
           updateItem(key, { status: 'done', progress: shouldGoToKB ? 'Uploaded to KB' : 'Uploaded to archive' });
-          logStep('Restore', `File uploaded: ${fileInfo.fileName}${shouldGoToKB ? ' (to KB)' : ' (archive)'}`, true);
         } catch (e: any) {
           updateItem(key, { status: 'error', errorMsg: e?.message || 'Upload failed' });
-          logStep('Restore', `File upload failed: ${fileInfo.fileName} — ${e?.message || 'unknown error'}`, false);
         }
       }
     } else if (files.length > 0) {
@@ -350,7 +339,6 @@ const executeRestore = async () => {
       }
       updateItem('kb', { status: 'running', progress: 'Creating...' });
       const kbStartTime = Date.now();
-      logStep('Restore', 'Knowledge Base indexing started', true);
       try {
         const indexResp = await fetch('/api/update-knowledge-base', {
           method: 'POST',
@@ -387,7 +375,6 @@ const executeRestore = async () => {
                   if (f) parts.push(`${f} file${f === 1 ? '' : 's'}`);
                   if (t) parts.push(`${Number(t).toLocaleString()} tokens`);
                   updateItem('kb', { status: 'done', progress: parts.join(', ') || 'Indexed' });
-                  logStep('Restore', `Knowledge Base indexed: ${parts.join(', ') || 'complete'}`, true);
                   logProvisioningEvent({
                     event: 'kb-indexed',
                     tokens: t || 0,
@@ -424,7 +411,6 @@ const executeRestore = async () => {
         }
       } catch (e: any) {
         updateItem('kb', { status: 'error', errorMsg: e?.message || 'Failed' });
-        logStep('Restore', `Knowledge Base indexing failed: ${e?.message || 'unknown error'}`, false);
       }
     })();
 
@@ -433,7 +419,6 @@ const executeRestore = async () => {
     const agentPromise = (async () => {
       updateItem('agent', { status: 'running' });
       const agentStartTime = Date.now();
-      logStep('Restore', 'AI Agent deployment started', true);
       try {
         const syncResp = await fetch('/api/sync-agent', {
           method: 'POST',
@@ -471,7 +456,6 @@ const executeRestore = async () => {
           }
           agentDeployed = true;
           updateItem('agent', { status: 'done', progress: endpointReady ? 'Ready' : 'Deploying in background' });
-          logStep('Restore', `AI Agent ${endpointReady ? 'deployed and ready' : 'deploying in background'}`, true);
           logProvisioningEvent({
             event: 'agent-deployed',
             agentId: syncData.agentId || null,
@@ -483,7 +467,6 @@ const executeRestore = async () => {
       } catch (e: any) {
         console.error(`[RestoreWizard] Agent deploy failed:`, e?.message);
         updateItem('agent', { status: 'error', errorMsg: e?.message || 'Failed' });
-        logStep('Restore', `AI Agent deployment failed: ${e?.message || 'unknown error'}`, false);
       }
     })();
 
@@ -528,7 +511,6 @@ const executeRestore = async () => {
         const r = restoreData.results || {};
         if (restoreItems.value.find(i => i.key === 'medications' && i.needed)) {
           updateItem('medications', r.medications ? { status: 'done', progress: 'Restored' } : { status: 'error', errorMsg: 'Not saved' });
-          logStep('Restore', r.medications ? 'Current Medications restored' : 'Current Medications restore failed', !!r.medications);
           if (r.medications) {
             const medsText = state?.currentMedications || '';
             logProvisioningEvent({
@@ -539,7 +521,6 @@ const executeRestore = async () => {
         }
         if (restoreItems.value.find(i => i.key === 'summary' && i.needed)) {
           updateItem('summary', r.summary ? { status: 'done', progress: 'Restored' } : { status: 'error', errorMsg: 'Not saved' });
-          logStep('Restore', r.summary ? 'Patient Summary restored' : 'Patient Summary restore failed', !!r.summary);
           if (r.summary) {
             const summaryText = state?.patientSummary || '';
             logProvisioningEvent({
@@ -552,7 +533,6 @@ const executeRestore = async () => {
         if (restoreItems.value.find(i => i.key === 'chats' && i.needed)) {
           updateItem('chats', { status: 'done', progress: r.chats > 0 ? `${r.chats} restored` : 'None' });
           if (r.chats > 0) {
-            logStep('Restore', `${r.chats} saved chat(s) restored`, true);
             logProvisioningEvent({
               event: 'chats-restored',
               count: r.chats || 0
@@ -562,10 +542,8 @@ const executeRestore = async () => {
         if (restoreItems.value.find(i => i.key === 'instructions' && i.needed)) {
           if (!agentDeployed) {
             updateItem('instructions', { status: 'error', errorMsg: 'Agent not deployed' });
-            logStep('Restore', 'Agent Instructions not restored (agent not deployed)', false);
           } else {
             updateItem('instructions', r.instructions ? { status: 'done', progress: 'Applied' } : { status: 'error', errorMsg: 'Not saved' });
-            logStep('Restore', r.instructions ? 'Agent Instructions restored' : 'Agent Instructions restore failed', !!r.instructions);
             if (r.instructions) {
               logProvisioningEvent({ event: 'instructions-restored' });
             }
@@ -596,12 +574,10 @@ const executeRestore = async () => {
           throw new Error(errData.error || `Lists restore failed: ${listsResp.status}`);
         }
         updateItem('lists', { status: 'done', progress: 'Restored' });
-        logStep('Restore', 'My Lists restored', true);
         logProvisioningEvent({ event: 'lists-restored' });
       } catch (e: any) {
         console.error(`[RestoreWizard] Lists restore failed:`, e?.message);
         updateItem('lists', { status: 'error', errorMsg: e?.message || 'Failed' });
-        logStep('Restore', `My Lists restore failed: ${e?.message || 'unknown error'}`, false);
       }
     }
 
@@ -618,14 +594,12 @@ const executeRestore = async () => {
     if (doneItems.some(i => i.key === 'chats')) parts.push('chats restored');
     if (errorItems.length > 0) parts.push(`${errorItems.length} failed`);
     restoreSummary.value = parts.join(', ') + '.';
-    logStep('Restore', `Restore complete: ${restoreSummary.value}`, errorItems.length === 0, true);
     await logProvisioningEvent({ event: 'restore-complete' });
 
     phase.value = 'complete';
   } catch (e) {
     console.error('[RestoreWizard] Unexpected error:', e);
     restoreSummary.value = 'Restore completed with errors.';
-    logStep('Restore', `Restore finished with errors: ${(e as Error)?.message || 'unknown'}`, false, true);
     phase.value = 'complete';
   }
 };

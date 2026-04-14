@@ -429,32 +429,33 @@ The sections below describe the ideal PDF format when rendered from the server p
 [9:09:31 PM] Restore complete
 ```
 
-### 3.8 What Gets Removed — 🔮 FUTURE WORK (Phase C/D)
+### 3.8 What Was Removed — ✅ DONE (Phase C/D)
 
-> **Current state:** A dual-write pattern is in place. Both the old client-side logging (`setupLogLines`, `addSetupLogLine`) and new server-side provisioning log (`POST /api/provisioning-log`) are active. The old code must stay until PDF generation (Phase D) is rewritten to render from the server log. The MyStuff wizard props should be removed once the wizard no longer needs them (Phase C).
+#### Phase C: Wizard props removed from MyStuffDialog.vue
 
-#### Phase C: Remove wizard props from MyStuffDialog.vue
+| Removed | Replacement |
+|---------|-------------|
+| `wizardActive` prop | Removed — `showSummaryAttention` now uses only `summaryNeedsVerify` |
+| `requestAction` prop + watcher | Replaced by `wizardGenerateSummary()` method exposed via `defineExpose`, called through template ref from ChatInterface |
+| `showWizardSummaryActions` computed | Removed — was `wizardActive && tab === 'summary'`, no longer needed |
+| `request-action-done` emit | Removed — no prop to acknowledge |
+| `wizardActive` guard on meds consistency check | Removed — check now runs whenever `summaryCount > 1` |
 
-| Remove | Reason |
-|--------|--------|
-| `wizardActive` prop | MyStuff never knows about wizard |
-| `requestAction` prop | MyStuff loads its own data |
-| `restoreActive` prop | MyStuff loads its own data |
-| `pendingSummaryRegeneration` ref | Gone |
-| `requestAction` watcher | Gone |
+Note: `pendingSummaryRegeneration` ref stays — it prevents the tab watcher from racing with `requestNewSummary()` and is still used by `handleShowPatientSummary()`. `restoreActive` was never on MyStuffDialog (it's on ChatInterface, suppressing dialogs during restore).
 
-#### Phase D: Remove old client-side logging system
+#### Phase D: Old client-side logging system removed
 
-| Remove | Reason |
-|--------|--------|
-| `setupLogLines` ref (60+ addSetupLogLine calls) | Replaced by ~8 `POST /api/provisioning-log` calls |
-| `addSetupLogLine()` function | Replaced by provisioning-log calls |
-| `oneTimeLogSteps` dedup set | Server events are append-only, no dedup needed |
-| `generateSetupLogPdf()` body (~140 lines) | Rewritten to render from server log |
-| `restoreLogBuffer` + flush logic in App.vue | Server stores events directly |
-| `handleRestoreLog()` in App.vue | RestoreWizard writes to server, not via emit |
-| `@restore-log` event handling in App.vue | Gone |
-| `emit('restore-log')` and `logStep()` in RestoreWizard.vue | Replaced by `POST /api/provisioning-log` calls |
+| Removed | Notes |
+|---------|-------|
+| `setupLogLines` ref + 77 `addSetupLogLine()` calls | All logging now via `logProvisioningEvent()` |
+| `addSetupLogLine()` function, `oneTimeLogSteps` set | Gone |
+| `restoreSetupLogFromState()` + session-change divider logic | Gone |
+| `setupLog` field in `maia-state.json` | No longer written or read |
+| `generateSetupLogPdf()` body | Rewritten to fetch from `GET /api/provisioning-log` and render server events |
+| `restoreLogBuffer` + `flushRestoreLogBuffer` + `handleRestoreLog` in App.vue | Gone |
+| `@restore-log` event binding in App.vue | Gone |
+| `logStep()` function + 21 calls + `restore-log` emit in RestoreWizard.vue | Gone — `logProvisioningEvent()` already existed alongside each call |
+| `addSetupLogLine` in `defineExpose` | Removed — `generateSetupLogPdf` still exposed |
 
 ### 3.9 MyStuff Independence
 
@@ -584,7 +585,7 @@ The test is split across two components:
 - `testLogLines` ref: Accumulates test-specific log entries
 - `testFinalOutput` ref: Displayed in an orange results panel at the bottom of the wizard
 - `testSetupVerification` ref: Stores `verifyAllTabs()` result after setup for later comparison
-- `addTestLog(text, ok)`: Dual-writes to both `testLogLines` (for the results panel) and `setupLogLines` (for maia-log.pdf, color-coded orange)
+- `addTestLog(text, ok)`: Writes to `testLogLines` (for the results panel). Test events in maia-log.pdf come from the server `provisioningLog` (color-coded orange)
 - `setTestFinalOutput(text)`: Setter exposed via `defineExpose` (avoids Vue 3 ref-unwrapping ambiguity)
 - `closeMyStuff()`: Closes MyStuff dialog so test results panel is visible
 - Emits `test-setup-complete` event with `{ verification, folderHandle }` when setup finishes
@@ -676,3 +677,17 @@ Example test log entries in the PDF:
 | Orange badge after restore | Server reported `wizardComplete: false` due to missing medications | Medications fix + `saveLocalSnapshot(null)` after test |
 | jsPDF Unicode spacing | `✓` character spaced out in PDF | Use plain ASCII text instead |
 | Chat restore silent failures | `catch {}` swallowed all errors | Added logging: `console.warn` + `results.errors.push()` |
+| maia-log.pdf truncated (setup events missing) | Two independent state-save functions: `saveLocalSnapshot` (App.vue) and `saveStateToLocalFolder` (ChatInterface.vue) both overwrite `maia-state.json`. `saveLocalSnapshot` didn't include `provisioningLog`, so calling it after restore erased setup events before `generateSetupLogPdf` could merge them. | Added `provisioningLog: existingState?.provisioningLog` to `saveLocalSnapshot`. Also fixed merge logic in `generateSetupLogPdf` to use compound key `(id+time)` instead of bare `id` (IDs restart from 1 after account recreation). |
+
+### 4.8 Known Fragility: Dual State-Save Functions
+
+There are two functions that write `maia-state.json`:
+
+| Function | Location | When Called |
+|----------|----------|-------------|
+| `saveLocalSnapshot()` | App.vue | Sign-out, restore complete, post-test cleanup |
+| `saveStateToLocalFolder()` | ChatInterface.vue | End of `generateSetupLogPdf()` |
+
+Both overwrite the entire file. Any field that one function manages but the other doesn't will be silently erased when the other runs. Today both carry forward `provisioningLog` from the existing file, but this pattern is fragile — adding a new field to one function without updating the other will recreate the same bug.
+
+**Future improvement:** Consolidate into a single state-save function, or adopt a read-merge-write pattern where unknown fields are always preserved.
