@@ -907,10 +907,10 @@ const myStuffDialogRef = ref<InstanceType<typeof MyStuffDialog> | null>(null);
 
 /** Request MyStuffDialog to generate or update the patient summary.
  *  Replaces the old requestAction prop — calls exposed methods directly via ref. */
-const requestMyStuffSummaryAction = (action: 'generate-summary' | 'update-summary-meds') => {
+const requestMyStuffSummaryAction = (action: 'generate-summary' | 'update-summary-meds', medsText?: string) => {
   nextTick(() => {
     if (myStuffDialogRef.value) {
-      myStuffDialogRef.value.wizardGenerateSummary(action);
+      myStuffDialogRef.value.wizardGenerateSummary(action, medsText);
     }
   });
 };
@@ -1044,8 +1044,32 @@ const preGeneratedSummary = ref<string | null>(null);
 const wizardPreparingRecords = ref(false);
 
 // ── Provisioning log ────
+// Coalesce duplicate log events (two code paths occasionally emit the same
+// milestone within a few seconds — e.g. kb-indexed, summary-saved, restore-complete).
+const lastLoggedEventAt: Record<string, number> = {};
+const COALESCE_WINDOW_MS: Record<string, number> = {
+  'kb-indexed': 5000,
+  'summary-saved': 3000,
+  'summary-verified': 3000,
+  'summary-generated': 3000,
+  'medications-saved': 3000,
+  'restore-complete': 3000,
+  'setup-complete': 3000
+};
+
 const logProvisioningEvent = async (eventData: Record<string, any>) => {
   if (!props.user?.userId) return;
+  const evt = String(eventData.event || '');
+  const window = COALESCE_WINDOW_MS[evt];
+  if (window) {
+    const last = lastLoggedEventAt[evt] || 0;
+    const now = Date.now();
+    if (now - last < window) {
+      console.log('[ProvisioningLog] coalesced duplicate %s (last %dms ago)', evt, now - last);
+      return;
+    }
+    lastLoggedEventAt[evt] = now;
+  }
   try {
     await fetch('/api/provisioning-log', {
       method: 'POST',
@@ -1258,6 +1282,7 @@ watch(
     if (isOpen) {
       logProvisioningEvent({
         event: 'setup-started',
+        test: testMode.value || undefined,
         method: 'setup',
         client: {
           browser: parseUserAgent(),
@@ -2521,6 +2546,8 @@ const handleTestButton = () => {
   testFinalOutput.value = '';
   testSetupVerification.value = null;
   addTestLog('TEST mode activated — wizard will auto-verify');
+  logProvisioningEvent({ event: 'test-started' });
+  void generateSetupLogPdf();
   // Trigger the normal folder picker; the wizard flow runs as usual
   handlePickLocalFolder();
 };
@@ -2976,7 +3003,10 @@ const generateSetupLogPdf = async () => {
         if (evt.event === 'account-deleted') return [200, 0, 0];
         if (evt.event?.startsWith('test-')) return [200, 100, 0];
         if (evt.event === 'medications-saved' || evt.event === 'summary-saved' ||
-            evt.event === 'medications-restored' || evt.event === 'summary-restored') return [0, 120, 0];
+            evt.event === 'medications-restored' || evt.event === 'summary-restored' ||
+            evt.event === 'summary-verified') return [0, 120, 0];
+        if (evt.event === 'medications-offered' && evt.outcome && evt.outcome !== 'success') return [180, 100, 0];
+        if (evt.event === 'current-medications-recovery-failed') return [200, 0, 0];
         return [0, 0, 0];
       };
 
@@ -3006,15 +3036,23 @@ const generateSetupLogPdf = async () => {
             return `[${t}] KB indexed: ${parts.join(', ')}`;
           }
           case 'summary-generated': return `[${t}] Patient Summary generated (${evt.lines || 0} lines, ${Number(evt.chars || 0).toLocaleString()} chars)`;
-          case 'medications-offered': return `[${t}] Medications offered for verification (${evt.lines || 0} lines)`;
+          case 'medications-offered': {
+            const src = evt.source ? ` from ${String(evt.source).replace(/-/g, ' ')}` : '';
+            const outcome = evt.outcome && evt.outcome !== 'success' ? ` [${evt.outcome}]` : '';
+            return `[${t}] Medications offered for verification (${evt.lines || 0} lines)${src}${outcome}`;
+          }
+          case 'medications-dismissed': return `[${t}] Medications step dismissed without verification`;
+          case 'current-medications-recovery-failed': return `[${t}] Current Medications recovery FAILED — fell through ${Array.isArray(evt.pathsTried) ? evt.pathsTried.join(' -> ') : 'all paths'}`;
           case 'medications-saved': return `[${t}] Current Medications saved (${evt.lines || 0} lines)`;
           case 'medications-restored': return `[${t}] Current Medications restored (${evt.lines || 0} lines)`;
           case 'summary-saved': return `[${t}] Patient Summary saved (${evt.lines || 0} lines, ${Number(evt.chars || 0).toLocaleString()} chars)`;
+          case 'summary-verified': return `[${t}] Patient Summary verified (${evt.lines || 0} lines, ${Number(evt.chars || 0).toLocaleString()} chars)`;
           case 'summary-restored': return `[${t}] Patient Summary restored (${evt.lines || 0} lines, ${Number(evt.chars || 0).toLocaleString()} chars)`;
           case 'chats-restored': return `[${t}] Saved chats restored (${evt.count || 0})`;
           case 'instructions-restored': return `[${t}] Agent Instructions restored`;
           case 'lists-restored': return `[${t}] My Lists restored`;
-          case 'test-started': return `[${t}] TEST mode activated`;
+          case 'test-started': return `[${t}] TEST mode started (automated Setup/Restore run)`;
+          case 'test-completed': return `[${t}] TEST mode completed${evt.passed !== undefined ? (evt.passed ? ' — PASS' : ' — FAIL') : ''}`;
           case 'test-verification': return `[${t}] TEST verification: ${evt.label || ''} ${evt.passed ? 'PASS' : 'FAIL'}${evt.detail ? ' - ' + evt.detail : ''}`;
           case 'error': return `[${t}] ERROR: ${evt.step || ''} - ${evt.message || ''}`;
           default: return `[${t}] ${evt.event || 'unknown'}`;
@@ -3026,7 +3064,8 @@ const generateSetupLogPdf = async () => {
       for (const evt of events) {
         // Draw session divider for start events
         if (evt.event === 'setup-started' || evt.event === 'restore-started') {
-          const label = evt.event === 'setup-started' ? '--- Setup ---' : '--- Restore ---';
+          const testTag = evt.test ? ' (TEST)' : '';
+          const label = (evt.event === 'setup-started' ? '--- Setup' : '--- Restore') + testTag + ' ---';
           if (lastSession) {
             y += 3;
             doc.setDrawColor(100);
@@ -6214,11 +6253,18 @@ const handleReferenceFileAdded = async (file: { fileName: string; bucketKey: str
   }
 };
 
-const handleMedicationsOffered = (payload: { lines: number; source: 'apple-health' | 'patient-summary' | 'manual' }) => {
+const handleMedicationsOffered = (payload: {
+  lines: number;
+  source: 'apple-health' | 'patient-summary' | 'manual' | 'user-doc';
+  outcome: 'success' | 'ai-refusal' | 'ai-error' | 'ai-empty' | 'summary-empty' | 'no-source' | 'agent-not-ready';
+  detail?: string;
+}) => {
   logProvisioningEvent({
     event: 'medications-offered',
     lines: payload.lines,
-    source: payload.source
+    source: payload.source,
+    outcome: payload.outcome,
+    detail: payload.detail
   });
   void generateSetupLogPdf();
 };
@@ -6244,7 +6290,7 @@ const handleCurrentMedicationsSaved = async (payload?: { value?: string; edited?
     // the verified medications. Never a second AI call — the wizard budget is
     // exactly two Private AI calls: summary generation + optional meds extraction.
     myStuffInitialTab.value = 'summary';
-    requestMyStuffSummaryAction('update-summary-meds');
+    requestMyStuffSummaryAction('update-summary-meds', payload?.value || '');
   }
   // Refresh wizard state in background (non-blocking)
   void refreshWizardState();
@@ -6271,9 +6317,15 @@ const handleMyStuffTabOpened = (tab: string) => {
 
 };
 
-const handlePatientSummarySaved = async () => {
+const handlePatientSummarySaved = async (payload?: { userId?: string; summary?: string }) => {
   {
-    const summaryText = preGeneratedSummary.value || '';
+    // Prefer the text reported by MyStuffDialog (authoritative — what was POSTed).
+    // Fall back to preGeneratedSummary only if the payload didn't include one.
+    const summaryText = (payload?.summary && payload.summary.length > 0)
+      ? payload.summary
+      : (preGeneratedSummary.value || '');
+    // Keep our cached copy in sync so subsequent events see the post-patch text.
+    if (payload?.summary) preGeneratedSummary.value = payload.summary;
     logProvisioningEvent({
       event: 'summary-saved',
       lines: summaryText ? summaryText.split('\n').filter((l: string) => l.trim()).length : 0,
@@ -6296,11 +6348,14 @@ const handlePatientSummarySaved = async () => {
   }
 };
 
-const handlePatientSummaryVerified = async () => {
+const handlePatientSummaryVerified = async (payload?: { userId?: string; summary?: string }) => {
   {
-    const summaryText = preGeneratedSummary.value || '';
+    const summaryText = (payload?.summary && payload.summary.length > 0)
+      ? payload.summary
+      : (preGeneratedSummary.value || '');
+    if (payload?.summary) preGeneratedSummary.value = payload.summary;
     logProvisioningEvent({
-      event: 'summary-saved',
+      event: 'summary-verified',
       lines: summaryText ? summaryText.split('\n').filter((l: string) => l.trim()).length : 0,
       chars: summaryText.length
     });

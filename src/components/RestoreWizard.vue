@@ -84,6 +84,7 @@ const props = defineProps<{
   localFolderHandle: FileSystemDirectoryHandle | null;
   safariFolderFiles?: File[] | null;
   kbName?: string | null;
+  testMode?: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -211,6 +212,7 @@ const executeRestore = async () => {
   // Bold start entry
   await logProvisioningEvent({
     event: 'restore-started',
+    test: props.testMode || undefined,
     method: 'restore',
     client: {
       browser: navigator.userAgent,

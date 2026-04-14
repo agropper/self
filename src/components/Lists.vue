@@ -419,7 +419,12 @@ const emit = defineEmits<{
   'back-to-chat': [];
   'show-patient-summary': [];
   'current-medications-saved': [data: { value: string; edited: boolean; changed?: boolean }];
-  'medications-offered': [data: { lines: number; source: 'apple-health' | 'patient-summary' | 'manual' }];
+  'medications-offered': [data: {
+    lines: number;
+    source: 'apple-health' | 'patient-summary' | 'manual' | 'user-doc';
+    outcome: 'success' | 'ai-refusal' | 'ai-error' | 'ai-empty' | 'summary-empty' | 'no-source' | 'agent-not-ready';
+    detail?: string;
+  }];
 }>();
 
 // Count non-empty lines for meds-offered telemetry
@@ -2271,6 +2276,11 @@ const loadCurrentMedications = async (forceRefresh = false) => {
             isInitialMedsLoading.value = false;
             console.log('[Lists] Current Medications loaded from saved user document (%d chars)', statusResult.currentMedications.length);
             logWizardEvent('current_meds_loaded_from_user_doc', { length: statusResult.currentMedications.length });
+            emit('medications-offered', {
+              lines: countMedsLines(statusResult.currentMedications),
+              source: 'user-doc',
+              outcome: 'success'
+            });
             return;
           }
         }
@@ -2286,7 +2296,13 @@ const loadCurrentMedications = async (forceRefresh = false) => {
 
     // Path 2: Apple Health medication records (if present) — AI extraction
     let path2Succeeded = false;
+    // Track the Path-2 failure reason so downstream fallback emits can report it.
+    type Path2Reason = 'ai-refusal' | 'ai-error' | 'ai-empty' | 'agent-not-ready' | null;
+    let path2FailureReason: Path2Reason = null;
+    let path2FailureDetail: string | undefined;
+    const pathsTried: string[] = ['user-doc'];
     if (medicationCategory && medicationCategory.observations && medicationCategory.observations.length > 0) {
+      pathsTried.push('apple-health');
       console.log('[Lists] Medication Records found in Apple Health categories — extracting with AI');
       isInitialMedsLoading.value = false;
       currentMedicationsStatus.value = 'waiting';
@@ -2319,6 +2335,8 @@ const loadCurrentMedications = async (forceRefresh = false) => {
             if (isRefusal) {
               console.warn('[Lists] AI meds response looks like a refusal/empty — falling through to Patient Summary path:', cleaned.slice(0, 120));
               logWizardEvent('current_meds_refusal_detected', { preview: cleaned.slice(0, 120) });
+              path2FailureReason = 'ai-refusal';
+              path2FailureDetail = cleaned.slice(0, 80);
             } else {
               currentMedications.value = cleaned;
               isCurrentMedicationsEdited.value = false;
@@ -2326,21 +2344,30 @@ const loadCurrentMedications = async (forceRefresh = false) => {
               currentMedicationsBlockTitle.value = 'Current Medications';
               console.log('[Lists] Current Medications generated from Apple Health records (%d chars)', cleaned.length);
               logWizardEvent('current_meds_generated', { length: cleaned.length });
-              emit('medications-offered', { lines: countMedsLines(cleaned), source: 'apple-health' });
+              emit('medications-offered', {
+                lines: countMedsLines(cleaned),
+                source: 'apple-health',
+                outcome: 'success'
+              });
               path2Succeeded = true;
             }
           } else {
             logWizardEvent('current_meds_empty_response');
+            path2FailureReason = 'ai-empty';
           }
         } catch (err) {
           console.error('[Lists] Error generating Current Medications from records:', err);
-          logWizardEvent('current_meds_error', { error: err instanceof Error ? err.message : 'Unknown error' });
+          const msg = err instanceof Error ? err.message : 'Unknown error';
+          logWizardEvent('current_meds_error', { error: msg });
+          path2FailureReason = 'ai-error';
+          path2FailureDetail = msg;
         } finally {
           isLoadingCurrentMedications.value = false;
           currentMedicationsStatus.value = '';
         }
       } else {
         logWizardEvent('current_meds_agent_not_ready');
+        path2FailureReason = 'agent-not-ready';
         currentMedicationsStatus.value = '';
       }
       if (path2Succeeded) return;
@@ -2381,11 +2408,18 @@ const loadCurrentMedications = async (forceRefresh = false) => {
     currentMedicationsStatus.value = '';
 
     if (medsFromSummary) {
+      pathsTried.push('patient-summary');
       currentMedications.value = medsFromSummary;
       isCurrentMedicationsEdited.value = false;
       currentMedicationsBlockTitle.value = 'Current Medications';
       logWizardEvent('current_meds_from_summary', { medsLength: medsFromSummary.length });
-      emit('medications-offered', { lines: countMedsLines(medsFromSummary), source: 'patient-summary' });
+      // If Path 2 failed, annotate the outcome so the log explains the fall-through.
+      emit('medications-offered', {
+        lines: countMedsLines(medsFromSummary),
+        source: 'patient-summary',
+        outcome: path2FailureReason ? path2FailureReason : 'success',
+        detail: path2FailureDetail
+      });
       // Show in display mode with verify-highlight so user can EDIT or VERIFY
       needsVerifyAction.value = true;
       persistVerifyState();
@@ -2394,7 +2428,28 @@ const loadCurrentMedications = async (forceRefresh = false) => {
       // with the red-rim Edit/Verify buttons to coax the user.
       console.log('[Lists] Wizard flow — no medications from any source; opening for manual entry');
       logWizardEvent('current_meds_none_found');
-      emit('medications-offered', { lines: 0, source: 'manual' });
+      pathsTried.push('patient-summary', 'manual');
+      emit('medications-offered', {
+        lines: 0,
+        source: 'manual',
+        outcome: path2FailureReason || 'no-source',
+        detail: path2FailureDetail
+      });
+      // Explicit failure event so maia-log clearly flags the regression.
+      try {
+        await fetch('/api/provisioning-log', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: 'include',
+          body: JSON.stringify({
+            userId: props.userId,
+            event: 'current-medications-recovery-failed',
+            pathsTried,
+            lastError: path2FailureDetail,
+            reason: path2FailureReason || 'no-source'
+          })
+        });
+      } catch { /* non-fatal */ }
       currentMedicationsBlockTitle.value = 'Please enter your current medications manually';
       needsVerifyAction.value = true;
       persistVerifyState();
@@ -2405,7 +2460,13 @@ const loadCurrentMedications = async (forceRefresh = false) => {
       console.log('[Lists] No medications available — opening for manual entry');
       currentMedicationsBlockTitle.value = 'Please enter your current medications manually';
       logWizardEvent('current_meds_no_records_no_summary');
-      emit('medications-offered', { lines: 0, source: 'manual' });
+      pathsTried.push('patient-summary', 'manual');
+      emit('medications-offered', {
+        lines: 0,
+        source: 'manual',
+        outcome: path2FailureReason || 'no-source',
+        detail: path2FailureDetail
+      });
       startEditingCurrentMedications();
     }
     return;

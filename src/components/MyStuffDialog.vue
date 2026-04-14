@@ -1278,8 +1278,13 @@ const emit = defineEmits<{
   'diary-posted': [content: string]; // Emit diary content to add to chat
   'reference-file-added': [file: { fileName: string; bucketKey: string; fileSize: number; uploadedAt: string; fileType?: string; fileUrl?: string; isReference: boolean }]; // Emit reference file to add to chat
   'current-medications-saved': [data: { value: string; edited: boolean }];
-  'medications-offered': [data: { lines: number; source: 'apple-health' | 'patient-summary' | 'manual' }];
-  'patient-summary-saved': [data: { userId: string }];
+  'medications-offered': [data: {
+    lines: number;
+    source: 'apple-health' | 'patient-summary' | 'manual' | 'user-doc';
+    outcome: 'success' | 'ai-refusal' | 'ai-error' | 'ai-empty' | 'summary-empty' | 'no-source' | 'agent-not-ready';
+    detail?: string;
+  }];
+  'patient-summary-saved': [data: { userId: string; summary?: string }];
   'patient-summary-verified': [data: { userId: string }];
   'rehydration-complete': [payload: { hasInitialFile: boolean }];
   'rehydration-file-removed': [payload: { bucketKey?: string; fileName?: string }];
@@ -1301,7 +1306,12 @@ const handleCurrentMedicationsSaved = (payload: { value: string; edited: boolean
   emit('current-medications-saved', payload);
 };
 
-const handleMedicationsOffered = (payload: { lines: number; source: 'apple-health' | 'patient-summary' | 'manual' }) => {
+const handleMedicationsOffered = (payload: {
+  lines: number;
+  source: 'apple-health' | 'patient-summary' | 'manual' | 'user-doc';
+  outcome: 'success' | 'ai-refusal' | 'ai-error' | 'ai-empty' | 'summary-empty' | 'no-source' | 'agent-not-ready';
+  detail?: string;
+}) => {
   emit('medications-offered', payload);
 };
 
@@ -3037,7 +3047,7 @@ const handleReplaceSummaryByIndex = async (indexToReplace: number) => {
     // Reload summaries to get updated list
     await loadPatientSummary();
     summaryNeedsVerify.value = true;
-    emit('patient-summary-saved', { userId: props.userId });
+    emit('patient-summary-saved', { userId: props.userId, summary: patientSummary.value || '' });
     
     if ($q && typeof $q.notify === 'function') {
       $q.notify({
@@ -3090,7 +3100,7 @@ const handleReplaceSummary = async (replaceStrategy: 'keep' | 'oldest' | 'newest
     // Reload summaries to get updated list
     await loadPatientSummary();
     summaryNeedsVerify.value = true;
-    emit('patient-summary-saved', { userId: props.userId });
+    emit('patient-summary-saved', { userId: props.userId, summary: patientSummary.value || '' });
     
     if ($q && typeof $q.notify === 'function') {
       $q.notify({
@@ -3151,7 +3161,7 @@ const handleSaveSummary = async () => {
     isEditingSummaryTab.value = false;
     summaryNeedsVerify.value = true;
 
-    emit('patient-summary-saved', { userId: props.userId });
+    emit('patient-summary-saved', { userId: props.userId, summary: patientSummary.value || '' });
     
     showSummaryAvailableModal.value = false;
     if (showSummaryViewModal.value) {
@@ -3211,7 +3221,7 @@ const handleSaveEditedSummary = async () => {
     editingSummary.value = false;
     showSummaryViewModal.value = false;
     
-    emit('patient-summary-saved', { userId: props.userId });
+    emit('patient-summary-saved', { userId: props.userId, summary: patientSummary.value || '' });
     
     if ($q && typeof $q.notify === 'function') {
       $q.notify({
@@ -5223,6 +5233,17 @@ const replaceMedicationsInSummary = (
   }
   if (headingIdx < 0) return null;
 
+  // Safety: if the caller handed us empty meds, never blank the section body.
+  // Just toggle the verification marker on the heading and keep the original body.
+  if (!newMedsText || !newMedsText.trim()) {
+    if (!markVerified) return null;
+    let hOnly = lines[headingIdx];
+    hOnly = hOnly.replace(/\s*\((?:patient[\s-]?(?:verified|confirmed))\)\s*/gi, '').replace(/\s+$/, '');
+    hOnly = `${hOnly} (Patient Verified)`;
+    const updated = [...lines.slice(0, headingIdx), hOnly, ...lines.slice(headingIdx + 1)].join('\n');
+    return updated === summaryText ? null : updated;
+  }
+
   const startIdx = headingIdx + 1;
   let endIdx = lines.length;
   for (let i = startIdx; i < lines.length; i++) {
@@ -5287,7 +5308,7 @@ const handleMedsMismatchUpdate = async () => {
       throw new Error(err.message || 'Failed to save updated summary');
     }
     await loadPatientSummary();
-    emit('patient-summary-saved', { userId: props.userId });
+    emit('patient-summary-saved', { userId: props.userId, summary: patientSummary.value || '' });
     if ($q && typeof $q.notify === 'function') {
       $q.notify({
         type: 'positive',
@@ -5318,12 +5339,24 @@ const updateSummaryWithVerifiedMeds = async () => {
   // Set verify flag immediately — prevents flash of "verified" state before prompt appears
   summaryNeedsVerify.value = true;
   try {
-    // Fetch the verified medications from the user document
-    const res = await fetch(`/api/user-status?userId=${encodeURIComponent(props.userId)}`, {
-      credentials: 'include'
-    });
-    const status = res.ok ? await res.json() : {};
-    const meds = String(status.currentMedications || '').trim();
+    // Prefer the meds text passed from the emit chain — it's the exact value
+    // Lists.vue just POSTed, and avoids a race against the user-status GET.
+    let meds = (pendingVerifiedMedsText.value || '').trim();
+    // Consume the pending value so a subsequent call doesn't reuse it.
+    pendingVerifiedMedsText.value = null;
+    if (!meds) {
+      // Fallback: fetch from the server (used when Verify-without-edit bypasses
+      // saveCurrentMedicationsValue, or when the pending value is missing).
+      try {
+        const res = await fetch(`/api/user-status?userId=${encodeURIComponent(props.userId)}`, {
+          credentials: 'include'
+        });
+        const status = res.ok ? await res.json() : {};
+        meds = String(status.currentMedications || '').trim();
+      } catch {
+        meds = '';
+      }
+    }
 
     // Reload the latest summary (the provisional generated after KB indexing)
     await loadPatientSummary();
@@ -5371,7 +5404,7 @@ const updateSummaryWithVerifiedMeds = async () => {
     }
     summaryNeedsVerify.value = true; // Set before load so UI doesn't flash without verify prompt
     await loadPatientSummary();
-    emit('patient-summary-saved', { userId: props.userId });
+    emit('patient-summary-saved', { userId: props.userId, summary: updated });
     if ($q && typeof $q.notify === 'function') {
       $q.notify({
         type: 'positive',
@@ -5453,7 +5486,7 @@ const saveSummaryFromTab = async () => {
     summaryViewText.value = summaryToSave;
     summaryEditText.value = summaryToSave;
     isEditingSummaryTab.value = false;
-    emit('patient-summary-saved', { userId: props.userId });
+    emit('patient-summary-saved', { userId: props.userId, summary: patientSummary.value || '' });
 
     // Extract Current Medications from Patient Summary and save — but only if
     // the user hasn't already verified medications (their verified list is authoritative).
@@ -5692,12 +5725,19 @@ watch(() => props.initialTab, (newTab) => {
 
 /** Exposed method: wizard controller calls this to trigger summary generation/update.
  *  Replaces the old requestAction prop — called directly via template ref. */
-const wizardGenerateSummary = (action: 'generate-summary' | 'update-summary-meds') => {
+// Holds meds text passed in from ChatInterface so updateSummaryWithVerifiedMeds
+// uses the authoritative value from the current-medications-saved emit instead
+// of re-fetching (which races against the POST that just completed).
+const pendingVerifiedMedsText = ref<string | null>(null);
+const wizardGenerateSummary = (action: 'generate-summary' | 'update-summary-meds', medsText?: string) => {
   if (!isOpen.value) return;
   loadingSummary.value = true;
   pendingSummaryRegeneration.value = true;
   currentTab.value = 'summary';
   if (action === 'update-summary-meds') {
+    // Capture the authoritative meds text from the emit so updateSummaryWithVerifiedMeds
+    // doesn't have to re-fetch and race the just-completed POST.
+    pendingVerifiedMedsText.value = typeof medsText === 'string' ? medsText : null;
     updateSummaryWithVerifiedMeds();
   } else {
     requestNewSummary();
