@@ -719,7 +719,6 @@
       :local-folder-handle="localFolderHandle"
       :kb-name="restoreWizardKbName"
       @restore-complete="handleRestoreWizardComplete"
-      @restore-log="handleRestoreLog"
     />
 
     <!-- Destroyed account restore dialog -->
@@ -792,7 +791,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted, watch } from 'vue';
+import { ref, computed, onMounted, onUnmounted } from 'vue';
 import VueMarkdown from 'vue-markdown-render';
 
 // Store route check interval and event listener for cleanup (must be at top level)
@@ -1848,8 +1847,8 @@ const saveLocalSnapshot = async (snapshot?: SignOutSnapshot | null) => {
             ((status?.currentMedications && status.currentMedications.trim()) || existingState?.currentMedications) &&
             ((summary?.summary && summary.summary.trim()) || existingState?.patientSummary)
           ),
-          // Preserve setup log from existing state (written by ChatInterface)
-          setupLog: existingState?.setupLog || undefined
+          // Preserve provisioningLog from existing state (managed by ChatInterface.saveStateToLocalFolder)
+          provisioningLog: existingState?.provisioningLog || undefined,
         };
         await writeStateFile(localFolderHandle.value, state);
 
@@ -2492,39 +2491,9 @@ const handleCloudStartFresh = async () => {
   }
 };
 
-/** Phase 7: Handle log events from RestoreWizard — forward to ChatInterface's setup log.
- *  Buffer entries until ChatInterface is mounted (it may not exist yet when restore starts). */
-const restoreLogBuffer = ref<{ step: string; detail: string; ok: boolean; bold: boolean }[]>([]);
-
-const flushRestoreLogBuffer = () => {
-  if (chatInterfaceRef.value && restoreLogBuffer.value.length > 0) {
-    for (const entry of restoreLogBuffer.value) {
-      chatInterfaceRef.value.addSetupLogLine(entry.step, entry.detail, entry.ok, entry.bold);
-    }
-    restoreLogBuffer.value = [];
-  }
-};
-
-const handleRestoreLog = (payload: { step: string; detail: string; ok: boolean; bold?: boolean }) => {
-  const entry = { step: payload.step, detail: payload.detail, ok: payload.ok, bold: payload.bold || false };
-  if (chatInterfaceRef.value) {
-    // Flush any buffered entries first, then add this one
-    flushRestoreLogBuffer();
-    chatInterfaceRef.value.addSetupLogLine(entry.step, entry.detail, entry.ok, entry.bold);
-  } else {
-    // ChatInterface not mounted yet — buffer for later
-    restoreLogBuffer.value.push(entry);
-  }
-};
-
-// Flush buffered restore log entries once ChatInterface is available
-watch(chatInterfaceRef, (ref) => {
-  if (ref) flushRestoreLogBuffer();
-});
-
+/** Phase 7: Handle log events from RestoreWizard (no-op, provisioning log handles this now). */
 /** Phase 7: Restore Wizard completed — close dialog, clear health state, notify user. */
 const handleRestoreWizardComplete = async () => {
-  flushRestoreLogBuffer(); // Ensure all buffered entries are written before generating PDF
   showRestoreWizard.value = false;
   restoreWizardLocalState.value = null;
   cloudHealthDetails.value = null;
@@ -3182,11 +3151,9 @@ const destroyTemporaryAccount = async () => {
       console.warn(`[DESTROY] Local state save failed (non-fatal):`, snapErr);
     }
 
-    // Add detailed log entries and regenerate maia-log.pdf
+    // Regenerate maia-log.pdf
     try {
       if (chatInterfaceRef.value) {
-        chatInterfaceRef.value.addSetupLogLine('Account', `Cloud account deleted by user (DELETE CLOUD ACCOUNT) for ${userIdToDelete}`, true, true);
-        chatInterfaceRef.value.addSetupLogLine('Account', 'Local backup preserved in folder for restore. Orange badge will appear on Welcome page.', true);
         await chatInterfaceRef.value.generateSetupLogPdf();
       }
     } catch (logErr) {

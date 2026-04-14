@@ -1257,16 +1257,12 @@ interface Props {
   originalMessages?: Message[]; // Original unfiltered messages for privacy filtering
   rehydrationFiles?: Array<{ fileName?: string; bucketKey?: string; fileSize?: number; uploadedAt?: string }>;
   rehydrationActive?: boolean;
-  wizardActive?: boolean;
-  /** Action for the wizard controller to request. MyStuffDialog executes and emits 'request-action-done'. */
-  requestAction?: 'generate-summary' | 'update-summary-meds' | null;
 }
 
 const props = withDefaults(defineProps<Props>(), {
   initialTab: 'files',
   messages: () => [],
   originalMessages: () => [],
-  requestAction: null
 });
 
 const emit = defineEmits<{
@@ -1285,7 +1281,6 @@ const emit = defineEmits<{
   'patient-summary-verified': [data: { userId: string }];
   'rehydration-complete': [payload: { hasInitialFile: boolean }];
   'rehydration-file-removed': [payload: { bucketKey?: string; fileName?: string }];
-  'request-action-done': [];
   'show-patient-summary': [];
   'file-added-to-kb': [data: { fileName: string; bucketKey: string }];
   'tab-opened': [tab: string];
@@ -1389,11 +1384,10 @@ const indexedFiles = ref<string[]>([]); // Track which files are actually indexe
 const kbNeedsUpdate = ref(false); // Track if KB needs to be updated (files moved)
 const kbSummaryTokens = ref<string | number | null>(null);
 const kbSummaryFiles = ref<number | null>(null);
-const showWizardSummaryActions = computed(() => !!props.wizardActive && currentTab.value === 'summary');
 const summaryNeedsVerify = ref(false);
 /** Once the user dismisses the summary tab without verifying this session, don't auto-reopen. */
 const summaryDismissedThisSession = ref(false);
-const showSummaryAttention = computed(() => showWizardSummaryActions.value || summaryNeedsVerify.value);
+const showSummaryAttention = computed(() => summaryNeedsVerify.value);
 const kbDataSourceCount = ref<number | null>(null);
 const kbIndexedDataSourceCount = ref<number | null>(null);
 const kbIndexingActiveOnServer = ref(false);
@@ -5015,10 +5009,8 @@ const loadPatientSummary = async () => {
     // Check medications consistency after loading summary — but only if this
     // is NOT the first-ever summary (initial creation naturally differs from the
     // verified medications list because the AI uses its own wording).
-    // Also skip during wizard: the server auto-generates a summary during
-    // provisioning, so the user's first regeneration is already summaryCount=2.
     const summaryCount = (result.summaries || []).length;
-    if (loadedSummary && !medsMismatchAcknowledged.value && !props.wizardActive && summaryCount > 1) {
+    if (loadedSummary && !medsMismatchAcknowledged.value && summaryCount > 1) {
       await checkMedicationsConsistency();
     }
   } catch (err) {
@@ -5678,24 +5670,21 @@ watch(() => props.initialTab, (newTab) => {
   }
 });
 
-// Wizard action controller: parent sets requestAction prop, we execute and acknowledge.
-// Default flush so loadingSummary is set BEFORE the tab renders (avoids flash of empty state).
-watch(() => props.requestAction, (action) => {
-  if (!action || !isOpen.value) return;
-  if (action === 'generate-summary') {
-    loadingSummary.value = true;
-    pendingSummaryRegeneration.value = true; // prevent tab watcher from also calling loadPatientSummary
-    currentTab.value = 'summary';
-    requestNewSummary();
-  } else if (action === 'update-summary-meds') {
-    // Update the pre-generated summary with the verified Current Medications
-    loadingSummary.value = true;
-    pendingSummaryRegeneration.value = true; // prevent tab watcher from also calling loadPatientSummary
-    currentTab.value = 'summary';
+/** Exposed method: wizard controller calls this to trigger summary generation/update.
+ *  Replaces the old requestAction prop — called directly via template ref. */
+const wizardGenerateSummary = (action: 'generate-summary' | 'update-summary-meds') => {
+  if (!isOpen.value) return;
+  loadingSummary.value = true;
+  pendingSummaryRegeneration.value = true;
+  currentTab.value = 'summary';
+  if (action === 'update-summary-meds') {
     updateSummaryWithVerifiedMeds();
+  } else {
+    requestNewSummary();
   }
-  emit('request-action-done');
-});
+};
+
+defineExpose({ wizardGenerateSummary });
 
 watch(isOpen, (newValue) => {
   emit('update:modelValue', newValue);

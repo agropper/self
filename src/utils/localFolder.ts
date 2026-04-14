@@ -74,6 +74,7 @@ export interface MaiaState {
   wizardComplete?: boolean;
   settings?: Record<string, any>;
   setupLog?: Array<{ time: string; step: string; detail: string; ok: boolean; bold?: boolean }>;
+  provisioningLog?: Array<Record<string, any>>;
 }
 
 const STATE_FILE_NAME = 'maia-state.json';
