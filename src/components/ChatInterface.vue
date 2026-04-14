@@ -624,6 +624,7 @@
       @diary-posted="handleDiaryPosted"
       @reference-file-added="handleReferenceFileAdded"
       @current-medications-saved="handleCurrentMedicationsSaved"
+      @medications-offered="handleMedicationsOffered"
       @patient-summary-saved="handlePatientSummarySaved"
       @patient-summary-verified="handlePatientSummaryVerified"
       @show-patient-summary="handleMyStuffShowSummary"
@@ -5789,7 +5790,8 @@ watch(
       }
       wizardFlowPhase.value = 'medications';
       guidedFlowDismissCount.value = 0;
-      logProvisioningEvent({ event: 'medications-offered' });
+      // Note: 'medications-offered' event is logged by Lists.vue after extraction
+      // completes, so we have an accurate line count for the offered meds.
 
       // Step 1: Generate and save Patient Summary BEFORE opening My Lists.
       // This ensures the summary is available when Lists.vue needs to extract medications.
@@ -6212,6 +6214,15 @@ const handleReferenceFileAdded = async (file: { fileName: string; bucketKey: str
   }
 };
 
+const handleMedicationsOffered = (payload: { lines: number; source: 'apple-health' | 'patient-summary' | 'manual' }) => {
+  logProvisioningEvent({
+    event: 'medications-offered',
+    lines: payload.lines,
+    source: payload.source
+  });
+  void generateSetupLogPdf();
+};
+
 const handleCurrentMedicationsSaved = async (payload?: { value?: string; edited?: boolean; changed?: boolean }) => {
   const medsLineCount = payload?.value ? payload.value.split('\n').filter(l => l.trim()).length : 0;
   logProvisioningEvent({
@@ -6229,18 +6240,11 @@ const handleCurrentMedicationsSaved = async (payload?: { value?: string; edited?
     guidedFlowDismissCount.value = 0;
     console.log('[Wizard] Current Medications saved — opening Patient Summary tab');
     void generateSetupLogPdf();
-    // Switch to Patient Summary tab and always trigger summary generation.
-    // Even if medications didn't change, we need to ensure the summary tab
-    // shows valid content (the pre-generated summary may be an AI refusal
-    // like "I'm sorry" if the KB wasn't fully indexed yet).
+    // Switch to Patient Summary tab and text-patch the provisional summary with
+    // the verified medications. Never a second AI call — the wizard budget is
+    // exactly two Private AI calls: summary generation + optional meds extraction.
     myStuffInitialTab.value = 'summary';
-    if (payload?.changed && preGeneratedSummary.value) {
-      // Medications changed and we have a pre-generated summary — do a cheap update
-      requestMyStuffSummaryAction('update-summary-meds');
-    } else {
-      // Either no change or no pre-generated summary — generate fresh
-      requestMyStuffSummaryAction('generate-summary');
-    }
+    requestMyStuffSummaryAction('update-summary-meds');
   }
   // Refresh wizard state in background (non-blocking)
   void refreshWizardState();
@@ -6479,30 +6483,22 @@ onMounted(async () => {
 
     watch(() => showMyStuffDialog.value, (isOpen, wasOpen) => {
       if (wasOpen && !isOpen) {
-        // During guided flow, track dismiss count. After 2 dismissals, skip the phase.
+        // During guided flow, closing My Lists during the medications phase
+        // advances directly to the Patient Summary phase. Per the 2-AI-call spec,
+        // if the user didn't verify/edit meds, we keep the provisional summary
+        // (with its Apple Health or AI-derived meds section) as-is — no third
+        // AI call, no meds-section patch.
         if (wizardFlowPhase.value === 'medications') {
-          guidedFlowDismissCount.value += 1;
-          if (guidedFlowDismissCount.value >= 2) {
-            // User dismissed My Lists twice — skip to Patient Summary
-            guidedFlowDismissCount.value = 0;
-            wizardFlowPhase.value = 'summary';
-            void generateSetupLogPdf();
-            void nextTick(() => {
-              myStuffInitialTab.value = 'summary';
-              if (preGeneratedSummary.value) {
-                requestMyStuffSummaryAction('update-summary-meds');
-              } else {
-                requestMyStuffSummaryAction('generate-summary');
-              }
-              showMyStuffDialog.value = true;
-            });
-          } else {
-            // First dismiss — reopen on the same tab
-            void nextTick(() => {
-              myStuffInitialTab.value = 'lists';
-              showMyStuffDialog.value = true;
-            });
-          }
+          logProvisioningEvent({ event: 'medications-dismissed' });
+          guidedFlowDismissCount.value = 0;
+          wizardFlowPhase.value = 'summary';
+          void generateSetupLogPdf();
+          void nextTick(() => {
+            myStuffInitialTab.value = 'summary';
+            // No requestMyStuffSummaryAction — the provisional summary is already
+            // saved and the Patient Summary tab will load it on open. No AI call.
+            showMyStuffDialog.value = true;
+          });
           return;
         }
         if (wizardFlowPhase.value === 'summary') {
@@ -6517,10 +6513,11 @@ onMounted(async () => {
             emit('wizard-complete');
             // Don't reopen — wizard is done
           } else {
-            // First dismiss — reopen on the same tab
+            // First dismiss — reopen on the same tab.
+            // No requestMyStuffSummaryAction: the summary is already saved and
+            // shown; regenerating would exceed the 2-AI-call wizard budget.
             void nextTick(() => {
               myStuffInitialTab.value = 'summary';
-              requestMyStuffSummaryAction('generate-summary');
               showMyStuffDialog.value = true;
             });
           }

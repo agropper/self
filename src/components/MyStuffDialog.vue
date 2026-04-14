@@ -603,6 +603,7 @@
               @back-to-chat="closeDialog"
               @show-patient-summary="handleShowPatientSummary"
               @current-medications-saved="handleCurrentMedicationsSaved"
+              @medications-offered="handleMedicationsOffered"
             />
           </q-tab-panel>
 
@@ -1277,6 +1278,7 @@ const emit = defineEmits<{
   'diary-posted': [content: string]; // Emit diary content to add to chat
   'reference-file-added': [file: { fileName: string; bucketKey: string; fileSize: number; uploadedAt: string; fileType?: string; fileUrl?: string; isReference: boolean }]; // Emit reference file to add to chat
   'current-medications-saved': [data: { value: string; edited: boolean }];
+  'medications-offered': [data: { lines: number; source: 'apple-health' | 'patient-summary' | 'manual' }];
   'patient-summary-saved': [data: { userId: string }];
   'patient-summary-verified': [data: { userId: string }];
   'rehydration-complete': [payload: { hasInitialFile: boolean }];
@@ -1297,6 +1299,10 @@ const handleShowPatientSummary = () => {
 
 const handleCurrentMedicationsSaved = (payload: { value: string; edited: boolean }) => {
   emit('current-medications-saved', payload);
+};
+
+const handleMedicationsOffered = (payload: { lines: number; source: 'apple-health' | 'patient-summary' | 'manual' }) => {
+  emit('medications-offered', payload);
 };
 
 const isOpen = ref(props.modelValue);
@@ -5192,8 +5198,15 @@ const checkMedicationsConsistency = async () => {
 /**
  * Replace the Current Medications section in a summary with the verified list text.
  * Preserves the heading and everything before/after the section.
+ * When `markVerified` is true, deterministically inserts "(Patient Verified)" into
+ * the heading (replacing any existing "(patient-confirmed)" / "(patient-verified)"
+ * variant the AI may have included).
  */
-const replaceMedicationsInSummary = (summaryText: string, newMedsText: string): string | null => {
+const replaceMedicationsInSummary = (
+  summaryText: string,
+  newMedsText: string,
+  markVerified: boolean = false
+): string | null => {
   const lines = summaryText.split('\n');
   let headingIdx = -1;
   for (let i = 0; i < lines.length; i++) {
@@ -5220,8 +5233,14 @@ const replaceMedicationsInSummary = (summaryText: string, newMedsText: string): 
     }
   }
 
-  // Keep the heading as-is (the AI may already include "(patient-confirmed)")
-  const heading = lines[headingIdx];
+  // Normalize the heading: strip any existing verification marker the AI may have
+  // added ("(patient-confirmed)", "(patient verified)", etc.), then optionally
+  // append a deterministic "(Patient Verified)" tag.
+  let heading = lines[headingIdx];
+  heading = heading.replace(/\s*\((?:patient[\s-]?(?:verified|confirmed))\)\s*/gi, '').replace(/\s+$/, '');
+  if (markVerified) {
+    heading = `${heading} (Patient Verified)`;
+  }
 
   const before = lines.slice(0, headingIdx);
   const after = lines.slice(endIdx);
@@ -5303,39 +5322,34 @@ const updateSummaryWithVerifiedMeds = async () => {
     const res = await fetch(`/api/user-status?userId=${encodeURIComponent(props.userId)}`, {
       credentials: 'include'
     });
-    if (!res.ok) {
-      // Can't fetch meds — fall back to regenerating the summary
-      await requestNewSummary();
-      return;
-    }
-    const status = await res.json();
-    const meds = status.currentMedications;
-    if (!meds || !String(meds).trim()) {
-      // No meds saved — fall back to regenerating
-      await requestNewSummary();
-      return;
-    }
+    const status = res.ok ? await res.json() : {};
+    const meds = String(status.currentMedications || '').trim();
 
-    // Reload the latest summary
+    // Reload the latest summary (the provisional generated after KB indexing)
     await loadPatientSummary();
+
+    // No provisional summary to patch — nothing to do. The user will see whatever
+    // exists (or the empty state) and can act accordingly. We never make a second
+    // AI call for summary generation — the wizard budget is exactly 2 AI calls.
     if (!patientSummary.value) {
-      // No summary found — generate a new one
-      await requestNewSummary();
+      console.warn('[MyStuff] No provisional Patient Summary available to patch');
+      loadingSummary.value = false;
       return;
     }
 
-    // Splice the verified medications into the summary
-    const updated = replaceMedicationsInSummary(patientSummary.value, meds);
+    // If there are no verified meds, still mark the heading as patient-verified
+    // (the user actively went through the medications step, even if they dismissed).
+    const updated = replaceMedicationsInSummary(patientSummary.value, meds || '', true);
     if (!updated) {
-      // Couldn't find the section — regenerate
-      await requestNewSummary();
+      // Couldn't find the Current Medications section in the provisional.
+      // Leave the provisional as-is rather than regenerate via AI.
+      console.warn('[MyStuff] Could not locate Current Medications section in provisional summary');
+      loadingSummary.value = false;
       return;
     }
 
-    // Check if the medications actually differ
-    const existingMeds = extractMedicationsFromSummary(patientSummary.value);
-    if (existingMeds && normalizeMedsText(existingMeds) === normalizeMedsText(meds)) {
-      // Already identical — just show the summary
+    // Skip save if nothing actually changed (common on Verify-without-edit)
+    if (updated === patientSummary.value) {
       loadingSummary.value = false;
       return;
     }
@@ -5367,8 +5381,14 @@ const updateSummaryWithVerifiedMeds = async () => {
     }
   } catch (error) {
     console.error('Error updating summary with verified medications:', error);
-    // Fall back to regenerating
-    await requestNewSummary();
+    // Do NOT fall back to regenerating — budget is 2 AI calls, no more.
+    if ($q && typeof $q.notify === 'function') {
+      $q.notify({
+        type: 'negative',
+        message: error instanceof Error ? error.message : 'Failed to update summary',
+        timeout: 5000
+      });
+    }
   } finally {
     loadingSummary.value = false;
   }
