@@ -1847,6 +1847,8 @@ const saveLocalSnapshot = async (snapshot?: SignOutSnapshot | null) => {
             ((status?.currentMedications && status.currentMedications.trim()) || existingState?.currentMedications) &&
             ((summary?.summary && summary.summary.trim()) || existingState?.patientSummary)
           ),
+          // Preserve provisioningLog from existing state (managed by ChatInterface.saveStateToLocalFolder)
+          provisioningLog: existingState?.provisioningLog || undefined,
         };
         await writeStateFile(localFolderHandle.value, state);
 

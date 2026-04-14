@@ -585,7 +585,7 @@ The test is split across two components:
 - `testLogLines` ref: Accumulates test-specific log entries
 - `testFinalOutput` ref: Displayed in an orange results panel at the bottom of the wizard
 - `testSetupVerification` ref: Stores `verifyAllTabs()` result after setup for later comparison
-- `addTestLog(text, ok)`: Dual-writes to both `testLogLines` (for the results panel) and `setupLogLines` (for maia-log.pdf, color-coded orange)
+- `addTestLog(text, ok)`: Writes to `testLogLines` (for the results panel). Test events in maia-log.pdf come from the server `provisioningLog` (color-coded orange)
 - `setTestFinalOutput(text)`: Setter exposed via `defineExpose` (avoids Vue 3 ref-unwrapping ambiguity)
 - `closeMyStuff()`: Closes MyStuff dialog so test results panel is visible
 - Emits `test-setup-complete` event with `{ verification, folderHandle }` when setup finishes
@@ -677,3 +677,17 @@ Example test log entries in the PDF:
 | Orange badge after restore | Server reported `wizardComplete: false` due to missing medications | Medications fix + `saveLocalSnapshot(null)` after test |
 | jsPDF Unicode spacing | `✓` character spaced out in PDF | Use plain ASCII text instead |
 | Chat restore silent failures | `catch {}` swallowed all errors | Added logging: `console.warn` + `results.errors.push()` |
+| maia-log.pdf truncated (setup events missing) | Two independent state-save functions: `saveLocalSnapshot` (App.vue) and `saveStateToLocalFolder` (ChatInterface.vue) both overwrite `maia-state.json`. `saveLocalSnapshot` didn't include `provisioningLog`, so calling it after restore erased setup events before `generateSetupLogPdf` could merge them. | Added `provisioningLog: existingState?.provisioningLog` to `saveLocalSnapshot`. Also fixed merge logic in `generateSetupLogPdf` to use compound key `(id+time)` instead of bare `id` (IDs restart from 1 after account recreation). |
+
+### 4.8 Known Fragility: Dual State-Save Functions
+
+There are two functions that write `maia-state.json`:
+
+| Function | Location | When Called |
+|----------|----------|-------------|
+| `saveLocalSnapshot()` | App.vue | Sign-out, restore complete, post-test cleanup |
+| `saveStateToLocalFolder()` | ChatInterface.vue | End of `generateSetupLogPdf()` |
+
+Both overwrite the entire file. Any field that one function manages but the other doesn't will be silently erased when the other runs. Today both carry forward `provisioningLog` from the existing file, but this pattern is fragile — adding a new field to one function without updating the other will recreate the same bug.
+
+**Future improvement:** Consolidate into a single state-save function, or adopt a read-merge-write pattern where unknown fields are always preserved.
