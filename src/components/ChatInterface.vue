@@ -607,13 +607,12 @@
 
     <!-- My Stuff Dialog -->
     <MyStuffDialog
+      ref="myStuffDialogRef"
       v-model="showMyStuffDialog"
       :userId="props.user?.userId || ''"
       :initial-tab="myStuffInitialTab"
-      :request-action="wizardRequestAction"
       :messages="messages"
       :original-messages="trulyOriginalMessages.length > 0 ? trulyOriginalMessages : originalMessages"
-      :wizard-active="showAgentSetupDialog"
       :rehydration-files="props.rehydrationFiles || []"
       :rehydration-active="props.rehydrationActive"
       @chat-selected="handleChatSelected"
@@ -627,7 +626,6 @@
       @current-medications-saved="handleCurrentMedicationsSaved"
       @patient-summary-saved="handlePatientSummarySaved"
       @patient-summary-verified="handlePatientSummaryVerified"
-      @request-action-done="wizardRequestAction = null"
       @show-patient-summary="handleMyStuffShowSummary"
       @rehydration-file-removed="handleRehydrationFileRemoved"
       @rehydration-complete="handleRehydrationComplete"
@@ -790,7 +788,6 @@ import {
   reconnectLocalFolder,
   reconnectLocalFolderWithGesture,
   listFolderFiles,
-  readFileFromFolder,
   writeFileToFolder,
   readStateFile,
   writeStateFile,
@@ -905,7 +902,17 @@ const showSavedChatsModal = ref(false);
 const savedChatCount = ref(0);
 const showMyStuffDialog = ref(false);
 const myStuffInitialTab = ref<string>('files');
-const wizardRequestAction = ref<'generate-summary' | 'update-summary-meds' | null>(null);
+const myStuffDialogRef = ref<InstanceType<typeof MyStuffDialog> | null>(null);
+
+/** Request MyStuffDialog to generate or update the patient summary.
+ *  Replaces the old requestAction prop — calls exposed methods directly via ref. */
+const requestMyStuffSummaryAction = (action: 'generate-summary' | 'update-summary-meds') => {
+  nextTick(() => {
+    if (myStuffDialogRef.value) {
+      myStuffDialogRef.value.wizardGenerateSummary(action);
+    }
+  });
+};
 const contextualTip = ref('Loading...');
 const editingMessageIdx = ref<number[]>([]);
 const editingOriginalContent = ref<Record<number, string>>({});
@@ -1009,8 +1016,6 @@ const testSetupVerification = ref<any>(null); // TabVerification from after setu
 
 const addTestLog = (text: string, ok: boolean = true) => {
   testLogLines.value.push({ text, ok });
-  // Also write to setupLogLines so it appears in maia-log.pdf
-  addSetupLogLine('TEST', text, ok);
 };
 
 const setTestFinalOutput = (text: string) => {
@@ -1024,8 +1029,6 @@ const localFolderName = ref<string | null>(null);
 const localFolderFiles = ref<MaiaFileEntry[]>([]);
 const localFolderAutoRunActive = ref(false);
 const localFolderAutoRunPhase = ref<string>('');
-/** Setup log lines accumulated during the auto-run wizard. */
-const setupLogLines = ref<Array<{ time: string; step: string; detail: string; ok: boolean; bold?: boolean }>>([]);
 /** 60-minute timeout — show failure modal asking user to email setup log to tech support. */
 const wizardTimeoutModalVisible = ref(false);
 let wizardTimeoutTimer: ReturnType<typeof setTimeout> | null = null;
@@ -1039,7 +1042,7 @@ const preGeneratedSummary = ref<string | null>(null);
  *  Keeps the wizard dialog visible so the user doesn't see a zombie chat. */
 const wizardPreparingRecords = ref(false);
 
-// ── Provisioning log (dual-write alongside addSetupLogLine) ────
+// ── Provisioning log ────
 const logProvisioningEvent = async (eventData: Record<string, any>) => {
   if (!props.user?.userId) return;
   try {
@@ -1250,7 +1253,6 @@ watch(
   () => showAgentSetupDialog.value,
   (isOpen, wasOpen) => {
     if (isOpen) {
-      addSetupLogLine('Wizard', 'Setup wizard started', true, true);
       logProvisioningEvent({
         event: 'setup-started',
         method: 'setup',
@@ -1282,7 +1284,6 @@ watch(
         }, 1000);
       }
     } else if (wasOpen) {
-      addSetupLogLine('Wizard', 'Setup wizard closed', true, true);
       nextTick(() => void checkAndShowNeedsIndexingPrompt());
     }
   }
@@ -1293,26 +1294,6 @@ watch(
     void positionWizardInlineDots();
   }
 );
-
-// Log wizard stage transitions — only when the wizard is actively running
-watch(() => wizardStage1Complete.value, (done, was) => {
-  if (done && !was && showAgentSetupDialog.value) addSetupLogLine('Wizard Stage', 'Agent deployed', true);
-});
-watch(() => wizardStage2Complete.value, (done, was) => {
-  if (done && !was && showAgentSetupDialog.value) addSetupLogLine('Wizard Stage', 'Medications imported', true);
-});
-watch(() => wizardStage3Complete.value, (done, was) => {
-  if (done && !was && showAgentSetupDialog.value) addSetupLogLine('Wizard Stage', 'KB indexing done', true);
-});
-watch(() => showPrivateUnavailableDialog.value, (open) => {
-  if (open) addSetupLogLine('Dialog', 'Private AI Unavailable dialog shown', false);
-});
-watch(() => showRestoreCompleteDialog.value, (open) => {
-  if (open) addSetupLogLine('Wizard', 'Restore wizard complete', true, true);
-});
-watch(() => showMyStuffDialog.value, (open, was) => {
-  if (open && !was) addSetupLogLine('My Stuff', 'My Stuff dialog opened', true, true);
-});
 
 // Deferred-indexing watcher removed — indexing now starts immediately in runAutoWizard.
 // wizardPatientSummary auto-dismiss watcher removed — guided flow handles this via wizardFlowPhase.
@@ -2308,10 +2289,6 @@ const refreshWizardState = async () => {
                   indexingStatus.value.filesIndexed = storedStatus.filesIndexed || 0;
                   indexingStatus.value.progress = storedStatus.progress || 0;
                 }
-                // Log progress every ~60s (every 6th poll at 10s interval)
-                if (elapsedPollMs > 0 && Math.floor(elapsedPollMs / 60000) !== Math.floor((elapsedPollMs - 10000) / 60000)) {
-                  addSetupLogLine('Indexing Progress', `${elapsedPollMin}m elapsed — tokens=${tokens} files=${storedStatus.filesIndexed || 0} active=${liveActive} backendDone=${backendDone}`, true);
-                }
                 // Also treat as complete if DO API says not active and tokens > 0
                 // (covers edge case where backend polling crashed before setting backendCompleted)
                 const inferredComplete = !liveActive && Number(tokens) > 0;
@@ -2493,12 +2470,11 @@ const handleWizardSummaryAction = () => {
   if (!props.user?.userId) return;
   myStuffInitialTab.value = 'summary';
   showMyStuffDialog.value = true;
-  wizardRequestAction.value = 'generate-summary';
+  requestMyStuffSummaryAction('generate-summary');
   wizardPatientSummary.value = false;
 };
 
 const dismissWizard = () => {
-  addSetupLogLine('Wizard Action', 'User dismissed setup wizard', true);
   wizardDismissed.value = true;
   showAgentSetupDialog.value = false;
   stopAgentSetupTimer();
@@ -2534,45 +2510,6 @@ const parseUserAgent = (): string => {
   return `${browser} on ${os}`;
 };
 
-// Steps that should only appear once per session (watcher-driven, can re-fire on remount)
-const oneTimeLogSteps = new Set(['Indexing Complete', 'Current Medications', 'Wizard Flow']);
-
-const addSetupLogLine = (step: string, detail: string, ok: boolean, bold = false) => {
-  // Deduplicate within current session
-  const lastSessionIdx = setupLogLines.value.map(l => l.step).lastIndexOf('Session Start');
-  const sessionLines = lastSessionIdx >= 0 ? setupLogLines.value.slice(lastSessionIdx) : setupLogLines.value;
-  // For one-time steps, skip if ANY entry in the session has the same step + detail
-  if (oneTimeLogSteps.has(step) && sessionLines.some(l => l.step === step && l.detail === detail)) return;
-  // For other steps, skip only if the immediately preceding entry is identical
-  const last = sessionLines[sessionLines.length - 1];
-  if (last && last.step === step && last.detail === detail) return;
-  setupLogLines.value.push({
-    time: new Date().toISOString(),
-    step,
-    detail,
-    ok,
-    ...(bold ? { bold: true } : {})
-  });
-};
-
-const restoreSetupLogFromState = async () => {
-  if (!localFolderHandle.value) return;
-  try {
-    const state = await readStateFile(localFolderHandle.value);
-    if (state?.setupLog && Array.isArray(state.setupLog)) {
-      setupLogLines.value = state.setupLog;
-    } else {
-      // Migration: try legacy maia-setup-log.json and delete it
-      const file = await readFileFromFolder(localFolderHandle.value, 'maia-setup-log.json');
-      if (file) {
-        const parsed = JSON.parse(await file.text());
-        if (Array.isArray(parsed)) setupLogLines.value = parsed;
-        // Clean up legacy file
-        try { await localFolderHandle.value.removeEntry('maia-setup-log.json'); } catch { /* ignore */ }
-      }
-    }
-  } catch { /* ignore */ }
-};
 
 /** TEST button — sets auto-pilot mode and triggers the normal folder picker flow. */
 const handleTestButton = () => {
@@ -2593,45 +2530,27 @@ const handlePickLocalFolder = async () => {
   localFolderHandle.value = result.handle;
   localFolderName.value = result.folderName;
   emit('local-folder-connected', { handle: result.handle, folderName: result.folderName });
-  // Restore previous session history before adding new entries
-  await restoreSetupLogFromState();
-
-  // Detect user change — if the log has entries from a different user, insert a divider
-  const prevUserEntry = [...setupLogLines.value].reverse().find(l => l.step === 'Session Info' && l.detail?.startsWith('User: '));
-  const prevUserId = prevUserEntry ? prevUserEntry.detail.replace('User: ', '') : null;
-  if (prevUserId && prevUserId !== props.user.userId) {
-    addSetupLogLine('Session Change', `--- Account changed from ${prevUserId} to ${props.user.userId} ---`, true);
-  }
-
-  addSetupLogLine('Session Info', `User: ${props.user.userId}`, true);
-  addSetupLogLine('Session Info', `Browser: ${parseUserAgent()}`, true);
-  addSetupLogLine('Session Info', `App URL: ${window.location.origin}`, true);
-  addSetupLogLine('Folder Selected', `Folder: ${result.folderName}`, true);
 
   // Write maia.webloc shortcut immediately (with userId if available; patient name added at wizard completion)
   try {
     await writeWeblocFile(result.handle, window.location.origin, {
       userId: props.user?.userId || undefined
     });
-    addSetupLogLine('Shortcut Created', 'maia.webloc written to folder', true);
   } catch (e) {
-    addSetupLogLine('Shortcut Error', `Failed to write maia.webloc: ${e instanceof Error ? e.message : 'Unknown'}`, false);
+    // ignore shortcut write errors
   }
 
   // Scan folder for PDF files
   try {
     const files = await listFolderFiles(result.handle, { extensions: ['pdf'] });
     localFolderFiles.value = files;
-    addSetupLogLine('Folder Scanned', `Found ${files.length} PDF file(s): ${files.map(f => f.name).join(', ') || '(none)'}`, true);
   } catch (e) {
     localFolderFiles.value = [];
-    addSetupLogLine('Folder Scan', `Error scanning folder: ${e instanceof Error ? e.message : 'Unknown'}`, false);
   }
 
   // Start 60-minute timeout
   wizardTimeoutTimer = setTimeout(async () => {
     if (showAgentSetupDialog.value && localFolderHandle.value) {
-      addSetupLogLine('Timeout', 'Wizard timed out after 60 minutes', false);
       await generateSetupLogPdf();
       wizardTimeoutModalVisible.value = true;
     }
@@ -2639,7 +2558,6 @@ const handlePickLocalFolder = async () => {
 
   // Start auto-run wizard — set guided flow phase to 'running'
   wizardFlowPhase.value = 'running';
-  addSetupLogLine('Wizard Flow', 'Guided flow started (phase: running)', true);
   await runAutoWizard();
 };
 
@@ -2680,20 +2598,15 @@ const handleSafariFolderSelected = async (event: Event) => {
   }));
 
   localFolderName.value = folderName;
-  addSetupLogLine('Session Info', `User: ${props.user.userId}`, true);
-  addSetupLogLine('Session Info', `Browser: ${parseUserAgent()} (folder read-only mode)`, true);
-  addSetupLogLine('Folder Selected', `Folder: ${folderName} (${pdfs.length} PDF files)`, true);
 
   // Start 60-minute timeout
   wizardTimeoutTimer = setTimeout(async () => {
     if (showAgentSetupDialog.value) {
-      addSetupLogLine('Timeout', 'Wizard timed out after 60 minutes', false);
       wizardTimeoutModalVisible.value = true;
     }
   }, 60 * 60 * 1000);
 
   wizardFlowPhase.value = 'running';
-  addSetupLogLine('Wizard Flow', 'Guided flow started — Safari mode (phase: running)', true);
   await runSafariFolderWizard(pdfs);
 };
 
@@ -2702,14 +2615,12 @@ const handleSafariFolderSelected = async (event: Event) => {
 const runSafariFolderWizard = async (files: File[]) => {
   if (!props.user?.userId) return;
   localFolderAutoRunActive.value = true;
-  addSetupLogLine('Session Start', '--- New Session (folder read-only mode) ---', true);
 
   try {
     // Phase 1: Upload PDFs
     localFolderAutoRunPhase.value = 'Uploading files...';
     const MAIA_GENERATED_FILES = ['maia-log.pdf'];
     const filesToUpload = files.filter(f => !MAIA_GENERATED_FILES.includes(f.name.toLowerCase()));
-    addSetupLogLine('Upload Phase', `Starting upload of ${filesToUpload.length} PDF file(s)`, true);
 
     let uploadedCount = 0;
     let appleHealthCount = 0;
@@ -2720,7 +2631,6 @@ const runSafariFolderWizard = async (files: File[]) => {
       try {
         const maxSize = 50 * 1024 * 1024;
         if (file.size > maxSize) {
-          addSetupLogLine('Upload Skip', `${file.name}: too large (${(file.size / 1024 / 1024).toFixed(1)}MB)`, false);
           continue;
         }
         localFolderAutoRunPhase.value = `Uploading ${file.name}...`;
@@ -2732,8 +2642,6 @@ const runSafariFolderWizard = async (files: File[]) => {
           body: uploadFormData
         });
         if (!uploadResponse.ok) {
-          const errorData = await uploadResponse.json().catch(() => ({}));
-          addSetupLogLine('Upload Failed', `${file.name}: ${errorData.message || errorData.error || 'Upload error'}`, false);
           continue;
         }
         const uploadResult = await uploadResponse.json();
@@ -2771,12 +2679,8 @@ const runSafariFolderWizard = async (files: File[]) => {
         uploadedCount++;
         uploadedFileNames.push(file.name);
         totalUploadedBytes += file.size;
-        addSetupLogLine('File Uploaded', `${file.name} (${(file.size / 1024).toFixed(0)} KB)${isAppleHealth ? ' [Apple Health]' : ''}`, true);
-      } catch (e) {
-        addSetupLogLine('Upload Error', `${file.name}: ${e instanceof Error ? e.message : 'Unknown'}`, false);
-      }
+      } catch { /* ignore per-file upload errors */ }
     }
-    addSetupLogLine('Upload Complete', `${uploadedCount} of ${filesToUpload.length} file(s) uploaded${appleHealthCount > 0 ? `, ${appleHealthCount} Apple Health` : ''}`, uploadedCount > 0);
     logProvisioningEvent({
       event: 'files-uploaded',
       count: uploadedCount,
@@ -2790,11 +2694,9 @@ const runSafariFolderWizard = async (files: File[]) => {
 
     // Refresh wizard state and proceed with indexing (same as Chrome path)
     await refreshWizardState();
-    addSetupLogLine('State Refreshed', `Server knows about ${wizardStage3Files.value.length} file(s)`, true);
 
     // Phase 2: Check agent
     localFolderAutoRunPhase.value = 'Checking agent deployment...';
-    addSetupLogLine('Agent Status', wizardStage1Complete.value ? 'Agent ready' : 'Agent deployment in progress', true);
 
     // Phase 3: Index KB
     if (uploadedCount > 0) {
@@ -2802,14 +2704,10 @@ const runSafariFolderWizard = async (files: File[]) => {
       try {
         const fileNames = wizardStage3Files.value.map(f => f.name);
         if (fileNames.length > 0) {
-          addSetupLogLine('Indexing Start', `Sending ${fileNames.length} file(s) for indexing: ${fileNames.join(', ')}`, true);
           await handleStage3Index(fileNames, false);
-          addSetupLogLine('Indexing Started', `KB indexing kicked off for ${fileNames.length} file(s)`, true);
           localFolderAutoRunPhase.value = 'Knowledge base indexing in progress...';
         }
-      } catch (e) {
-        addSetupLogLine('Indexing Error', `${e instanceof Error ? e.message : 'Unknown'}`, false);
-      }
+      } catch { /* ignore indexing errors */ }
     }
 
     if (uploadedCount > 0) {
@@ -2818,7 +2716,6 @@ const runSafariFolderWizard = async (files: File[]) => {
       localFolderAutoRunPhase.value = 'Setup complete';
     }
   } catch (e) {
-    addSetupLogLine('Auto-Run Error', `${e instanceof Error ? e.message : 'Unknown error'}`, false);
     localFolderAutoRunPhase.value = 'Setup completed with errors';
   } finally {
     localFolderAutoRunActive.value = false;
@@ -2840,8 +2737,6 @@ const tryReconnectLocalFolder = async () => {
   } catch {
     // ignore — folder may be unavailable
   }
-  // Restore previous session history
-  await restoreSetupLogFromState();
 };
 
 /** Auto-run wizard: upload folder files → deploy agent → index KB → detect Apple Health → generate summary. */
@@ -2849,7 +2744,6 @@ const runAutoWizard = async () => {
   if (!props.user?.userId || !localFolderHandle.value) return;
   localFolderAutoRunActive.value = true;
   // Add session separator (preserves full history from previous sessions)
-  addSetupLogLine('Session Start', '--- New Session ---', true);
 
   try {
     // Phase 1: Upload PDFs from folder to Spaces
@@ -2859,7 +2753,6 @@ const runAutoWizard = async () => {
       const name = f.name.toLowerCase();
       return name.endsWith('.pdf') && !MAIA_GENERATED_FILES.includes(name);
     });
-    addSetupLogLine('Upload Phase', `Starting upload of ${filesToUpload.length} PDF file(s)`, true);
     let uploadedCount = 0;
     let appleHealthCount = 0;
     const uploadedFileNames: string[] = [];
@@ -2871,7 +2764,6 @@ const runAutoWizard = async () => {
         // Check size
         const maxSize = 50 * 1024 * 1024;
         if (file.size > maxSize) {
-          addSetupLogLine('Upload Skip', `${file.name}: too large (${(file.size / 1024 / 1024).toFixed(1)}MB)`, false);
           continue;
         }
         localFolderAutoRunPhase.value = `Uploading ${file.name}...`;
@@ -2884,8 +2776,6 @@ const runAutoWizard = async () => {
           body: uploadFormData
         });
         if (!uploadResponse.ok) {
-          const errorData = await uploadResponse.json().catch(() => ({}));
-          addSetupLogLine('Upload Failed', `${file.name}: ${errorData.message || errorData.error || 'Upload error'}`, false);
           continue;
         }
         const uploadResult = await uploadResponse.json();
@@ -2923,12 +2813,8 @@ const runAutoWizard = async () => {
         uploadedCount++;
         uploadedFileNames.push(file.name);
         totalUploadedBytes += file.size;
-        addSetupLogLine('File Uploaded', `${file.name} (${(file.size / 1024).toFixed(0)} KB)${isAppleHealth ? ' [Apple Health]' : ''}`, true);
-      } catch (e) {
-        addSetupLogLine('Upload Error', `${fileEntry.name}: ${e instanceof Error ? e.message : 'Unknown'}`, false);
-      }
+      } catch { /* ignore per-file upload errors */ }
     }
-    addSetupLogLine('Upload Complete', `${uploadedCount} of ${filesToUpload.length} file(s) uploaded${appleHealthCount > 0 ? `, ${appleHealthCount} Apple Health` : ''}`, uploadedCount > 0);
     logProvisioningEvent({
       event: 'files-uploaded',
       count: uploadedCount,
@@ -2942,15 +2828,9 @@ const runAutoWizard = async () => {
 
     // Refresh wizard state to pick up new files
     await refreshWizardState();
-    addSetupLogLine('State Refreshed', `Server knows about ${wizardStage3Files.value.length} file(s)`, true);
 
     // Phase 2: Check agent deployment status
     localFolderAutoRunPhase.value = 'Checking agent deployment...';
-    if (!wizardStage1Complete.value) {
-      addSetupLogLine('Agent Status', 'Agent deployment in progress', true);
-    } else {
-      addSetupLogLine('Agent Status', 'Agent ready', true);
-    }
 
     // Phase 3: Move files to KB and trigger indexing immediately (KB creation is independent of agent)
     if (uploadedCount > 0) {
@@ -2958,14 +2838,10 @@ const runAutoWizard = async () => {
       try {
         const fileNames = wizardStage3Files.value.map(f => f.name);
         if (fileNames.length > 0) {
-          addSetupLogLine('Indexing Start', `Sending ${fileNames.length} file(s) for indexing: ${fileNames.join(', ')}`, true);
           await handleStage3Index(fileNames, false);
-          addSetupLogLine('Indexing Started', `KB indexing kicked off for ${fileNames.length} file(s)`, true);
           localFolderAutoRunPhase.value = 'Knowledge base indexing in progress...';
         }
-      } catch (e) {
-        addSetupLogLine('Indexing Error', `${e instanceof Error ? e.message : 'Unknown'}`, false);
-      }
+      } catch { /* ignore indexing errors */ }
     }
 
     // Phase 4: Generate setup log PDF
@@ -2980,14 +2856,13 @@ const runAutoWizard = async () => {
       localFolderAutoRunPhase.value = 'Setup complete';
     }
   } catch (e) {
-    addSetupLogLine('Auto-Run Error', `${e instanceof Error ? e.message : 'Unknown error'}`, false);
     localFolderAutoRunPhase.value = 'Setup completed with errors';
   } finally {
     localFolderAutoRunActive.value = false;
   }
 };
 
-/** Generate maia-log.pdf from setupLogLines and write to local folder. */
+/** Generate maia-log.pdf summary and write to local folder. */
 const generateSetupLogPdf = async () => {
   if (!localFolderHandle.value) return;
   const doc = new jsPDF();
@@ -3029,19 +2904,13 @@ const generateSetupLogPdf = async () => {
   doc.text('Summary', margin, y);
   y += 6;
   doc.setFontSize(9);
-  // Count files only from the LAST session (after the last "Session Start" marker)
-  const lastSessionIdx = setupLogLines.value.map(l => l.step).lastIndexOf('Session Start');
-  const currentSessionLines = lastSessionIdx >= 0 ? setupLogLines.value.slice(lastSessionIdx) : setupLogLines.value;
-  const totalFiles = currentSessionLines.filter(l => l.step === 'File Uploaded').length
-    || currentSessionLines.filter(l => l.step === 'Restore' && l.detail?.startsWith('File uploaded:')).length;
-  const failedUploads = currentSessionLines.filter(l => l.step === 'Upload Failed' || l.step === 'Upload Error').length;
-  const hasIndexing = setupLogLines.value.some(l => l.step === 'Indexing Complete')
-    || setupLogLines.value.some(l => l.step === 'Restore' && l.detail?.includes('Knowledge Base indexed'));
+  const totalFiles = wizardStage3Files.value.length;
+  const hasIndexing = indexingStatus.value?.phase === 'complete';
   const indexTokens = indexingStatus.value?.tokens || '0';
-  const hasMeds = wizardCurrentMedications.value || setupLogLines.value.some(l => l.detail?.includes('Current Medications restored'));
-  const hasSummary = wizardPatientSummary.value || setupLogLines.value.some(l => l.detail?.includes('Patient Summary restored'));
+  const hasMeds = wizardCurrentMedications.value;
+  const hasSummary = wizardPatientSummary.value;
   const summaryItems = [
-    `Files uploaded: ${totalFiles}${failedUploads > 0 ? ` (${failedUploads} failed)` : ''}`,
+    `Files uploaded: ${totalFiles}`,
     `Agent ready: ${wizardStage1Complete.value ? 'Yes' : 'No'}`,
     `KB indexed: ${hasIndexing ? 'Yes' : 'Pending'} (${indexTokens} tokens)`,
     `Current Medications: ${hasMeds ? 'Yes' : 'No'}`,
@@ -3052,106 +2921,168 @@ const generateSetupLogPdf = async () => {
     y += 5;
   }
   y += 6;
-
-  // Detailed log
+  // Detailed log from server provisioning log
   doc.setFontSize(11);
   doc.text('Detailed Log', margin, y);
   y += 6;
   doc.setFontSize(9);
 
-  // Color helper: determines RGB color for a log line
-  // Red (200,0,0) = errors/failures
-  // Green (0,120,0) = user-initiated actions (My Stuff interactions, verifications)
-  // Orange (200,100,0) = TEST mode entries
-  // Black (0,0,0) = wizard/system entries
-  const getLineColor = (line: { step: string; detail: string; ok: boolean }): [number, number, number] => {
-    if (!line.ok) return [200, 0, 0]; // Red for errors
-    if (line.step === 'TEST') return [200, 100, 0]; // Orange for TEST
-    if (line.step === 'Account') return [200, 0, 0]; // Red for account deletion
-    // Green for user-initiated actions
-    if (line.step === 'My Stuff' || line.step === 'Current Medications' ||
-        (line.step === 'Dialog' && line.detail.includes('My Stuff'))) {
-      return [0, 120, 0];
-    }
-    return [0, 0, 0]; // Black for wizard/system
-  };
+  try {
+    // Fetch server events and merge with locally-saved events (from before account deletion)
+    let serverEvents: Array<Record<string, any>> = [];
+    try {
+      const logRes = await fetch(`/api/provisioning-log?userId=${encodeURIComponent(props.user?.userId || '')}`, { credentials: 'include' });
+      if (logRes.ok) {
+        const logData = await logRes.json();
+        serverEvents = logData.log || [];
+      }
+    } catch { /* server unavailable */ }
 
-  for (const line of setupLogLines.value) {
-    if (y > 270) {
-      doc.addPage();
-      y = 20;
-    }
-    const [r, g, b] = getLineColor(line);
-    // Session Change divider — draw a horizontal rule and bold heading
-    if (line.step === 'Session Change') {
-      y += 3;
-      doc.setDrawColor(100);
-      doc.line(margin, y, pageWidth - margin, y);
-      y += 6;
-      doc.setFontSize(10);
-      doc.setFont('helvetica', 'bold');
-      doc.setTextColor(r, g, b);
-      const timestamp = new Date(line.time).toLocaleTimeString();
-      doc.text(`[${timestamp}] ${line.detail}`, margin, y);
-      y += 8;
-      doc.setFont('helvetica', 'normal');
-      doc.setTextColor(0, 0, 0);
-      doc.setFontSize(9);
-      continue;
-    }
-    // Bold entries — milestone events detected by step name OR explicit bold flag.
-    // Step-name detection ensures old entries (logged before bold flag existed) also render bold.
-    const isBoldStep = line.bold ||
-      line.step === 'Wizard' || line.step === 'Wizard Dialog' ||
-      (line.step === 'Wizard Flow' && (line.detail.includes('wizard complete') || line.detail.includes('guided review') || line.detail.includes('skipping to'))) ||
-      (line.step === 'My Stuff') ||
-      (line.step === 'Dialog' && line.detail.includes('My Stuff')) ||
-      (line.step === 'Current Medications' && line.detail.includes('verified'));
-    if (isBoldStep) {
-      y += 2;
-      doc.setFontSize(10);
-      doc.setFont('helvetica', 'bold');
-      doc.setTextColor(r, g, b);
-      const prefix = line.ok ? '' : '[FAIL] ';
-      const timestamp = new Date(line.time).toLocaleTimeString();
-      const text = `${prefix}[${timestamp}] ${line.step}: ${line.detail}`;
-      const splitLines = doc.splitTextToSize(text, maxWidth);
-      for (const sl of splitLines) {
-        if (y > 270) {
-          doc.addPage();
-          y = 20;
+    // Read locally-saved events from maia-state.json (preserves events from before account deletion)
+    let localEvents: Array<Record<string, any>> = [];
+    if (localFolderHandle.value) {
+      try {
+        const state = await readStateFile(localFolderHandle.value);
+        if (state?.provisioningLog && Array.isArray(state.provisioningLog)) {
+          localEvents = state.provisioningLog;
         }
-        doc.text(sl, margin, y);
-        y += 6;
-      }
-      doc.setFont('helvetica', 'normal');
-      doc.setTextColor(0, 0, 0);
-      doc.setFontSize(9);
-      y += 2;
-      continue;
+      } catch { /* no local state */ }
     }
-    doc.setTextColor(r, g, b);
-    const prefix = line.ok ? '' : '[FAIL] ';
-    const timestamp = new Date(line.time).toLocaleTimeString();
-    const text = `${prefix}[${timestamp}] ${line.step}: ${line.detail}`;
-    const splitLines = doc.splitTextToSize(text, maxWidth);
-    for (const sl of splitLines) {
-      if (y > 270) {
-        doc.addPage();
-        y = 20;
+
+    // Merge: deduplicate by compound key (id+time) to handle ID collisions after account recreation
+    // After account deletion and recreation, server resets IDs from 1, so bare id dedup would
+    // incorrectly filter out all restore events when setup events had the same IDs.
+    const eventKey = (e: Record<string, any>) => `${e.id ?? ''}-${e.time ?? ''}`;
+    const localKeys = new Set(localEvents.map(eventKey));
+    const mergedNew = serverEvents.filter(e => !localKeys.has(eventKey(e)));
+    const events = [...localEvents, ...mergedNew].sort((a, b) => {
+      return (a.time || '').localeCompare(b.time || '');
+    });
+
+    if (events.length > 0) {
+
+      const formatElapsed = (ms: number): string => {
+        const m = Math.floor(ms / 60000);
+        const s = String(Math.floor((ms % 60000) / 1000)).padStart(2, '0');
+        return `${m}m ${s}s`;
+      };
+
+      // Color helper for provisioning events
+      const getEventColor = (evt: Record<string, any>): [number, number, number] => {
+        if (evt.event === 'error') return [200, 0, 0];
+        if (evt.event === 'account-deleted') return [200, 0, 0];
+        if (evt.event?.startsWith('test-')) return [200, 100, 0];
+        if (evt.event === 'medications-saved' || evt.event === 'summary-saved' ||
+            evt.event === 'medications-restored' || evt.event === 'summary-restored') return [0, 120, 0];
+        return [0, 0, 0];
+      };
+
+      // Format event to human-readable line
+      const formatEvent = (evt: Record<string, any>): string => {
+        const t = evt.time ? new Date(evt.time).toLocaleTimeString() : '??:??';
+        switch (evt.event) {
+          case 'setup-started': return `[${t}] Setup started`;
+          case 'restore-started': return `[${t}] Restore started`;
+          case 'setup-complete': return `[${t}] Setup complete`;
+          case 'restore-complete': return `[${t}] Restore complete`;
+          case 'account-deleted': return `[${t}] Cloud account deleted`;
+          case 'files-uploaded': {
+            const parts = [`${evt.count || 0} files`];
+            if (evt.totalKB) parts.push(`(${Number(evt.totalKB).toLocaleString()} KB)`);
+            if (evt.appleHealthCount) parts.push(`${evt.appleHealthCount} Apple Health`);
+            if (evt.failedCount) parts.push(`${evt.failedCount} failed`);
+            return `[${t}] Files uploaded: ${parts.join(', ')}`;
+          }
+          case 'apple-health-detected': return `[${t}] Apple Health detected: ${evt.fileName || ''}`;
+          case 'agent-deployed': return `[${t}] Agent deployed${evt.elapsedMs ? ` (${formatElapsed(evt.elapsedMs)})` : ''}`;
+          case 'kb-indexed': {
+            const parts = [];
+            if (evt.fileCount) parts.push(`${evt.fileCount} files`);
+            if (evt.tokens) parts.push(`${Number(evt.tokens).toLocaleString()} tokens`);
+            if (evt.elapsedMs) parts.push(formatElapsed(evt.elapsedMs));
+            return `[${t}] KB indexed: ${parts.join(', ')}`;
+          }
+          case 'summary-generated': return `[${t}] Patient Summary generated (${evt.lines || 0} lines, ${Number(evt.chars || 0).toLocaleString()} chars)`;
+          case 'medications-offered': return `[${t}] Medications offered for verification (${evt.lines || 0} lines)`;
+          case 'medications-saved': return `[${t}] Current Medications saved (${evt.lines || 0} lines)`;
+          case 'medications-restored': return `[${t}] Current Medications restored (${evt.lines || 0} lines)`;
+          case 'summary-saved': return `[${t}] Patient Summary saved (${evt.lines || 0} lines, ${Number(evt.chars || 0).toLocaleString()} chars)`;
+          case 'summary-restored': return `[${t}] Patient Summary restored (${evt.lines || 0} lines, ${Number(evt.chars || 0).toLocaleString()} chars)`;
+          case 'chats-restored': return `[${t}] Saved chats restored (${evt.count || 0})`;
+          case 'instructions-restored': return `[${t}] Agent Instructions restored`;
+          case 'lists-restored': return `[${t}] My Lists restored`;
+          case 'test-started': return `[${t}] TEST mode activated`;
+          case 'test-verification': return `[${t}] TEST verification: ${evt.label || ''} ${evt.passed ? 'PASS' : 'FAIL'}${evt.detail ? ' - ' + evt.detail : ''}`;
+          case 'error': return `[${t}] ERROR: ${evt.step || ''} - ${evt.message || ''}`;
+          default: return `[${t}] ${evt.event || 'unknown'}`;
+        }
+      };
+
+      // Render session boundaries and events
+      let lastSession = '';
+      for (const evt of events) {
+        // Draw session divider for start events
+        if (evt.event === 'setup-started' || evt.event === 'restore-started') {
+          const label = evt.event === 'setup-started' ? '--- Setup ---' : '--- Restore ---';
+          if (lastSession) {
+            y += 3;
+            doc.setDrawColor(100);
+            doc.line(margin, y, pageWidth - margin, y);
+            y += 6;
+          }
+          lastSession = evt.event;
+          doc.setFontSize(10);
+          doc.setFont('helvetica', 'bold');
+          doc.text(label, margin, y);
+          doc.setFont('helvetica', 'normal');
+          doc.setFontSize(9);
+          y += 6;
+        } else if (evt.event === 'account-deleted' && lastSession) {
+          y += 3;
+          doc.setDrawColor(100);
+          doc.line(margin, y, pageWidth - margin, y);
+          y += 6;
+        }
+
+        if (y > 270) { doc.addPage(); y = 20; }
+
+        const [r, g, b] = getEventColor(evt);
+        const text = formatEvent(evt);
+        const isMilestone = evt.event?.endsWith('-complete') || evt.event?.endsWith('-started') || evt.event === 'account-deleted';
+
+        if (isMilestone) {
+          doc.setFont('helvetica', 'bold');
+          doc.setFontSize(10);
+        }
+        doc.setTextColor(r, g, b);
+        const splitLines = doc.splitTextToSize(text, maxWidth);
+        for (const sl of splitLines) {
+          if (y > 270) { doc.addPage(); y = 20; }
+          doc.text(sl, margin, y);
+          y += isMilestone ? 6 : 5;
+        }
+        doc.setTextColor(0, 0, 0);
+        if (isMilestone) {
+          doc.setFont('helvetica', 'normal');
+          doc.setFontSize(9);
+          y += 2;
+        }
       }
-      doc.text(sl, margin, y);
-      y += 5;
+
+    } else {
+      doc.text('No provisioning events recorded.', margin, y);
+      y += 6;
     }
-    doc.setTextColor(0, 0, 0);
-    y += 2;
+  } catch (err) {
+    doc.text('Error loading provisioning log.', margin, y);
+    y += 6;
   }
 
   const pdfBlob = doc.output('blob');
   await writeFileToFolder(localFolderHandle.value, 'maia-log.pdf', pdfBlob);
   // Clean up legacy filename
   try { await localFolderHandle.value.removeEntry('maia-setup-log.pdf'); } catch { /* doesn't exist */ }
-  // Persist setup log in maia-state.json (no separate JSON file)
+  // Persist app state in maia-state.json
   await saveStateToLocalFolder();
 };
 
@@ -3166,6 +3097,7 @@ const saveStateToLocalFolder = async () => {
   let savedChatsData: any = undefined;
   let agentInstructionsText: string | null = null;
   let listsMarkdownText: string | null = null;
+  let provisioningLogData: Array<Record<string, any>> | undefined = undefined;
 
   const fetchOpts = { credentials: 'include' as RequestCredentials };
 
@@ -3214,6 +3146,35 @@ const saveStateToLocalFolder = async () => {
           if (data.markdown) listsMarkdownText = data.markdown;
         }
       } catch { /* default to null */ }
+    })(),
+    (async () => {
+      try {
+        // Fetch current server events
+        const res = await fetch(`/api/provisioning-log?userId=${encodeURIComponent(userId)}`, fetchOpts);
+        let serverLog: Array<Record<string, any>> = [];
+        if (res.ok) {
+          const data = await res.json();
+          if (data.log && Array.isArray(data.log)) serverLog = data.log;
+        }
+        // Read existing local events to preserve history across account deletion/recreation
+        let existingLocal: Array<Record<string, any>> = [];
+        if (localFolderHandle.value) {
+          try {
+            const existingState = await readStateFile(localFolderHandle.value);
+            if (existingState?.provisioningLog && Array.isArray(existingState.provisioningLog)) {
+              existingLocal = existingState.provisioningLog;
+            }
+          } catch { /* no existing state */ }
+        }
+        // Merge: keep all existing local events, add server events not already present
+        const evtKey = (e: Record<string, any>) => `${e.id ?? ''}-${e.time ?? ''}`;
+        const localKeys = new Set(existingLocal.map(evtKey));
+        const newFromServer = serverLog.filter(e => !localKeys.has(evtKey(e)));
+        const merged = [...existingLocal, ...newFromServer].sort((a, b) =>
+          (a.time || '').localeCompare(b.time || '')
+        );
+        if (merged.length > 0) provisioningLogData = merged;
+      } catch { /* default to undefined */ }
     })()
   ]);
 
@@ -3233,7 +3194,7 @@ const saveStateToLocalFolder = async () => {
     currentChat: undefined,
     agentInstructions: agentInstructionsText,
     listsMarkdown: listsMarkdownText,
-    setupLog: setupLogLines.value.length > 0 ? setupLogLines.value : undefined
+    provisioningLog: provisioningLogData
   };
   await writeStateFile(localFolderHandle.value, state);
 };
@@ -3448,7 +3409,6 @@ const handleStage3Index = async (overrideNames?: string[], fromRestore = false) 
           }
           // Log progress every ~60s (every 6th poll at 10s interval)
           if (elapsedPollMs > 0 && Math.floor(elapsedPollMs / 60000) !== Math.floor((elapsedPollMs - 10000) / 60000)) {
-            addSetupLogLine('Indexing Progress', `${elapsedPollMin}m elapsed — tokens=${tokens} files=${kbStatus.filesIndexed || 0} active=${liveActive} backendDone=${backendDone}`, true);
           }
           // Trust backendCompleted; also infer completion if DO API says not active and tokens > 0
           const inferredComplete = !liveActive && Number(tokens) > 0;
@@ -3464,7 +3424,6 @@ const handleStage3Index = async (overrideNames?: string[], fromRestore = false) 
           const completionReason = backendDone ? 'backendCompleted' : inferredComplete ? 'inferredComplete' : timedOutInactive ? 'timedOutInactive' : tokenTimeoutComplete ? 'tokenTimeout' : pureTimeoutComplete ? 'pureTimeout' : '';
           if (isCompleted) {
             console.log(`[KB-POLL] ✅ Indexing complete: tokens=${tokens} files=${kbStatus.filesIndexed || 0} reason=${completionReason} elapsed=${elapsedPollMin}m${elapsedPollSec}s`);
-            addSetupLogLine('Indexing Complete', `${kbStatus.filesIndexed || 0} file(s) indexed, ${tokens} tokens (${completionReason})`, true);
             logProvisioningEvent({
               event: 'kb-indexed',
               tokens: parseInt(tokens) || 0,
@@ -5619,14 +5578,12 @@ const startSetupWizardPolling = () => {
         if (!wizardPatientSummary.value && wizardCurrentMedications.value) {
           // Meds done, summary pending → resume at summary phase
           wizardFlowPhase.value = 'summary';
-          addSetupLogLine('Wizard Flow', 'Resumed after reload — medications verified, resuming at Patient Summary', true);
           myStuffInitialTab.value = 'summary';
-          wizardRequestAction.value = 'generate-summary';
+          requestMyStuffSummaryAction('generate-summary');
           showMyStuffDialog.value = true;
         } else if (!wizardCurrentMedications.value) {
           // Meds still pending → resume at medications phase
           wizardFlowPhase.value = 'medications';
-          addSetupLogLine('Wizard Flow', 'Resumed after reload — resuming at Current Medications', true);
           try {
             sessionStorage.setItem('autoProcessInitialFile', 'true');
             sessionStorage.setItem('wizardMyListsAuto', 'true');
@@ -5678,7 +5635,6 @@ const startSetupWizardPolling = () => {
         wizardStage1Complete.value = true;
         agentSetupPollingActive.value = false;
         stopAgentSetupTimer();
-        addSetupLogLine('Agent Status', `Agent deployed and ready (${agentSetupElapsed.value}s)`, true);
         logProvisioningEvent({
           event: 'agent-deployed',
           agentId: null,
@@ -5738,19 +5694,11 @@ const setupFolderConnected = computed(() => !!localFolderHandle.value || !!safar
 
 /** Checklist file items for the simplified setup wizard. */
 const setupChecklistFiles = computed(() => {
-  // Build from setup log lines (files uploaded during auto-run)
+  // Build from wizardStage3Files (server-known files) and auto-run phase
   const uploadedSet = new Set<string>();
-  const errorSet = new Set<string>();
   const runningSet = new Set<string>();
-  for (const line of setupLogLines.value) {
-    if (line.step === 'File Uploaded' && line.ok) {
-      // Extract filename: "filename.pdf (123 KB)" or "filename.pdf (123 KB) [Apple Health]"
-      const name = line.detail.split(' (')[0];
-      if (name) uploadedSet.add(name);
-    } else if ((line.step === 'Upload Failed' || line.step === 'Upload Error') && !line.ok) {
-      const name = line.detail.split(':')[0];
-      if (name) errorSet.add(name);
-    }
+  for (const f of wizardStage3Files.value) {
+    uploadedSet.add(f.name);
   }
   // If auto-run is active, files being uploaded show as running
   if (localFolderAutoRunActive.value && localFolderAutoRunPhase.value.startsWith('Uploading ')) {
@@ -5770,8 +5718,6 @@ const setupChecklistFiles = computed(() => {
     const isApple = stage3DisplayFiles.value.some(df => df.name === f.name && df.isAppleHealth);
     if (uploadedSet.has(f.name)) {
       items.push({ name: f.name, status: 'done', progress: 'Uploaded', isAppleHealth: isApple });
-    } else if (errorSet.has(f.name)) {
-      items.push({ name: f.name, status: 'error', isAppleHealth: isApple });
     } else if (runningSet.has(f.name)) {
       items.push({ name: f.name, status: 'running', isAppleHealth: isApple });
     } else {
@@ -5800,7 +5746,6 @@ watch(
       const elapsed = stage3IndexingStartedAt.value
         ? Math.round((Date.now() - stage3IndexingStartedAt.value) / 1000)
         : 0;
-      addSetupLogLine('Indexing Complete', `${filesIndexed} file(s) indexed, ${tokens} tokens, ${elapsed}s elapsed`, true);
       logProvisioningEvent({
         event: 'kb-indexed',
         tokens: parseInt(String(tokens)) || 0,
@@ -5817,7 +5762,6 @@ watch(
   () => wizardCurrentMedications.value,
   (verified, was) => {
     if (verified && !was && (localFolderHandle.value || safariFolderName.value)) {
-      addSetupLogLine('Current Medications', 'Current Medications verified', true);
       void generateSetupLogPdf();
     }
   }
@@ -5835,7 +5779,6 @@ watch(
     ) {
       // Both indexing and agent are done — transition to medications phase.
       // Keep the wizard dialog OPEN with spinners so the user doesn't see a zombie chat.
-      addSetupLogLine('Wizard', 'Indexing and agent both complete — starting guided review', true, true);
       void generateSetupLogPdf();
       wizardPreparingRecords.value = true;
       if (wizardTimeoutTimer) {
@@ -5852,7 +5795,6 @@ watch(
       preGeneratedSummary.value = null;
       if (props.user?.userId) {
         console.log('[Wizard] Generating Patient Summary before opening My Lists...');
-        addSetupLogLine('Wizard Flow', 'Generating Patient Summary...', true);
         try {
           const genRes = await fetch('/api/generate-patient-summary', {
             method: 'POST',
@@ -5877,7 +5819,6 @@ watch(
               })
             });
             console.log('[Wizard] Patient Summary generated and saved (%d chars)', text.length);
-            addSetupLogLine('Wizard Flow', `Patient Summary generated and saved (${text.length} chars)`, true);
             const summaryLines = text.split('\n').filter((l: string) => l.trim()).length;
             logProvisioningEvent({
               event: 'summary-generated',
@@ -5886,11 +5827,9 @@ watch(
             });
           } else {
             console.warn('[Wizard] Patient Summary generation returned empty text');
-            addSetupLogLine('Wizard Flow', '[WARNING] Patient Summary generation returned empty', false);
           }
         } catch (err) {
           console.warn('[Wizard] Patient Summary generation failed:', err);
-          addSetupLogLine('Wizard Flow', '[WARNING] Patient Summary generation failed — continuing without it', false);
         }
       }
 
@@ -5980,7 +5919,7 @@ watch(
             body: JSON.stringify({ userId: props.user!.userId, currentMedications: medsText })
           });
         } catch { /* non-fatal */ }
-        addTestLog(`Medications extracted from summary (${medsText.split('\\n').filter(l => l.trim()).length} lines) — auto-verified`);
+        addTestLog(`Medications extracted from summary (${medsText.split('\n').filter(l => l.trim()).length} lines) — auto-verified`);
         handleCurrentMedicationsSaved({ value: medsText, edited: false, changed: true });
       } else {
         addTestLog('Medications not available — proceeding without', false);
@@ -6020,6 +5959,9 @@ watch(
       addTestLog(`KB: ${verification.kbIndexed ? `indexed (${verification.kbTokens} tokens)` : 'not indexed'}`, verification.kbIndexed);
       addTestLog(`Medications: ${verification.medications.lines} lines`, verification.medications.lines > 0);
       addTestLog(`Summary: ${verification.summary.lines} lines, ${verification.summary.chars} chars`, verification.summary.lines > 0);
+      // Ensure maia-state.json is written with latest data before handing off to App.vue
+      // (handlePatientSummaryVerified calls generateSetupLogPdf with void — it may not have finished)
+      await generateSetupLogPdf();
       addTestLog('Setup verification complete — requesting Delete + Restore cycle...');
       // Emit to App.vue to handle Delete → Restore → Verify
       emit('test-setup-complete', { verification, folderHandle: localFolderHandle.value! });
@@ -6077,7 +6019,7 @@ const handleIndexingFinished = (_data: { jobId: string; phase: string; error?: s
 const handlePostIndexingUpdateSummary = () => {
   showPostIndexingSummaryPrompt.value = false;
   myStuffInitialTab.value = 'summary';
-  wizardRequestAction.value = 'generate-summary';
+  requestMyStuffSummaryAction('generate-summary');
   if (!showMyStuffDialog.value) {
     showMyStuffDialog.value = true;
   }
@@ -6269,7 +6211,6 @@ const handleReferenceFileAdded = async (file: { fileName: string; bucketKey: str
 };
 
 const handleCurrentMedicationsSaved = async (payload?: { value?: string; edited?: boolean; changed?: boolean }) => {
-  addSetupLogLine('My Stuff', 'Current Medications saved/verified on My Lists tab', true, true);
   const medsLineCount = payload?.value ? payload.value.split('\n').filter(l => l.trim()).length : 0;
   logProvisioningEvent({
     event: 'medications-saved',
@@ -6285,7 +6226,6 @@ const handleCurrentMedicationsSaved = async (payload?: { value?: string; edited?
     wizardFlowPhase.value = 'summary';
     guidedFlowDismissCount.value = 0;
     console.log('[Wizard] Current Medications saved — opening Patient Summary tab');
-    addSetupLogLine('Wizard Flow', 'Current Medications saved — opening Patient Summary', true);
     void generateSetupLogPdf();
     // Switch to Patient Summary tab and always trigger summary generation.
     // Even if medications didn't change, we need to ensure the summary tab
@@ -6294,10 +6234,10 @@ const handleCurrentMedicationsSaved = async (payload?: { value?: string; edited?
     myStuffInitialTab.value = 'summary';
     if (payload?.changed && preGeneratedSummary.value) {
       // Medications changed and we have a pre-generated summary — do a cheap update
-      wizardRequestAction.value = 'update-summary-meds';
+      requestMyStuffSummaryAction('update-summary-meds');
     } else {
       // Either no change or no pre-generated summary — generate fresh
-      wizardRequestAction.value = 'generate-summary';
+      requestMyStuffSummaryAction('generate-summary');
     }
   }
   // Refresh wizard state in background (non-blocking)
@@ -6306,7 +6246,7 @@ const handleCurrentMedicationsSaved = async (payload?: { value?: string; edited?
 
 const handleMyStuffShowSummary = () => {
   myStuffInitialTab.value = 'summary';
-  wizardRequestAction.value = 'generate-summary';
+  requestMyStuffSummaryAction('generate-summary');
 };
 
 /** Track My Stuff tab opens. Skip brief Saved Files opens (< 1 second). */
@@ -6323,26 +6263,9 @@ const handleMyStuffTabOpened = (tab: string) => {
   lastTabOpenTime = now;
   lastTabName = tab;
 
-  // Don't log 'files' tab — it's the default and gets logged only if kept open > 1s
-  // (handled on close). Log all other tabs immediately.
-  const tabLabels: Record<string, string> = {
-    files: 'Saved Files',
-    agent: 'My AI Agent',
-    chats: 'Saved Chats',
-    summary: 'Patient Summary',
-    privacy: 'Privacy Filter',
-    diary: 'Patient Diary',
-    lists: 'My Lists',
-    references: 'References'
-  };
-
-  if (tab !== 'files') {
-    addSetupLogLine('My Stuff', `Opened ${tabLabels[tab] || tab} tab`, true, true);
-  }
 };
 
 const handlePatientSummarySaved = async () => {
-  addSetupLogLine('My Stuff', 'Patient Summary saved on Patient Summary tab', true, true);
   {
     const summaryText = preGeneratedSummary.value || '';
     logProvisioningEvent({
@@ -6359,7 +6282,6 @@ const handlePatientSummarySaved = async () => {
   // Guided flow: saving summary also completes the flow
   if (wizardFlowPhase.value === 'summary') {
     wizardFlowPhase.value = 'done';
-    addSetupLogLine('Wizard', 'Setup wizard complete — Patient Summary saved', true, true);
     logProvisioningEvent({ event: 'setup-complete' });
     persistWizardCompletion();
     void generateSetupLogPdf();
@@ -6369,7 +6291,6 @@ const handlePatientSummarySaved = async () => {
 };
 
 const handlePatientSummaryVerified = async () => {
-  addSetupLogLine('My Stuff', 'Patient Summary verified on Patient Summary tab', true, true);
   {
     const summaryText = preGeneratedSummary.value || '';
     logProvisioningEvent({
@@ -6386,7 +6307,6 @@ const handlePatientSummaryVerified = async () => {
   // Guided flow: verifying summary completes the flow
   if (wizardFlowPhase.value === 'summary') {
     wizardFlowPhase.value = 'done';
-    addSetupLogLine('Wizard', 'Setup wizard complete — Patient Summary verified', true, true);
     logProvisioningEvent({ event: 'setup-complete' });
     void generateSetupLogPdf();
     emit('wizard-complete');
@@ -6562,22 +6482,20 @@ onMounted(async () => {
           guidedFlowDismissCount.value += 1;
           if (guidedFlowDismissCount.value >= 2) {
             // User dismissed My Lists twice — skip to Patient Summary
-            addSetupLogLine('Wizard Flow', '[WARNING] User dismissed My Lists tab twice during medications phase — skipping to Patient Summary', false);
             guidedFlowDismissCount.value = 0;
             wizardFlowPhase.value = 'summary';
             void generateSetupLogPdf();
             void nextTick(() => {
               myStuffInitialTab.value = 'summary';
               if (preGeneratedSummary.value) {
-                wizardRequestAction.value = 'update-summary-meds';
+                requestMyStuffSummaryAction('update-summary-meds');
               } else {
-                wizardRequestAction.value = 'generate-summary';
+                requestMyStuffSummaryAction('generate-summary');
               }
               showMyStuffDialog.value = true;
             });
           } else {
             // First dismiss — reopen on the same tab
-            addSetupLogLine('Wizard Flow', 'User closed My Stuff during medications phase — reopening (dismiss 1 of 2)', true);
             void nextTick(() => {
               myStuffInitialTab.value = 'lists';
               showMyStuffDialog.value = true;
@@ -6589,7 +6507,6 @@ onMounted(async () => {
           guidedFlowDismissCount.value += 1;
           if (guidedFlowDismissCount.value >= 2) {
             // User dismissed Patient Summary twice — complete wizard
-            addSetupLogLine('Wizard', 'Setup wizard complete — Patient Summary skipped (dismissed twice)', false, true);
             logProvisioningEvent({ event: 'setup-complete' });
             guidedFlowDismissCount.value = 0;
             wizardFlowPhase.value = 'done';
@@ -6599,10 +6516,9 @@ onMounted(async () => {
             // Don't reopen — wizard is done
           } else {
             // First dismiss — reopen on the same tab
-            addSetupLogLine('Wizard Flow', 'User closed My Stuff during summary phase — reopening (dismiss 1 of 2)', true);
             void nextTick(() => {
               myStuffInitialTab.value = 'summary';
-              wizardRequestAction.value = 'generate-summary';
+              requestMyStuffSummaryAction('generate-summary');
               showMyStuffDialog.value = true;
             });
           }
@@ -6746,7 +6662,6 @@ const closeMyStuff = () => {
 };
 
 defineExpose({
-  addSetupLogLine,
   generateSetupLogPdf,
   markIndexingAlreadyCompleted,
   testMode,
