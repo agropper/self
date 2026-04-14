@@ -1055,6 +1055,8 @@ const logProvisioningEvent = async (eventData: Record<string, any>) => {
   } catch (err) {
     console.warn('Failed to log provisioning event:', eventData.event, err);
   }
+  // Regenerate maia-log.pdf so the local folder always reflects the latest events
+  void generateSetupLogPdf();
 };
 
 // ── Safari / basic fallback folder state ────────────────────────
