@@ -718,6 +718,7 @@
       :local-state="restoreWizardLocalState"
       :local-folder-handle="localFolderHandle"
       :kb-name="restoreWizardKbName"
+      :test-mode="testModeActive"
       @restore-complete="handleRestoreWizardComplete"
     />
 
@@ -2611,6 +2612,20 @@ const handleRestoreWizardComplete = async () => {
         await saveLocalSnapshot(null);
       } catch { /* non-fatal */ }
 
+      // Emit test-completed BEFORE regenerating the PDF so it shows in the log
+      try {
+        await fetch('/api/provisioning-log', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: 'include',
+          body: JSON.stringify({
+            userId: user.value!.userId,
+            event: 'test-completed',
+            passed: comparison.passed
+          })
+        });
+      } catch { /* non-fatal */ }
+
       // Regenerate maia-log.pdf with all test entries
       try {
         await ci.generateSetupLogPdf();
@@ -2618,6 +2633,19 @@ const handleRestoreWizardComplete = async () => {
 
     } catch (err: any) {
       log(`Post-restore verification failed: ${err.message}`, false);
+      try {
+        await fetch('/api/provisioning-log', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: 'include',
+          body: JSON.stringify({
+            userId: user.value!.userId,
+            event: 'test-completed',
+            passed: false,
+            error: err?.message
+          })
+        });
+      } catch { /* non-fatal */ }
     } finally {
       testModeActive.value = false;
       testSetupVerification.value = null;

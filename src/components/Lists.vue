@@ -419,7 +419,19 @@ const emit = defineEmits<{
   'back-to-chat': [];
   'show-patient-summary': [];
   'current-medications-saved': [data: { value: string; edited: boolean; changed?: boolean }];
+  'medications-offered': [data: {
+    lines: number;
+    source: 'apple-health' | 'patient-summary' | 'manual' | 'user-doc';
+    outcome: 'success' | 'ai-refusal' | 'ai-error' | 'ai-empty' | 'summary-empty' | 'no-source' | 'agent-not-ready';
+    detail?: string;
+  }];
 }>();
+
+// Count non-empty lines for meds-offered telemetry
+const countMedsLines = (text: string): number => {
+  if (!text) return 0;
+  return text.split('\n').filter(l => l.trim().length > 0).length;
+};
 
 
 interface PdfPage {
@@ -500,10 +512,12 @@ const currentMedicationsStatus = ref<'reviewing' | 'consulting' | 'waiting' | 'w
 const wizardAutoFlow = ref(false);
 const wizardAutoFlowStorageKey = 'wizardMyListsAuto';
 const wizardAutoStartPending = ref(false);
+const wizardMedsExtractionFailed = ref(false);
 const wizardPreparingMeds = computed(() =>
   wizardAutoFlow.value &&
   !currentMedications.value &&
-  (wizardAutoStartPending.value || isProcessing.value || isLoadingCurrentMedications.value || hasSavedResults.value || hasMedicationRecords.value)
+  !wizardMedsExtractionFailed.value &&
+  (wizardAutoStartPending.value || isProcessing.value || isLoadingCurrentMedications.value || hasSavedResults.value)
 );
 const showSummaryDialog = ref(false);
 const showRefreshConfirmDialog = ref(false);
@@ -2262,6 +2276,11 @@ const loadCurrentMedications = async (forceRefresh = false) => {
             isInitialMedsLoading.value = false;
             console.log('[Lists] Current Medications loaded from saved user document (%d chars)', statusResult.currentMedications.length);
             logWizardEvent('current_meds_loaded_from_user_doc', { length: statusResult.currentMedications.length });
+            emit('medications-offered', {
+              lines: countMedsLines(statusResult.currentMedications),
+              source: 'user-doc',
+              outcome: 'success'
+            });
             return;
           }
         }
@@ -2275,114 +2294,182 @@ const loadCurrentMedications = async (forceRefresh = false) => {
       cat.name.toLowerCase().includes('medication')
     );
 
+    // Path 2: Apple Health medication records (if present) — AI extraction
+    let path2Succeeded = false;
+    // Track the Path-2 failure reason so downstream fallback emits can report it.
+    type Path2Reason = 'ai-refusal' | 'ai-error' | 'ai-empty' | 'agent-not-ready' | null;
+    let path2FailureReason: Path2Reason = null;
+    let path2FailureDetail: string | undefined;
+    const pathsTried: string[] = ['user-doc'];
     if (medicationCategory && medicationCategory.observations && medicationCategory.observations.length > 0) {
-      // Apple Health has medication records — use AI to extract current medications
+      pathsTried.push('apple-health');
       console.log('[Lists] Medication Records found in Apple Health categories — extracting with AI');
       isInitialMedsLoading.value = false;
       currentMedicationsStatus.value = 'waiting';
       const agentReady = await waitForAgentReady();
-      if (!agentReady) {
-        currentMedications.value = null;
+      if (agentReady) {
+        isLoadingCurrentMedications.value = true;
+        currentMedicationsStatus.value = 'reviewing';
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        try {
+          currentMedicationsStatus.value = 'consulting';
+          const response = await fetch('/api/files/lists/current-medications', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'include',
+            body: JSON.stringify({ medicationRecords: medicationCategory.observations })
+          });
+          if (!response.ok) {
+            const errorData = await response.json().catch(() => ({ error: `HTTP ${response.status}` }));
+            throw new Error(errorData.error || 'Failed to get current medications');
+          }
+          const result = await response.json();
+          if (result.success && result.currentMedications) {
+            const cleaned = removeHeadingsFromResponse(result.currentMedications);
+            // Validate the AI response — the agent may refuse or return a short
+            // non-answer ("I do not have enough information...", "No medications
+            // were found", etc.). Treat those as empty so we fall through to
+            // the Patient Summary extraction path.
+            const refusalPattern = /\b(not enough info|don['’]t have enough|cannot determine|unable to (?:determine|identify|find)|no (?:current )?medications? (?:were )?(?:found|identified|listed)|insufficient (?:data|information)|i['’]?m sorry|i apologize)\b/i;
+            const isRefusal = cleaned.length < 15 || refusalPattern.test(cleaned);
+            if (isRefusal) {
+              console.warn('[Lists] AI meds response looks like a refusal/empty — falling through to Patient Summary path:', cleaned.slice(0, 120));
+              logWizardEvent('current_meds_refusal_detected', { preview: cleaned.slice(0, 120) });
+              path2FailureReason = 'ai-refusal';
+              path2FailureDetail = cleaned.slice(0, 80);
+            } else {
+              currentMedications.value = cleaned;
+              isCurrentMedicationsEdited.value = false;
+              isEditingCurrentMedications.value = false;
+              currentMedicationsBlockTitle.value = 'Current Medications';
+              console.log('[Lists] Current Medications generated from Apple Health records (%d chars)', cleaned.length);
+              logWizardEvent('current_meds_generated', { length: cleaned.length });
+              emit('medications-offered', {
+                lines: countMedsLines(cleaned),
+                source: 'apple-health',
+                outcome: 'success'
+              });
+              path2Succeeded = true;
+            }
+          } else {
+            logWizardEvent('current_meds_empty_response');
+            path2FailureReason = 'ai-empty';
+          }
+        } catch (err) {
+          console.error('[Lists] Error generating Current Medications from records:', err);
+          const msg = err instanceof Error ? err.message : 'Unknown error';
+          logWizardEvent('current_meds_error', { error: msg });
+          path2FailureReason = 'ai-error';
+          path2FailureDetail = msg;
+        } finally {
+          isLoadingCurrentMedications.value = false;
+          currentMedicationsStatus.value = '';
+        }
+      } else {
         logWizardEvent('current_meds_agent_not_ready');
+        path2FailureReason = 'agent-not-ready';
         currentMedicationsStatus.value = '';
-        return;
       }
-      isLoadingCurrentMedications.value = true;
-      currentMedicationsStatus.value = 'reviewing';
-      await new Promise(resolve => setTimeout(resolve, 1000));
+      if (path2Succeeded) return;
+      // Path 2 produced nothing usable — fall through to Path 3
+    }
+
+    // Path 3: extract from saved Patient Summary (or final fallback to manual)
+    console.log('[Lists] Checking saved Patient Summary for Current Medications section');
+    isInitialMedsLoading.value = false;
+    currentMedicationsStatus.value = 'waiting_summary';
+    isLoadingCurrentMedications.value = true;
+
+    let medsFromSummary: string | null = null;
+    try {
+      const summaryRes = await fetch(`/api/patient-summary?userId=${encodeURIComponent(props.userId)}`, {
+        credentials: 'include'
+      });
+      if (summaryRes.ok) {
+        const summaryData = await summaryRes.json();
+        const summaryText = summaryData.summary || summaryData.summaries?.[0] || '';
+        if (summaryText) {
+          console.log('[Lists] Patient Summary found (%d chars) — extracting Current Medications section', summaryText.length);
+          medsFromSummary = extractMedicationsFromSummary(summaryText);
+          if (medsFromSummary) {
+            console.log('[Lists] Current Medications extracted from Patient Summary (%d chars)', medsFromSummary.length);
+          } else {
+            console.log('[Lists] Patient Summary has no "Current Medications" section');
+          }
+        } else {
+          console.log('[Lists] No Patient Summary saved yet');
+        }
+      }
+    } catch (err) {
+      console.warn('[Lists] Error fetching Patient Summary:', err);
+    }
+
+    isLoadingCurrentMedications.value = false;
+    currentMedicationsStatus.value = '';
+
+    if (medsFromSummary) {
+      pathsTried.push('patient-summary');
+      currentMedications.value = medsFromSummary;
+      isCurrentMedicationsEdited.value = false;
+      currentMedicationsBlockTitle.value = 'Current Medications';
+      logWizardEvent('current_meds_from_summary', { medsLength: medsFromSummary.length });
+      // If Path 2 failed, annotate the outcome so the log explains the fall-through.
+      emit('medications-offered', {
+        lines: countMedsLines(medsFromSummary),
+        source: 'patient-summary',
+        outcome: path2FailureReason ? path2FailureReason : 'success',
+        detail: path2FailureDetail
+      });
+      // Show in display mode with verify-highlight so user can EDIT or VERIFY
+      needsVerifyAction.value = true;
+      persistVerifyState();
+    } else if (wizardAutoFlow.value) {
+      // No medications from any source — final fallback is manual entry
+      // with the red-rim Edit/Verify buttons to coax the user.
+      console.log('[Lists] Wizard flow — no medications from any source; opening for manual entry');
+      logWizardEvent('current_meds_none_found');
+      pathsTried.push('patient-summary', 'manual');
+      emit('medications-offered', {
+        lines: 0,
+        source: 'manual',
+        outcome: path2FailureReason || 'no-source',
+        detail: path2FailureDetail
+      });
+      // Explicit failure event so maia-log clearly flags the regression.
       try {
-        currentMedicationsStatus.value = 'consulting';
-        const response = await fetch('/api/files/lists/current-medications', {
+        await fetch('/api/provisioning-log', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           credentials: 'include',
-          body: JSON.stringify({ medicationRecords: medicationCategory.observations })
+          body: JSON.stringify({
+            userId: props.userId,
+            event: 'current-medications-recovery-failed',
+            pathsTried,
+            lastError: path2FailureDetail,
+            reason: path2FailureReason || 'no-source'
+          })
         });
-        if (!response.ok) {
-          const errorData = await response.json().catch(() => ({ error: `HTTP ${response.status}` }));
-          throw new Error(errorData.error || 'Failed to get current medications');
-        }
-        const result = await response.json();
-        if (result.success && result.currentMedications) {
-          const cleaned = removeHeadingsFromResponse(result.currentMedications);
-          currentMedications.value = cleaned;
-          isCurrentMedicationsEdited.value = false;
-          isEditingCurrentMedications.value = false;
-          currentMedicationsBlockTitle.value = 'Current Medications';
-          console.log('[Lists] Current Medications generated from Apple Health records (%d chars)', cleaned.length);
-          logWizardEvent('current_meds_generated', { length: cleaned.length });
-        } else {
-          currentMedications.value = null;
-          logWizardEvent('current_meds_empty_response');
-        }
-      } catch (err) {
-        console.error('[Lists] Error generating Current Medications from records:', err);
-        currentMedications.value = null;
-        logWizardEvent('current_meds_error', { error: err instanceof Error ? err.message : 'Unknown error' });
-      } finally {
-        isLoadingCurrentMedications.value = false;
-        currentMedicationsStatus.value = '';
-        if (wizardAutoFlow.value && !currentMedications.value) {
-          clearWizardAutoFlow();
-        }
-      }
-      return;
+      } catch { /* non-fatal */ }
+      currentMedicationsBlockTitle.value = 'Please enter your current medications manually';
+      needsVerifyAction.value = true;
+      persistVerifyState();
+      // Stop the spinner so Edit/Verify buttons become visible
+      wizardMedsExtractionFailed.value = true;
+      clearWizardAutoFlow();
     } else {
-      // Path 3: No Apple Health meds — try to extract from saved Patient Summary (one fetch, no polling)
-      console.log('[Lists] No Apple Health medication records — checking saved Patient Summary');
-      isInitialMedsLoading.value = false;
-      currentMedicationsStatus.value = 'waiting_summary';
-      isLoadingCurrentMedications.value = true;
-
-      let medsFromSummary: string | null = null;
-      try {
-        const summaryRes = await fetch(`/api/patient-summary?userId=${encodeURIComponent(props.userId)}`, {
-          credentials: 'include'
-        });
-        if (summaryRes.ok) {
-          const summaryData = await summaryRes.json();
-          const summaryText = summaryData.summary || summaryData.summaries?.[0] || '';
-          if (summaryText) {
-            console.log('[Lists] Patient Summary found (%d chars) — extracting Current Medications section', summaryText.length);
-            medsFromSummary = extractMedicationsFromSummary(summaryText);
-            if (medsFromSummary) {
-              console.log('[Lists] Current Medications extracted from Patient Summary (%d chars)', medsFromSummary.length);
-            } else {
-              console.log('[Lists] Patient Summary has no "Current Medications" section');
-            }
-          } else {
-            console.log('[Lists] No Patient Summary saved yet');
-          }
-        }
-      } catch (err) {
-        console.warn('[Lists] Error fetching Patient Summary:', err);
-      }
-
-      isLoadingCurrentMedications.value = false;
-      currentMedicationsStatus.value = '';
-
-      if (medsFromSummary) {
-        currentMedications.value = medsFromSummary;
-        isCurrentMedicationsEdited.value = false;
-        currentMedicationsBlockTitle.value = 'Current Medications';
-        logWizardEvent('current_meds_from_summary', { medsLength: medsFromSummary.length });
-        // Show in display mode with verify-highlight so user can EDIT or VERIFY
-        // Set needsVerifyAction directly (without dialog) so red borders appear immediately
-        needsVerifyAction.value = true;
-        persistVerifyState();
-      } else if (wizardAutoFlow.value) {
-        // During wizard flow, don't show manual entry — processInitialFile will
-        // generate medications from Apple Health records.  Keep the loading spinner.
-        console.log('[Lists] Wizard flow — deferring medications to file processing');
-        logWizardEvent('current_meds_deferred_to_processing');
-      } else {
-        console.log('[Lists] No medications available — opening for manual entry');
-        currentMedicationsBlockTitle.value = 'Current Medications as reported by the user';
-        logWizardEvent('current_meds_no_records_no_summary');
-        startEditingCurrentMedications();
-      }
-      return;
+      console.log('[Lists] No medications available — opening for manual entry');
+      currentMedicationsBlockTitle.value = 'Please enter your current medications manually';
+      logWizardEvent('current_meds_no_records_no_summary');
+      pathsTried.push('patient-summary', 'manual');
+      emit('medications-offered', {
+        lines: 0,
+        source: 'manual',
+        outcome: path2FailureReason || 'no-source',
+        detail: path2FailureDetail
+      });
+      startEditingCurrentMedications();
     }
+    return;
   } finally {
     loadCurrentMedicationsRunning = false;
   }
