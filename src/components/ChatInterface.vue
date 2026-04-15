@@ -347,27 +347,27 @@
 
           <!-- Action button: Choose the patient folder -->
           <div v-if="!setupFolderConnected" class="q-mb-md">
-            <!-- Chrome: persistent folder access -->
-            <q-btn
-              v-if="localFolderSupported"
-              unelevated
-              color="primary"
-              label="Choose the patient folder"
-              icon="folder_open"
-              :disable="localFolderAutoRunActive"
-              @click="handlePickLocalFolder"
-            />
-            <!-- TEST button (localhost only, Chrome only) -->
-            <q-btn
-              v-if="localFolderSupported && isLocalhost"
-              flat
-              color="deep-orange"
-              label="TEST"
-              icon="science"
-              class="q-ml-sm"
-              :disable="localFolderAutoRunActive || testMode"
-              @click="handleTestButton"
-            />
+            <!-- Chrome: persistent folder access (+ TEST on localhost) -->
+            <template v-if="localFolderSupported">
+              <q-btn
+                unelevated
+                color="primary"
+                label="Choose the patient folder"
+                icon="folder_open"
+                :disable="localFolderAutoRunActive"
+                @click="handlePickLocalFolder"
+              />
+              <q-btn
+                v-if="isLocalhost"
+                flat
+                color="deep-orange"
+                label="TEST"
+                icon="science"
+                class="q-ml-sm"
+                :disable="localFolderAutoRunActive || testMode"
+                @click="handleTestButton"
+              />
+            </template>
             <!-- Safari: one-time folder read -->
             <q-btn
               v-else-if="props.folderAccessTier === 'safari'"
@@ -624,6 +624,7 @@
       @diary-posted="handleDiaryPosted"
       @reference-file-added="handleReferenceFileAdded"
       @current-medications-saved="handleCurrentMedicationsSaved"
+      @medications-offered="handleMedicationsOffered"
       @patient-summary-saved="handlePatientSummarySaved"
       @patient-summary-verified="handlePatientSummaryVerified"
       @show-patient-summary="handleMyStuffShowSummary"
@@ -906,10 +907,10 @@ const myStuffDialogRef = ref<InstanceType<typeof MyStuffDialog> | null>(null);
 
 /** Request MyStuffDialog to generate or update the patient summary.
  *  Replaces the old requestAction prop — calls exposed methods directly via ref. */
-const requestMyStuffSummaryAction = (action: 'generate-summary' | 'update-summary-meds') => {
+const requestMyStuffSummaryAction = (action: 'generate-summary' | 'update-summary-meds', medsText?: string) => {
   nextTick(() => {
     if (myStuffDialogRef.value) {
-      myStuffDialogRef.value.wizardGenerateSummary(action);
+      myStuffDialogRef.value.wizardGenerateSummary(action, medsText);
     }
   });
 };
@@ -1043,8 +1044,58 @@ const preGeneratedSummary = ref<string | null>(null);
 const wizardPreparingRecords = ref(false);
 
 // ── Provisioning log ────
+// Coalesce duplicate log events (two code paths occasionally emit the same
+// milestone within a few seconds — e.g. kb-indexed, summary-saved, restore-complete).
+const lastLoggedEventAt: Record<string, number> = {};
+const COALESCE_WINDOW_MS: Record<string, number> = {
+  // kb-indexed fires from two code paths (poll + phase watcher) and the
+  // phase watcher can re-fire long after indexing actually finished if
+  // indexingStatus.phase is re-set to 'complete' by a status refresh.
+  // 15-min window is too long (Setup + Restore both emit in the same
+  // session), so we also key the coalesce by tokens+fileCount below so
+  // a genuine re-index with a different count still gets logged.
+  'kb-indexed': 15 * 60 * 1000,
+  'summary-saved': 3000,
+  'summary-verified': 3000,
+  'summary-generated': 3000,
+  'medications-saved': 3000,
+  'restore-complete': 3000,
+  'setup-complete': 3000,
+  'test-started': 3000,
+  'test-completed': 3000
+};
+
+/** Some events (kb-indexed) legitimately recur with different payloads in the
+ *  same session; we want to suppress duplicates of the SAME payload but allow
+ *  a different payload through. For those, the coalesce key includes data fields. */
+const coalesceKeyFor = (eventData: Record<string, any>): string => {
+  const evt = String(eventData.event || '');
+  if (evt === 'kb-indexed') {
+    return `${evt}|${eventData.tokens ?? 0}|${eventData.fileCount ?? 0}`;
+  }
+  return evt;
+};
+
 const logProvisioningEvent = async (eventData: Record<string, any>) => {
   if (!props.user?.userId) return;
+  const evt = String(eventData.event || '');
+  // Reset the coalesce tracker at the start of a new Setup/Restore section
+  // so legitimate re-emissions (e.g. kb-indexed in Setup then again in Restore)
+  // aren't suppressed across sections.
+  if (evt === 'setup-started' || evt === 'restore-started') {
+    for (const k of Object.keys(lastLoggedEventAt)) delete lastLoggedEventAt[k];
+  }
+  const window = COALESCE_WINDOW_MS[evt];
+  if (window) {
+    const key = coalesceKeyFor(eventData);
+    const last = lastLoggedEventAt[key] || 0;
+    const now = Date.now();
+    if (now - last < window) {
+      console.log('[ProvisioningLog] coalesced duplicate %s (last %dms ago, key=%s)', evt, now - last, key);
+      return;
+    }
+    lastLoggedEventAt[key] = now;
+  }
   try {
     await fetch('/api/provisioning-log', {
       method: 'POST',
@@ -1257,6 +1308,7 @@ watch(
     if (isOpen) {
       logProvisioningEvent({
         event: 'setup-started',
+        test: testMode.value || undefined,
         method: 'setup',
         client: {
           browser: parseUserAgent(),
@@ -2520,6 +2572,8 @@ const handleTestButton = () => {
   testFinalOutput.value = '';
   testSetupVerification.value = null;
   addTestLog('TEST mode activated — wizard will auto-verify');
+  logProvisioningEvent({ event: 'test-started' });
+  void generateSetupLogPdf();
   // Trigger the normal folder picker; the wizard flow runs as usual
   handlePickLocalFolder();
 };
@@ -2867,6 +2921,10 @@ const runAutoWizard = async () => {
 /** Generate maia-log.pdf summary and write to local folder. */
 const generateSetupLogPdf = async () => {
   if (!localFolderHandle.value) return;
+  // Refresh providers right before rendering so a freshly deployed agent (e.g. after
+  // a long restore) is reflected in the "Chat providers:" header. Without this, the
+  // PDF can be generated before the post-restore providers refetch settles.
+  try { await loadProviders(); } catch { /* non-fatal */ }
   const doc = new jsPDF();
   const pageWidth = doc.internal.pageSize.getWidth();
   const margin = 14;
@@ -2975,7 +3033,10 @@ const generateSetupLogPdf = async () => {
         if (evt.event === 'account-deleted') return [200, 0, 0];
         if (evt.event?.startsWith('test-')) return [200, 100, 0];
         if (evt.event === 'medications-saved' || evt.event === 'summary-saved' ||
-            evt.event === 'medications-restored' || evt.event === 'summary-restored') return [0, 120, 0];
+            evt.event === 'medications-restored' || evt.event === 'summary-restored' ||
+            evt.event === 'summary-verified') return [0, 120, 0];
+        if (evt.event === 'medications-offered' && evt.outcome && evt.outcome !== 'success') return [180, 100, 0];
+        if (evt.event === 'current-medications-recovery-failed') return [200, 0, 0];
         return [0, 0, 0];
       };
 
@@ -3005,15 +3066,23 @@ const generateSetupLogPdf = async () => {
             return `[${t}] KB indexed: ${parts.join(', ')}`;
           }
           case 'summary-generated': return `[${t}] Patient Summary generated (${evt.lines || 0} lines, ${Number(evt.chars || 0).toLocaleString()} chars)`;
-          case 'medications-offered': return `[${t}] Medications offered for verification (${evt.lines || 0} lines)`;
+          case 'medications-offered': {
+            const src = evt.source ? ` from ${String(evt.source).replace(/-/g, ' ')}` : '';
+            const outcome = evt.outcome && evt.outcome !== 'success' ? ` [${evt.outcome}]` : '';
+            return `[${t}] Medications offered for verification (${evt.lines || 0} lines)${src}${outcome}`;
+          }
+          case 'medications-dismissed': return `[${t}] Medications step dismissed without verification`;
+          case 'current-medications-recovery-failed': return `[${t}] Current Medications recovery FAILED — fell through ${Array.isArray(evt.pathsTried) ? evt.pathsTried.join(' -> ') : 'all paths'}`;
           case 'medications-saved': return `[${t}] Current Medications saved (${evt.lines || 0} lines)`;
           case 'medications-restored': return `[${t}] Current Medications restored (${evt.lines || 0} lines)`;
           case 'summary-saved': return `[${t}] Patient Summary saved (${evt.lines || 0} lines, ${Number(evt.chars || 0).toLocaleString()} chars)`;
+          case 'summary-verified': return `[${t}] Patient Summary verified (${evt.lines || 0} lines, ${Number(evt.chars || 0).toLocaleString()} chars)`;
           case 'summary-restored': return `[${t}] Patient Summary restored (${evt.lines || 0} lines, ${Number(evt.chars || 0).toLocaleString()} chars)`;
           case 'chats-restored': return `[${t}] Saved chats restored (${evt.count || 0})`;
           case 'instructions-restored': return `[${t}] Agent Instructions restored`;
           case 'lists-restored': return `[${t}] My Lists restored`;
-          case 'test-started': return `[${t}] TEST mode activated`;
+          case 'test-started': return `[${t}] TEST mode started (automated Setup/Restore run)`;
+          case 'test-completed': return `[${t}] TEST mode completed${evt.passed !== undefined ? (evt.passed ? ' — PASS' : ' — FAIL') : ''}`;
           case 'test-verification': return `[${t}] TEST verification: ${evt.label || ''} ${evt.passed ? 'PASS' : 'FAIL'}${evt.detail ? ' - ' + evt.detail : ''}`;
           case 'error': return `[${t}] ERROR: ${evt.step || ''} - ${evt.message || ''}`;
           default: return `[${t}] ${evt.event || 'unknown'}`;
@@ -3022,10 +3091,21 @@ const generateSetupLogPdf = async () => {
 
       // Render session boundaries and events
       let lastSession = '';
-      for (const evt of events) {
+      for (let i = 0; i < events.length; i++) {
+        const evt = events[i];
         // Draw session divider for start events
         if (evt.event === 'setup-started' || evt.event === 'restore-started') {
-          const label = evt.event === 'setup-started' ? '--- Setup ---' : '--- Restore ---';
+          let isTest = !!evt.test;
+          if (!isTest) {
+            // Look ahead within this section for a test-started event before the next section boundary
+            for (let j = i + 1; j < events.length; j++) {
+              const nx = events[j].event;
+              if (nx === 'setup-started' || nx === 'restore-started' || nx === 'account-deleted') break;
+              if (nx === 'test-started') { isTest = true; break; }
+            }
+          }
+          const testTag = isTest ? ' (TEST)' : '';
+          const label = (evt.event === 'setup-started' ? '--- Setup' : '--- Restore') + testTag + ' ---';
           if (lastSession) {
             y += 3;
             doc.setDrawColor(100);
@@ -5789,7 +5869,8 @@ watch(
       }
       wizardFlowPhase.value = 'medications';
       guidedFlowDismissCount.value = 0;
-      logProvisioningEvent({ event: 'medications-offered' });
+      // Note: 'medications-offered' event is logged by Lists.vue after extraction
+      // completes, so we have an accurate line count for the offered meds.
 
       // Step 1: Generate and save Patient Summary BEFORE opening My Lists.
       // This ensures the summary is available when Lists.vue needs to extract medications.
@@ -6212,6 +6293,22 @@ const handleReferenceFileAdded = async (file: { fileName: string; bucketKey: str
   }
 };
 
+const handleMedicationsOffered = (payload: {
+  lines: number;
+  source: 'apple-health' | 'patient-summary' | 'manual' | 'user-doc';
+  outcome: 'success' | 'ai-refusal' | 'ai-error' | 'ai-empty' | 'summary-empty' | 'no-source' | 'agent-not-ready';
+  detail?: string;
+}) => {
+  logProvisioningEvent({
+    event: 'medications-offered',
+    lines: payload.lines,
+    source: payload.source,
+    outcome: payload.outcome,
+    detail: payload.detail
+  });
+  void generateSetupLogPdf();
+};
+
 const handleCurrentMedicationsSaved = async (payload?: { value?: string; edited?: boolean; changed?: boolean }) => {
   const medsLineCount = payload?.value ? payload.value.split('\n').filter(l => l.trim()).length : 0;
   logProvisioningEvent({
@@ -6229,18 +6326,11 @@ const handleCurrentMedicationsSaved = async (payload?: { value?: string; edited?
     guidedFlowDismissCount.value = 0;
     console.log('[Wizard] Current Medications saved — opening Patient Summary tab');
     void generateSetupLogPdf();
-    // Switch to Patient Summary tab and always trigger summary generation.
-    // Even if medications didn't change, we need to ensure the summary tab
-    // shows valid content (the pre-generated summary may be an AI refusal
-    // like "I'm sorry" if the KB wasn't fully indexed yet).
+    // Switch to Patient Summary tab and text-patch the provisional summary with
+    // the verified medications. Never a second AI call — the wizard budget is
+    // exactly two Private AI calls: summary generation + optional meds extraction.
     myStuffInitialTab.value = 'summary';
-    if (payload?.changed && preGeneratedSummary.value) {
-      // Medications changed and we have a pre-generated summary — do a cheap update
-      requestMyStuffSummaryAction('update-summary-meds');
-    } else {
-      // Either no change or no pre-generated summary — generate fresh
-      requestMyStuffSummaryAction('generate-summary');
-    }
+    requestMyStuffSummaryAction('update-summary-meds', payload?.value || '');
   }
   // Refresh wizard state in background (non-blocking)
   void refreshWizardState();
@@ -6267,9 +6357,15 @@ const handleMyStuffTabOpened = (tab: string) => {
 
 };
 
-const handlePatientSummarySaved = async () => {
+const handlePatientSummarySaved = async (payload?: { userId?: string; summary?: string }) => {
   {
-    const summaryText = preGeneratedSummary.value || '';
+    // Prefer the text reported by MyStuffDialog (authoritative — what was POSTed).
+    // Fall back to preGeneratedSummary only if the payload didn't include one.
+    const summaryText = (payload?.summary && payload.summary.length > 0)
+      ? payload.summary
+      : (preGeneratedSummary.value || '');
+    // Keep our cached copy in sync so subsequent events see the post-patch text.
+    if (payload?.summary) preGeneratedSummary.value = payload.summary;
     logProvisioningEvent({
       event: 'summary-saved',
       lines: summaryText ? summaryText.split('\n').filter((l: string) => l.trim()).length : 0,
@@ -6292,11 +6388,14 @@ const handlePatientSummarySaved = async () => {
   }
 };
 
-const handlePatientSummaryVerified = async () => {
+const handlePatientSummaryVerified = async (payload?: { userId?: string; summary?: string }) => {
   {
-    const summaryText = preGeneratedSummary.value || '';
+    const summaryText = (payload?.summary && payload.summary.length > 0)
+      ? payload.summary
+      : (preGeneratedSummary.value || '');
+    if (payload?.summary) preGeneratedSummary.value = payload.summary;
     logProvisioningEvent({
-      event: 'summary-saved',
+      event: 'summary-verified',
       lines: summaryText ? summaryText.split('\n').filter((l: string) => l.trim()).length : 0,
       chars: summaryText.length
     });
@@ -6479,30 +6578,22 @@ onMounted(async () => {
 
     watch(() => showMyStuffDialog.value, (isOpen, wasOpen) => {
       if (wasOpen && !isOpen) {
-        // During guided flow, track dismiss count. After 2 dismissals, skip the phase.
+        // During guided flow, closing My Lists during the medications phase
+        // advances directly to the Patient Summary phase. Per the 2-AI-call spec,
+        // if the user didn't verify/edit meds, we keep the provisional summary
+        // (with its Apple Health or AI-derived meds section) as-is — no third
+        // AI call, no meds-section patch.
         if (wizardFlowPhase.value === 'medications') {
-          guidedFlowDismissCount.value += 1;
-          if (guidedFlowDismissCount.value >= 2) {
-            // User dismissed My Lists twice — skip to Patient Summary
-            guidedFlowDismissCount.value = 0;
-            wizardFlowPhase.value = 'summary';
-            void generateSetupLogPdf();
-            void nextTick(() => {
-              myStuffInitialTab.value = 'summary';
-              if (preGeneratedSummary.value) {
-                requestMyStuffSummaryAction('update-summary-meds');
-              } else {
-                requestMyStuffSummaryAction('generate-summary');
-              }
-              showMyStuffDialog.value = true;
-            });
-          } else {
-            // First dismiss — reopen on the same tab
-            void nextTick(() => {
-              myStuffInitialTab.value = 'lists';
-              showMyStuffDialog.value = true;
-            });
-          }
+          logProvisioningEvent({ event: 'medications-dismissed' });
+          guidedFlowDismissCount.value = 0;
+          wizardFlowPhase.value = 'summary';
+          void generateSetupLogPdf();
+          void nextTick(() => {
+            myStuffInitialTab.value = 'summary';
+            // No requestMyStuffSummaryAction — the provisional summary is already
+            // saved and the Patient Summary tab will load it on open. No AI call.
+            showMyStuffDialog.value = true;
+          });
           return;
         }
         if (wizardFlowPhase.value === 'summary') {
@@ -6517,10 +6608,11 @@ onMounted(async () => {
             emit('wizard-complete');
             // Don't reopen — wizard is done
           } else {
-            // First dismiss — reopen on the same tab
+            // First dismiss — reopen on the same tab.
+            // No requestMyStuffSummaryAction: the summary is already saved and
+            // shown; regenerating would exceed the 2-AI-call wizard budget.
             void nextTick(() => {
               myStuffInitialTab.value = 'summary';
-              requestMyStuffSummaryAction('generate-summary');
               showMyStuffDialog.value = true;
             });
           }

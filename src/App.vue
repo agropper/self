@@ -718,6 +718,7 @@
       :local-state="restoreWizardLocalState"
       :local-folder-handle="localFolderHandle"
       :kb-name="restoreWizardKbName"
+      :test-mode="testModeActive"
       @restore-complete="handleRestoreWizardComplete"
     />
 
@@ -2594,14 +2595,60 @@ const handleRestoreWizardComplete = async () => {
         }
       }
 
+      // Collect warnings/errors that fired during this TEST run from the provisioning log
+      const warningLines: string[] = [];
+      try {
+        const logRes = await fetch(`/api/provisioning-log?userId=${encodeURIComponent(user.value!.userId)}`, { credentials: 'include' });
+        if (logRes.ok) {
+          const logJson = await logRes.json();
+          const events: any[] = Array.isArray(logJson?.log) ? logJson.log : (Array.isArray(logJson?.events) ? logJson.events : []);
+          // Find the most recent test-started; collect events after it
+          let startIdx = -1;
+          for (let i = events.length - 1; i >= 0; i--) {
+            if (events[i]?.event === 'test-started') { startIdx = i; break; }
+          }
+          const scope = startIdx >= 0 ? events.slice(startIdx) : events;
+          const warnEvents = new Set([
+            'current-medications-recovery-failed',
+            'medications-dismissed',
+            'agent-deploy-failed',
+            'kb-index-failed',
+            'summary-generation-failed',
+            'restore-error',
+            'setup-error'
+          ]);
+          for (const ev of scope) {
+            const name = ev?.event;
+            if (warnEvents.has(name)) {
+              if (name === 'current-medications-recovery-failed') {
+                const tried = Array.isArray(ev.pathsTried) ? ev.pathsTried.join(' -> ') : '';
+                warningLines.push(`  \u26A0 Current Medications recovery failed${tried ? ` (tried: ${tried})` : ''}${ev.reason ? ` — ${ev.reason}` : ''}`);
+              } else if (name === 'medications-dismissed') {
+                warningLines.push(`  \u26A0 Medications dismissed without verification${ev.reason ? ` — ${ev.reason}` : ''}`);
+              } else {
+                warningLines.push(`  \u26A0 ${name}${ev.error ? `: ${ev.error}` : ''}`);
+              }
+            } else if (name === 'medications-offered' && ev.outcome && ev.outcome !== 'verified' && ev.outcome !== 'shown') {
+              warningLines.push(`  \u26A0 Medications offered: ${ev.outcome}${ev.detail ? ` (${ev.detail})` : ''}`);
+            }
+          }
+        }
+      } catch { /* non-fatal */ }
+
       // Set the full output for the pre block
-      ci.setTestFinalOutput([
+      const sections = [
         formatVerification('SETUP', testSetupVerification.value),
         '',
         formatVerification('RESTORE', restoreVerification),
         '',
         formatComparison(comparison)
-      ].join('\n'));
+      ];
+      if (warningLines.length > 0) {
+        sections.push('');
+        sections.push(`Warnings during TEST (${warningLines.length}):`);
+        sections.push(...warningLines);
+      }
+      ci.setTestFinalOutput(sections.join('\n'));
 
       // Close MyStuff dialog so the test results panel in ChatInterface is visible
       try { ci.closeMyStuff(); } catch { /* non-fatal */ }
@@ -2611,6 +2658,20 @@ const handleRestoreWizardComplete = async () => {
         await saveLocalSnapshot(null);
       } catch { /* non-fatal */ }
 
+      // Emit test-completed BEFORE regenerating the PDF so it shows in the log
+      try {
+        await fetch('/api/provisioning-log', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: 'include',
+          body: JSON.stringify({
+            userId: user.value!.userId,
+            event: 'test-completed',
+            passed: comparison.passed
+          })
+        });
+      } catch { /* non-fatal */ }
+
       // Regenerate maia-log.pdf with all test entries
       try {
         await ci.generateSetupLogPdf();
@@ -2618,6 +2679,19 @@ const handleRestoreWizardComplete = async () => {
 
     } catch (err: any) {
       log(`Post-restore verification failed: ${err.message}`, false);
+      try {
+        await fetch('/api/provisioning-log', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: 'include',
+          body: JSON.stringify({
+            userId: user.value!.userId,
+            event: 'test-completed',
+            passed: false,
+            error: err?.message
+          })
+        });
+      } catch { /* non-fatal */ }
     } finally {
       testModeActive.value = false;
       testSetupVerification.value = null;
