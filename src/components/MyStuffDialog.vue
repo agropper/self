@@ -478,30 +478,88 @@
                 </div>
               </div>
 
-              <!-- Agent Knowledge Base Section -->
-              <div v-if="kbInfo" class="q-mt-lg" style="border-top: 1px solid #e0e0e0; padding-top: 16px;">
-                <div class="text-h6 q-mb-md">Agent Knowledge Base</div>
-                
-                <div class="row items-center q-mb-sm">
+              <!-- Agent Knowledge Bases (per this agent) -->
+              <div v-if="agentKbs.length" class="q-mt-lg" style="border-top: 1px solid #e0e0e0; padding-top: 16px;">
+                <div class="text-h6 q-mb-md">Knowledge Bases</div>
+
+                <div class="text-caption text-grey-7 q-mb-sm">
+                  Tick a box to stage a change, then press <strong>Index Now</strong> to apply.
+                  Changes here do not affect your Saved Files.
+                </div>
+
+                <div
+                  v-for="kb in agentKbs"
+                  :key="kb.key"
+                  class="row items-center q-mb-sm"
+                >
+                  <div class="col-auto q-pr-sm">
+                    <q-checkbox v-model="pendingKb[kb.key]" :disable="kbApplyBusy" />
+                  </div>
                   <div class="col">
-                    <div class="text-weight-medium">{{ kbInfo.name }}</div>
+                    <div class="text-weight-medium">{{ kb.label }}</div>
                     <div class="text-caption text-grey-7 q-mt-xs">
-                      Last indexed: {{ formatRelativeTime(kbInfo.lastIndexedAt || null) }}
+                      {{ kb.name || (kb.key === 'kb2' ? 'Created on first connect' : '—') }}
                     </div>
                   </div>
                   <div class="col-auto">
                     <q-chip
-                      :color="kbInfo.connected ? 'green' : 'amber'"
+                      :color="kb.connected ? 'green' : 'grey-5'"
                       text-color="white"
-                      :label="kbInfo.connected ? 'Connected' : 'Not Connected'"
-                      clickable
-                      @click="toggleKBConnection"
-                      :disable="togglingKB"
-                      :loading="togglingKB"
+                      :label="kb.connected ? 'Connected' : 'Not Connected'"
+                      dense
+                    />
+                    <q-badge
+                      v-if="pendingKb[kb.key] !== kb.connected"
+                      color="amber-8"
+                      class="q-ml-xs"
+                      :label="pendingKb[kb.key] ? 'will connect' : 'will disconnect'"
                     />
                   </div>
                 </div>
-                
+
+                <div v-if="kbHasStagedChanges" class="q-mt-sm">
+                  <q-btn
+                    label="Index Now"
+                    color="primary"
+                    icon="bolt"
+                    :loading="kbApplyBusy"
+                    :disable="kbApplyBusy"
+                    @click="applyKbChanges"
+                  />
+                  <span class="text-caption text-grey-7 q-ml-sm">
+                    Applies the staged connect/disconnect and indexes if needed.
+                  </span>
+                </div>
+                <!-- Inline KB-2 indexing progress (own job; does not
+                     affect Saved Files) -->
+                <div
+                  v-if="kb2Index.active || kb2Index.done || kb2Index.failed"
+                  class="q-mt-sm q-pa-sm"
+                  style="background:#f5f5f5;border-radius:4px"
+                >
+                  <template v-if="kb2Index.active">
+                    <q-linear-progress indeterminate color="primary" class="q-mb-xs" />
+                    <div class="text-caption text-grey-8">
+                      Indexing alternate KB —
+                      {{ Number(kb2Index.tokens).toLocaleString() }} tokens,
+                      {{ kb2Index.filesIndexed }} file(s),
+                      {{ Math.floor(kb2Index.elapsedSec / 60) }}m {{ kb2Index.elapsedSec % 60 }}s
+                      (5–60 min typical)
+                    </div>
+                  </template>
+                  <div v-else-if="kb2Index.done" class="text-caption text-green-8">
+                    ✓ Alternate KB indexed — {{ Number(kb2Index.tokens).toLocaleString() }} tokens,
+                    {{ kb2Index.filesIndexed }} file(s)
+                  </div>
+                  <div v-else class="text-caption text-negative">
+                    Alternate KB indexing failed — try Index Now again.
+                  </div>
+                </div>
+              </div>
+
+              <!-- Indexed-files detail for the primary KB -->
+              <div v-if="kbInfo" class="q-mt-md">
+
                 <div class="q-mt-md">
                   <div class="text-caption text-grey-7 q-mb-xs">Indexed Files:</div>
                   <div 
@@ -1365,7 +1423,61 @@ const kbInfo = ref<{
   indexedDataSourceCount?: number | null;
   lastIndexedAt?: string | null;
 } | null>(null);
-const togglingKB = ref(false);
+// Per-agent KB connection state (kb1 = primary/semantic,
+// kb2 = alternate/hierarchical) for the active My-Agent sub-tab.
+const agentKbs = ref<Array<{
+  key: string; label: string; name: string | null;
+  kbId: string | null; exists: boolean; connected: boolean;
+}>>([]);
+// Staged desired connection state per KB key (checkbox model). A
+// change is only applied when the user presses "Index Now".
+const pendingKb = ref<Record<string, boolean>>({});
+const kbApplyBusy = ref(false);
+const kbHasStagedChanges = computed(() =>
+  agentKbs.value.some(kb => !!pendingKb.value[kb.key] !== !!kb.connected)
+);
+
+// Inline KB-2 indexing progress (its OWN DO job poll — independent of
+// the Saved Files indexing panel). Shown in the My Agent tab only.
+const kb2Index = ref<{
+  active: boolean; tokens: string; filesIndexed: number;
+  elapsedSec: number; done: boolean; failed: boolean;
+}>({ active: false, tokens: '0', filesIndexed: 0, elapsedSec: 0, done: false, failed: false });
+let kb2PollTimer: ReturnType<typeof setInterval> | null = null;
+let kb2ElapsedTimer: ReturnType<typeof setInterval> | null = null;
+let kb2StartedAt = 0;
+
+const stopKb2Poll = () => {
+  if (kb2PollTimer) { clearInterval(kb2PollTimer); kb2PollTimer = null; }
+  if (kb2ElapsedTimer) { clearInterval(kb2ElapsedTimer); kb2ElapsedTimer = null; }
+};
+
+const startKb2Poll = () => {
+  stopKb2Poll();
+  kb2StartedAt = Date.now();
+  kb2Index.value = { active: true, tokens: '0', filesIndexed: 0, elapsedSec: 0, done: false, failed: false };
+  kb2ElapsedTimer = setInterval(() => {
+    if (kb2Index.value.active) kb2Index.value.elapsedSec = Math.round((Date.now() - kb2StartedAt) / 1000);
+  }, 1000);
+  const poll = async () => {
+    try {
+      const r = await fetch(`/api/kb2-indexing-status?userId=${encodeURIComponent(props.userId)}`, { credentials: 'include' });
+      const d = await r.json().catch(() => ({}));
+      if (d && d.exists) {
+        kb2Index.value.tokens = String(d.tokens ?? kb2Index.value.tokens);
+        kb2Index.value.filesIndexed = Number(d.filesIndexed ?? kb2Index.value.filesIndexed) || 0;
+        if (d.completed || d.failed) {
+          kb2Index.value.active = false;
+          kb2Index.value.done = !!d.completed;
+          kb2Index.value.failed = !!d.failed;
+          stopKb2Poll();
+        }
+      }
+    } catch { /* keep polling */ }
+  };
+  poll();
+  kb2PollTimer = setInterval(poll, 10000);
+};
 
 const loadingChats = ref(false);
 const chatsError = ref('');
@@ -1841,7 +1953,12 @@ const loadAgent = async () => {
     agentInstructions.value = result.instructions || '';
     editedInstructions.value = result.instructions || '';
     kbInfo.value = result.kbInfo || null;
-    
+    agentKbs.value = Array.isArray(result.kbs) ? result.kbs : [];
+    // Seed the staged checkboxes from the actual connection state.
+    const seeded: Record<string, boolean> = {};
+    for (const kb of agentKbs.value) seeded[kb.key] = !!kb.connected;
+    pendingKb.value = seeded;
+
     // Load deep link Private AI access setting
     await loadDeepLinkPrivateAISetting();
   } catch (err) {
@@ -1855,6 +1972,8 @@ const loadAgent = async () => {
 // sub-tab. Exits edit mode so unsaved edits don't bleed across agents.
 watch(activeAgentProfile, () => {
   editMode.value = false;
+  stopKb2Poll();
+  kb2Index.value = { active: false, tokens: '0', filesIndexed: 0, elapsedSec: 0, done: false, failed: false };
   loadAgent();
 });
 
@@ -1970,82 +2089,67 @@ const cancelEdit = () => {
   editMode.value = false;
 };
 
-// Format relative time (minutes, hours, days ago)
-const formatRelativeTime = (dateString: string | null): string => {
-  if (!dateString) return 'Never';
-  
-  const date = new Date(dateString);
-  const now = new Date();
-  const diffMs = now.getTime() - date.getTime();
-  const diffMins = Math.floor(diffMs / 60000);
-  const diffHours = Math.floor(diffMs / 3600000);
-  const diffDays = Math.floor(diffMs / 86400000);
-  
-  if (diffMins < 1) return 'Just now';
-  if (diffMins < 60) return `${diffMins} minute${diffMins !== 1 ? 's' : ''} ago`;
-  if (diffHours < 24) return `${diffHours} hour${diffHours !== 1 ? 's' : ''} ago`;
-  return `${diffDays} day${diffDays !== 1 ? 's' : ''} ago`;
-};
 
 // Toggle KB connection
-const toggleKBConnection = async () => {
-  if (!kbInfo.value || togglingKB.value) return;
-  
-  togglingKB.value = true;
-  
-  // Store the current state for rollback on error
-  const wasConnected = kbInfo.value.connected;
-  
+// Connect/disconnect a specific KB (kb1 = primary/semantic,
+// kb2 = alternate/hierarchical) for the CURRENT agent sub-tab.
+// kb2's first connect lazily creates + indexes it server-side.
+// Apply all STAGED KB connect/disconnect changes for the current agent
+// sub-tab, then (if KB-2 was just created) switch to the Saved Files
+// tab and surface its indexing in the existing progress panel. This
+// never calls /api/update-knowledge-base, so the per-file Saved Files
+// badges are NOT recomputed by a KB-connection change.
+const applyKbChanges = async () => {
+  if (kbApplyBusy.value) return;
+  const changes = agentKbs.value
+    .filter(kb => !!pendingKb.value[kb.key] !== !!kb.connected)
+    .map(kb => ({ key: kb.key, label: kb.label, attach: !!pendingKb.value[kb.key] }));
+  if (changes.length === 0) return;
+
+  kbApplyBusy.value = true;
+  let kb2IndexJobId: string | null = null;
   try {
-    const action = wasConnected ? 'detach' : 'attach';
-    const response = await fetch('/api/toggle-kb-connection', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json'
-      },
-      credentials: 'include',
-      body: JSON.stringify({
-        userId: props.userId,
-        action: action,
-        agentProfileKey: activeAgentProfile.value
-      })
-    });
-
-    if (!response.ok) {
-      throw new Error('Failed to toggle KB connection');
-    }
-
-    const result = await response.json();
-    
-    // Use the response directly - it's the source of truth from the backend
-    // No need to call loadAgent() which goes through a cache
-    if (kbInfo.value && typeof result.connected === 'boolean') {
-      kbInfo.value.connected = result.connected;
-    }
-    
-    // Show notification
-    if ($q && typeof $q.notify === 'function') {
-      $q.notify({
-        type: 'positive',
-        message: result.message || `KB ${action === 'attach' ? 'attached' : 'detached'} successfully`,
-        timeout: 3000
+    for (const ch of changes) {
+      const response = await fetch('/api/toggle-kb-connection', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({
+          userId: props.userId,
+          action: ch.attach ? 'attach' : 'detach',
+          kbKey: ch.key,
+          agentProfileKey: activeAgentProfile.value
+        })
       });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok || result.success === false) {
+        throw new Error(result.message || result.error || `Failed to update ${ch.label}`);
+      }
+      const idx = agentKbs.value.findIndex(k => k.key === ch.key);
+      if (idx >= 0) agentKbs.value[idx].connected = !!result.connected;
+      if (ch.key === 'kb2' && result.indexJobId) kb2IndexJobId = result.indexJobId;
     }
+
+    if ($q?.notify) {
+      $q.notify({ type: 'positive', message: 'Knowledge base changes applied', timeout: 3000 });
+    }
+
+    // A KB-connection change never moves files, so the Saved Files
+    // indexed state is unchanged — but it must be refreshed from the
+    // server (and its dirty baseline reset) so the tab doesn't keep a
+    // STALE "no file in KB / you changed files" view after the switch.
+    await loadFiles();
+    await loadAgent(); // refresh per-agent KB connection badges
+
+    // If KB-2 was just created it is indexing — show progress INLINE in
+    // this My Agent tab (its own DO job poll). We deliberately do NOT
+    // switch to Saved Files or touch the Saved Files indexing panel.
+    if (kb2IndexJobId) startKb2Poll();
   } catch (err) {
-    // Revert on error
-    if (kbInfo.value) {
-      kbInfo.value.connected = wasConnected;
-    }
-    const errorMsg = err instanceof Error ? err.message : 'Failed to toggle KB connection';
-    if ($q && typeof $q.notify === 'function') {
-      $q.notify({
-        type: 'negative',
-        message: errorMsg,
-        timeout: 5000
-      });
-    }
+    const msg = err instanceof Error ? err.message : 'Failed to apply KB changes';
+    if ($q?.notify) $q.notify({ type: 'negative', message: msg, timeout: 5000 });
   } finally {
-    togglingKB.value = false;
+    kbApplyBusy.value = false;
   }
 };
 
@@ -5897,6 +6001,7 @@ onUnmounted(() => {
     clearInterval(elapsedTimeInterval.value);
     elapsedTimeInterval.value = null;
   }
+  stopKb2Poll();
 });
 </script>
 

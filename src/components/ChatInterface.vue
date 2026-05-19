@@ -999,6 +999,9 @@ const wizardIntroLines = ref<string[]>([]);
 const wizardIntroContainer = ref<HTMLElement | null>(null);
 const wizardInlineDots = ref<HTMLElement | null>(null);
 const wizardDismissed = ref(false);
+// Userid for which a 'setup-started' provisioning event has already
+// been logged this session (dedupe; see the showAgentSetupDialog watch).
+const setupStartedLoggedForUser = ref<string | null>(null);
 /** Counts how many times the user has dismissed (closed) MyStuff during a guided flow phase.
  *  After 2 dismissals in the same phase, the phase is skipped and the wizard advances. */
 const guidedFlowDismissCount = ref(0);
@@ -1370,17 +1373,25 @@ watch(
   () => showAgentSetupDialog.value,
   (isOpen, wasOpen) => {
     if (isOpen) {
-      logProvisioningEvent({
-        event: 'setup-started',
-        test: testMode.value || undefined,
-        method: 'setup',
-        client: {
-          browser: parseUserAgent(),
-          appUrl: window.location.origin,
-          folder: localFolderName.value || 'unknown',
-          version: packageJson.version
-        }
-      });
+      // Only log a NEW "Setup started" the first time the wizard opens
+      // for this user this session. Re-opens (e.g. the agent-status
+      // poll re-showing it, or returning from My Stuff) are the SAME
+      // continuous setup — logging again fragmented maia-log.pdf into
+      // duplicate "--- Setup ---" sections.
+      if (setupStartedLoggedForUser.value !== (props.user?.userId || '')) {
+        setupStartedLoggedForUser.value = props.user?.userId || '';
+        logProvisioningEvent({
+          event: 'setup-started',
+          test: testMode.value || undefined,
+          method: 'setup',
+          client: {
+            browser: parseUserAgent(),
+            appUrl: window.location.origin,
+            folder: localFolderName.value || 'unknown',
+            version: packageJson.version
+          }
+        });
+      }
       wizardSlideIndex.value = 0;
       void loadWizardMessages();
       void positionWizardInlineDots();
@@ -3312,6 +3323,34 @@ const generateSetupLogPdf = async () => {
             if (evt.elapsedMs) parts.push(formatElapsed(evt.elapsedMs));
             return `[${t}] KB indexed: ${parts.join(', ')}`;
           }
+          case 'kb-created': {
+            const lines = [`[${t}] Knowledge base created: ${evt.kbName || ''}`];
+            const add = (label: string, v: unknown) => { if (v) lines.push(`        ${label}: ${v}`); };
+            add('KB id', evt.kbId);
+            add('Embedding model', evt.embeddingModelName || evt.embeddingModelId);
+            add('Reranking model', evt.rerankingModel);
+            if (evt.chunkingAlgorithm) {
+              const algo = String(evt.chunkingAlgorithm).replace('CHUNKING_ALGORITHM_', '').toLowerCase();
+              const opts = evt.chunkingOptions
+                ? Object.entries(evt.chunkingOptions).map(([k, v]) => `${k}=${v}`).join(', ')
+                : '';
+              lines.push(`        Chunking: ${algo}${opts ? ` (${opts})` : ''}`);
+            }
+            add('OpenSearch database id', evt.databaseId);
+            add('Project id', evt.projectId);
+            add('Region', evt.region);
+            add('Bucket', evt.bucketName);
+            add('Data source path', evt.itemPath);
+            if (evt.role) lines.push(`        Role: ${evt.role}`);
+            return lines.join('\n');
+          }
+          case 'kb-connection-changed': {
+            const verb = evt.action === 'connected' ? 'Connected' : 'Disconnected';
+            const prep = evt.action === 'connected' ? 'to' : 'from';
+            const agent = evt.agentProfileKey === 'gpt' ? 'Private AI (GPT)' : 'Private AI (Deepseek)';
+            const role = evt.kbRole ? ` [${evt.kbRole}]` : '';
+            return `[${t}] ${verb} ${evt.kbName || evt.kbKey}${role} ${prep} ${agent}`;
+          }
           case 'summary-generated': return `[${t}] Patient Summary generated (${evt.lines || 0} lines, ${Number(evt.chars || 0).toLocaleString()} chars)`;
           case 'draft-summary-generated': {
             const secs = typeof evt.generationSeconds === 'number' ? ` in ${evt.generationSeconds}s` : '';
@@ -3322,6 +3361,8 @@ const generateSetupLogPdf = async () => {
             const outcome = evt.outcome && evt.outcome !== 'success' ? ` [${evt.outcome}]` : '';
             return `[${t}] Medications offered for verification (${evt.lines || 0} lines)${src}${outcome}`;
           }
+          case 'medications-extract-skipped':
+            return `[${t}] AI medication extraction skipped (${evt.reason || 'unknown'}) — used patient-summary medications instead`;
           case 'medications-dismissed': return `[${t}] Medications step dismissed without verification`;
           case 'current-medications-recovery-failed': return `[${t}] Current Medications recovery FAILED — fell through ${Array.isArray(evt.pathsTried) ? evt.pathsTried.join(' -> ') : 'all paths'}`;
           case 'medications-saved': {
@@ -6123,7 +6164,7 @@ const startSetupWizardPolling = () => {
         }
       }
 
-      if (!shouldHideSetupWizard.value && !showAgentSetupDialog.value && !wizardDismissed.value) {
+      if (!shouldHideSetupWizard.value && !showAgentSetupDialog.value && !wizardDismissed.value && !showMyStuffDialog.value) {
         showAgentSetupDialog.value = true;
         stopAgentSetupTimer();
         agentSetupTimer = setInterval(() => {
@@ -6179,7 +6220,7 @@ const startSetupWizardPolling = () => {
         return;
       }
 
-      if (!shouldHideSetupWizard.value && !showAgentSetupDialog.value && !wizardDismissed.value) {
+      if (!shouldHideSetupWizard.value && !showAgentSetupDialog.value && !wizardDismissed.value && !showMyStuffDialog.value) {
         showAgentSetupDialog.value = true;
         stopAgentSetupTimer();
         agentSetupTimer = setInterval(() => {
