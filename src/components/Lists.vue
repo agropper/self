@@ -55,6 +55,9 @@
         
         <!-- Display Mode -->
         <div v-else-if="!isEditingCurrentMedications && currentMedications">
+          <div v-if="currentMedicationsSourceLabel" class="text-caption text-grey-7 q-mb-sm">
+            Source: {{ currentMedicationsSourceLabel }}
+          </div>
           <div class="text-body2" style="white-space: pre-wrap;">{{ cleanedCurrentMedications }}</div>
           <div class="text-caption text-grey-7 q-mt-md q-pt-md" style="border-top: 1px solid #e0e0e0;">
             Please edit this AI suggestion to reflect your actual prescription drug use.
@@ -209,20 +212,139 @@
       {{ error }}
     </q-banner>
 
+    <!-- Current Medications Worksheets (one per Private AI agent).
+         Rendered independently of the Apple Health PDF output below, so
+         patients with no Apple Health file (KB-only) still see them. -->
+    <q-card v-for="ws in worksheetSpecs" :key="ws.profileKey" class="q-mb-md">
+      <q-card-section>
+        <div class="row items-center justify-between q-mb-sm">
+          <div class="text-h6">{{ ws.title }}</div>
+          <q-btn
+            :label="worksheets[ws.profileKey] ? 'Refresh' : 'Generate'"
+            color="primary"
+            dense
+            :loading="worksheetBusy === ws.profileKey"
+            :disable="!!worksheetBusy"
+            @click="generateWorksheet(ws.profileKey)"
+          />
+        </div>
+        <div v-if="worksheets[ws.profileKey]" class="text-caption text-grey-7 q-mb-sm">
+          {{ worksheets[ws.profileKey].model }} ·
+          generated {{ formatWorksheetTime(worksheets[ws.profileKey].generatedAt) }}
+        </div>
+
+        <div v-if="!worksheets[ws.profileKey]" class="text-body2 text-grey-7">
+          No worksheet yet. Press <strong>Generate</strong> to build it from this agent's knowledge base.
+        </div>
+
+        <template v-else>
+          <q-markup-table v-if="worksheetView(ws.profileKey).rows.length" flat bordered dense wrap-cells>
+            <thead>
+              <tr>
+                <th v-for="(h, hi) in worksheetView(ws.profileKey).headers" :key="hi" class="text-left">{{ h }}</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="(row, ri) in worksheetView(ws.profileKey).rows" :key="ri">
+                <td v-for="(cell, ci) in row" :key="ci" class="text-left">
+                  <a
+                    v-if="ci === worksheetView(ws.profileKey).sourceIdx && parseSourcePage(cell) != null"
+                    href="#"
+                    class="text-primary"
+                    @click.prevent="openWorksheetSource(cell, worksheets[ws.profileKey].legend)"
+                  >{{ cell }}</a>
+                  <span v-else>{{ cell }}</span>
+                </td>
+              </tr>
+            </tbody>
+          </q-markup-table>
+          <!-- Fallback if the model didn't return a parseable table -->
+          <pre v-else style="white-space: pre-wrap; font-family: monospace; font-size: 12px;">{{ worksheets[ws.profileKey].table }}</pre>
+
+          <!-- File legend footnote -->
+          <div v-if="worksheets[ws.profileKey].legend?.length" class="q-mt-sm text-caption text-grey-7">
+            <div v-for="(l, li) in worksheets[ws.profileKey].legend" :key="li">
+              {{ l.tag }} = {{ l.fileName }}
+            </div>
+          </div>
+        </template>
+      </q-card-section>
+    </q-card>
+
+    <!-- Encounters worksheet (reverse-chronological, across all PDFs).
+         Deterministic — built from the source files, not the agent/KB. -->
+    <q-card class="q-mb-md">
+      <q-card-section>
+        <div class="row items-center justify-between q-mb-sm">
+          <div class="text-h6">Encounters</div>
+          <q-btn
+            :label="encountersWorksheet ? 'Refresh' : 'Generate'"
+            color="primary"
+            dense
+            :loading="encountersBusy"
+            @click="generateEncounters"
+          />
+        </div>
+        <div v-if="encountersWorksheet" class="text-caption text-grey-7 q-mb-sm">
+          {{ encountersWorksheet.encounterCount || 0 }} encounters from
+          {{ encountersWorksheet.fileCount || 0 }} file{{ (encountersWorksheet.fileCount || 0) === 1 ? '' : 's' }} ·
+          built {{ formatWorksheetTime(encountersWorksheet.generatedAt) }}
+        </div>
+
+        <div v-if="!encountersWorksheet" class="text-body2 text-grey-7">
+          No encounters list yet. Press <strong>Generate</strong> to build a reverse-chronological list from your PDF files.
+        </div>
+
+        <template v-else>
+          <q-markup-table v-if="encountersView.rows.length" flat bordered dense wrap-cells>
+            <thead>
+              <tr>
+                <th v-for="(h, hi) in encountersView.headers" :key="hi" class="text-left">{{ h }}</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="(row, ri) in encountersView.rows" :key="ri">
+                <td v-for="(cell, ci) in row" :key="ci" class="text-left">
+                  <a
+                    v-if="ci === encountersView.sourceIdx && parseSourcePage(cell) != null"
+                    href="#"
+                    class="text-primary"
+                    @click.prevent="openWorksheetSource(cell, encountersWorksheet.legend)"
+                  >{{ cell }}</a>
+                  <span v-else>{{ cell }}</span>
+                </td>
+              </tr>
+            </tbody>
+          </q-markup-table>
+          <div v-else class="text-body2 text-grey-7">
+            No encounters were detected in your files.
+          </div>
+
+          <!-- File legend footnote -->
+          <div v-if="encountersWorksheet.legend?.length" class="q-mt-sm text-caption text-grey-7">
+            <div v-for="(l, li) in encountersWorksheet.legend" :key="li">
+              {{ l.tag }} = {{ l.fileName }}
+            </div>
+          </div>
+        </template>
+      </q-card-section>
+    </q-card>
+
     <!-- Results -->
     <div v-if="(pdfData || markdownContent) && !isProcessing">
 
       <!-- Categories Section -->
       <q-card v-if="!hasAppleHealthFile" class="q-mb-md">
         <q-card-section>
+          <div class="text-h6 q-mb-md">Categories from Apple Health</div>
           <div class="text-body2 text-grey-7">
-            Categories index currently requires an Apple Health Export PDF file.
+            No Apple Health file categories are available.
           </div>
         </q-card-section>
       </q-card>
       <q-card v-else-if="categoriesList.length > 0" class="q-mb-md">
         <q-card-section>
-          <div class="text-h6 q-mb-md">Categories</div>
+          <div class="text-h6 q-mb-md">Categories from Apple Health</div>
           <q-list bordered separator>
             <q-expansion-item
               v-for="(category, index) in categoriesList" 
@@ -496,6 +618,198 @@ const categoriesList = ref<Array<{
   expanded?: boolean;
 }>>([]);
 const expandedCategories = ref<Set<string>>(new Set());
+
+// ── Current Medications Worksheets (one per Private AI agent) ──────────
+interface WorksheetEntry {
+  table: string;
+  legend: Array<{ tag: string; fileName: string; bucketKey?: string }>;
+  model?: string;
+  generatedAt?: string;
+}
+const worksheetSpecs = [
+  { profileKey: 'default', title: 'Current Medications Worksheet (Deepseek)' },
+  { profileKey: 'gpt', title: 'Current Medications Worksheet (GPT)' }
+];
+const worksheets = ref<Record<string, WorksheetEntry>>({});
+const worksheetBusy = ref<string | null>(null);
+
+const loadWorksheets = async () => {
+  if (!props.userId) return;
+  try {
+    const r = await fetch(`/api/medications/worksheet?userId=${encodeURIComponent(props.userId)}`, { credentials: 'include' });
+    if (r.ok) {
+      const d = await r.json();
+      worksheets.value = (d && typeof d.worksheets === 'object' && d.worksheets) || {};
+    }
+  } catch { /* non-fatal */ }
+};
+
+const generateWorksheet = async (profileKey: string) => {
+  if (worksheetBusy.value) return;
+  worksheetBusy.value = profileKey;
+  try {
+    const r = await fetch('/api/medications/worksheet', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify({ userId: props.userId, agentProfileKey: profileKey })
+    });
+    const d = await r.json().catch(() => ({}));
+    if (r.status === 202 && d.pending) {
+      if ($q?.notify) $q.notify({ type: 'info', message: d.message || 'The agent is being provisioned — try again shortly.', timeout: 5000 });
+      return;
+    }
+    if (!r.ok || d.success === false) {
+      throw new Error(d.message || d.error || 'Failed to generate worksheet');
+    }
+    worksheets.value = {
+      ...worksheets.value,
+      [profileKey]: { table: d.table, legend: d.legend || [], model: d.model, generatedAt: d.generatedAt }
+    };
+    if ($q?.notify) $q.notify({ type: 'positive', message: 'Worksheet generated', timeout: 2500 });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : 'Failed to generate worksheet';
+    if ($q?.notify) $q.notify({ type: 'negative', message: msg, timeout: 5000 });
+  } finally {
+    worksheetBusy.value = null;
+  }
+};
+
+// ── Encounters worksheet (deterministic, single, not per-agent) ──────
+interface EncountersEntry {
+  table: string;
+  legend: Array<{ tag: string; fileName: string; bucketKey?: string }>;
+  generatedAt?: string;
+  fileCount?: number;
+  encounterCount?: number;
+}
+const encountersWorksheet = ref<EncountersEntry | null>(null);
+const encountersBusy = ref(false);
+
+const loadEncounters = async () => {
+  if (!props.userId) return;
+  try {
+    const r = await fetch(`/api/encounters/worksheet?userId=${encodeURIComponent(props.userId)}`, { credentials: 'include' });
+    if (r.ok) {
+      const d = await r.json();
+      encountersWorksheet.value = (d && d.encounters) || null;
+    }
+  } catch { /* non-fatal */ }
+};
+
+const generateEncounters = async () => {
+  if (encountersBusy.value) return;
+  encountersBusy.value = true;
+  try {
+    const r = await fetch('/api/encounters/worksheet', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify({ userId: props.userId })
+    });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok || d.success === false) {
+      throw new Error(d.message || d.error || 'Failed to build encounters list');
+    }
+    encountersWorksheet.value = {
+      table: d.table, legend: d.legend || [], generatedAt: d.generatedAt,
+      fileCount: d.fileCount, encounterCount: d.encounterCount
+    };
+    if ($q?.notify) $q.notify({ type: 'positive', message: `Encounters list built (${d.encounterCount || 0})`, timeout: 2500 });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : 'Failed to build encounters list';
+    if ($q?.notify) $q.notify({ type: 'negative', message: msg, timeout: 5000 });
+  } finally {
+    encountersBusy.value = false;
+  }
+};
+
+// View for the encounters table (server already sorts reverse-chronological).
+const encountersView = computed((): { headers: string[]; rows: string[][]; sourceIdx: number } => {
+  const entry = encountersWorksheet.value;
+  if (!entry?.table) return { headers: [], rows: [], sourceIdx: -1 };
+  const { headers, rows } = parseWorksheet(entry.table);
+  const sourceIdx = headers.findIndex(h => /source/i.test(h));
+  return { headers, rows, sourceIdx };
+});
+
+// Parse a GitHub-flavored Markdown table into headers + rows.
+const parseWorksheet = (md: string): { headers: string[]; rows: string[][] } => {
+  if (!md) return { headers: [], rows: [] };
+  const lines = md.split('\n').map(l => l.trim()).filter(l => l.startsWith('|'));
+  if (lines.length < 2) return { headers: [], rows: [] };
+  const splitRow = (l: string) => l.replace(/^\|/, '').replace(/\|$/, '').split('|').map(c => c.trim());
+  const headers = splitRow(lines[0]);
+  const rows: string[][] = [];
+  for (let i = 1; i < lines.length; i++) {
+    // Skip the separator row (---|---).
+    if (/^\|?[\s:|-]+\|?$/.test(lines[i]) && lines[i].includes('-')) continue;
+    rows.push(splitRow(lines[i]));
+  }
+  return { headers, rows };
+};
+
+// Build a display view of a worksheet: parsed headers/rows, with Current
+// medications sorted to the top (then Inpatient, then Discontinued), plus
+// the index of the Source column for hyperlinking.
+const STATUS_SORT_ORDER: Record<string, number> = { current: 0, inpatient: 1, discontinued: 2 };
+const worksheetView = (profileKey: string): { headers: string[]; rows: string[][]; sourceIdx: number } => {
+  const entry = worksheets.value[profileKey];
+  if (!entry) return { headers: [], rows: [], sourceIdx: -1 };
+  const { headers, rows } = parseWorksheet(entry.table);
+  const statusIdx = headers.findIndex(h => /status/i.test(h));
+  const sourceIdx = headers.findIndex(h => /source/i.test(h));
+  const sorted = statusIdx === -1
+    ? rows
+    : [...rows].sort((a, b) => {
+        const sa = STATUS_SORT_ORDER[(a[statusIdx] || '').trim().toLowerCase()] ?? 3;
+        const sb = STATUS_SORT_ORDER[(b[statusIdx] || '').trim().toLowerCase()] ?? 3;
+        return sa - sb;
+      });
+  return { headers, rows: sorted, sourceIdx };
+};
+
+// Parse a Source cell like "File 1 p.127" → page number (or null).
+const parseSourcePage = (cell: string): number | null => {
+  const m = (cell || '').match(/p\.?\s*(\d+)/i);
+  return m ? parseInt(m[1], 10) : null;
+};
+
+// Open the source page for a worksheet row. The Source cell looks like
+// "File 1 p.127": resolve "File N" to the actual file via the worksheet's
+// legend (which carries the bucketKey) and open that PDF at the page.
+// This works for KB-only patients (no Apple Health initial file). Falls
+// back to the Apple Health initial-file path only if the legend has no
+// bucketKey for the cited tag.
+const openWorksheetSource = async (
+  cell: string,
+  legend?: Array<{ tag: string; fileName: string; bucketKey?: string }>
+) => {
+  const page = parseSourcePage(cell);
+  const tagMatch = (cell || '').match(/File\s+\d+/i);
+  const tag = tagMatch ? tagMatch[0].replace(/\s+/g, ' ') : '';
+  const entry = (legend || []).find(l => l.tag.toLowerCase() === tag.toLowerCase());
+
+  if (entry?.bucketKey) {
+    const fileName = entry.fileName || 'document.pdf';
+    viewingPdfFile.value = {
+      bucketKey: entry.bucketKey,
+      name: fileName.toLowerCase().endsWith('.pdf') ? fileName : `${fileName}.pdf`
+    };
+    pdfInitialPage.value = page ?? undefined;
+    showPdfViewer.value = true;
+    return;
+  }
+
+  // Fallback (e.g. a worksheet generated before the legend carried
+  // bucketKeys): use the Apple Health initial-file page path.
+  if (page != null) await handleCategoryPageClick(page);
+};
+
+const formatWorksheetTime = (iso?: string): string => {
+  if (!iso) return '';
+  try { return new Date(iso).toLocaleString(); } catch { return iso; }
+};
 const showPdfViewer = ref(false);
 const viewingPdfFile = ref<{ bucketKey?: string; name?: string; fileUrl?: string; originalFile?: File } | undefined>(undefined);
 const pdfInitialPage = ref<number | undefined>(undefined);
@@ -513,6 +827,16 @@ const isCurrentMedicationsEdited = ref(false);
 // patient-summary | user-doc) and overridden to 'manual' when the user types
 // or edits in the meds editor.
 const currentMedicationsSource = ref<string>('');
+// Friendly label for where the displayed Current Medications came from.
+const currentMedicationsSourceLabel = computed(() => {
+  switch (currentMedicationsSource.value) {
+    case 'apple-health': return 'Apple Health';
+    case 'patient-summary': return 'Patient Summary';
+    case 'user-doc': return 'Previously verified list';
+    case 'manual': return 'Entered manually';
+    default: return '';
+  }
+});
 const currentMedicationsStatus = ref<'reviewing' | 'consulting' | 'waiting' | 'waiting_summary' | ''>('');
 const wizardAutoFlow = ref(false);
 const wizardAutoFlowStorageKey = 'wizardMyListsAuto';
@@ -2145,6 +2469,8 @@ onMounted(async () => {
   }
 
   await loadSavedResults();
+  void loadWorksheets();
+  void loadEncounters();
 
   // Only start auto-processing if no saved results (file not yet processed into lists)
   if (!hasSavedResults.value) {

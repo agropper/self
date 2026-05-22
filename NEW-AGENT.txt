@@ -22,20 +22,15 @@ Runtime-parsed sections (heading → code consumer):
 
 You are MAIA, a medical AI assistant, that can search through a patient's health records in a knowledge base and provide relevant answers to their requests. Use only information in the attached knowledge bases and never fabricate information. There is a lot of redundancy in a patient's knowledge base. When information appears multiple times you can safely ignore the repetitions.
 
-**Current Medications Priority**: When generating a patient summary, if a Current Medications list is provided in the request, use it as the authoritative source for the Current Medications section. The patient has reviewed and confirmed this list, so it takes precedence over any medication information found in the knowledge base. Only extract medications from the knowledge base if no Current Medications list is provided in the request.
-
-To ensure that all medications are accurately listed when extracting from the knowledge base (when no Current Medications list is provided), the assistant should adopt a systematic approach: Comprehensive Review: Thoroughly examine every chunk in the knowledge base to identify all medication entries, regardless of their status (active or stopped). Avoid Premature Filtering: Refrain from filtering medications based on their status unless explicitly instructed to do so. This ensures that all prescribed medications are included. Consolidation of Information: Use a method to consolidate medication information from all chunks, ensuring that each medication is listed only once, even if it appears multiple times across different chunks. Cross-Referencing: Cross-reference information from multiple chunks to verify the completeness and accuracy of the medication list. Systematic Extraction: Implement a systematic process or algorithm to extract medication information, reducing the likelihood of human error or oversight.
-
-If you are asked for a patient summary, use the following categories and format: Highlight the label and category headings. Display the patient's name followed by their age and sex. A concise medical history; including surgical history -- Doctors seen recently (say, within a year) and diagnoses of those visits -- Current Medications -- Stopped or Inactive Medications --Allergies --Brief social history: employment (or school) status; living situation; use of tobacco, alcohol, drugs --Radiology in the past year --Other testing in the past year (PFTs, EKGs, etc)
-
 **Agent's Perspective**
 Write from the perspective of a physician creating a summary for an on-call physician who has never seen the patient.
 
 **Errors and Redactions**
-Remove any mention of problems or medications for sexual function.
+Remove any mention of problems or medications for sexual function including syringes that may be prescribed.
 
 **Format and Language**
 Always start your response with the patient's name, age and sex. Do not show your reasoning. Provide the response in English. Format section headings so they are not too large.
+
 
 ---
 
@@ -137,8 +132,37 @@ DigitalOcean uses an S3-compatible Spaces bucket (named `maia`,
 subfoldered by `userId`) to pass files to OpenSearch for indexing into
 the knowledge base attached to the user's Private AI agent.
 
+### Footer-stripped indexing (clean-index, v1.3.95+)
+
+KBs created from v1.3.95 on (`userDoc.kbCleanIndex === true`) do NOT
+index the raw PDFs. At KB creation, each PDF is parsed and its repeating
+page header/footer boilerplate — the institution/address block, MRN/DOB,
+and especially the **"Generated on <date> Page N"** footer — is stripped
+deterministically (`generateCleanIndexSidecars` →
+`stripHeadersFooters`). The footer-free text is written to a
+`${userId}/${kbName}/_clean/` sidecar folder, and the DO data source
+`item_path` points at `_clean/` instead of the PDF folder. This keeps the
+repeating generation date/time out of every retrieved chunk (it was being
+mistaken for a prescription date in RAG-based extraction).
+
+The original PDFs remain in the KB folder untouched — viewing, page
+links, file membership, `kbIndexedBucketKeys`, and Restore all continue
+to use them. `isKbFolderDataSourcePath` recognizes both the PDF folder
+and the `_clean/` folder as "the KB's folder data source". Re-index
+regenerates the sidecars first. If sidecar generation yields nothing
+(no PDFs / parse failure), the KB falls back to indexing the raw PDF
+folder. Existing (pre-v1.3.95) KBs keep indexing raw PDFs until
+re-created.
+
+**Restore** always sets `kbCleanIndex = true` (rehydrate), so a restored
+account's KB is rebuilt/re-indexed against the `_clean/` sidecars — i.e.
+Restore upgrades a pre-v1.3.95 account to clean-index. (A KB that
+literally survived a partial rehydrate and still has its old PDF-folder
+data source is the one exception until it is re-created.)
+
 The actual parameters used for each KB creation are recorded in the
-user's `maia-log.pdf` (the `Knowledge base created` entry).
+user's `maia-log.pdf` (the `Knowledge base created` entry; clean-index
+KBs also log `clean-index-built`).
 
 ---
 
@@ -163,11 +187,20 @@ Example request body (values MAIA actually sends):
   "top_p": 1,
   "temperature": 0.1,
   "k": 10,
-  "retrieval_method": "RETRIEVAL_METHOD_NONE"
+  "retrieval_method": "RETRIEVAL_METHOD_REWRITE"
 }
 ```
 Required: `name`, `model.uuid`, `project_id`. The response's
 `deployment.status` starts `STATUS_PENDING`.
+
+> **retrieval_method MUST NOT be `RETRIEVAL_METHOD_NONE`.** `NONE`
+> disables knowledge-base retrieval entirely — the agent ignores its
+> attached KB and every answer comes back "no records found" (this
+> caused blank Patient Summaries and blank Medication Worksheets). MAIA
+> creates agents with `RETRIEVAL_METHOD_REWRITE` and self-heals any
+> existing agent still set to `NONE` (see `ensureAgentRetrieval` in
+> server/index.js, called from the worksheet, draft-summary, and
+> attach-KB endpoints).
 
 ### Update agent instruction
 `PUT /v2/gen-ai/agents/{agent_uuid}`

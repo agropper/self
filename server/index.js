@@ -307,9 +307,23 @@ function buildTempKbFolder(userId, kbName) {
   return `${userId}/${kbName}/`;
 }
 
-function buildKbDataSourcePath(userId, kbName, _sourceKey, useEphemeralSpaces) {
+// Clean-index sidecar subfolder. For KBs created with footer-stripped
+// indexing (userDoc.kbCleanIndex === true), the DO data source points at
+// this subfolder (which contains only the cleaned .txt sidecars), NOT the
+// PDF folder — so RAG never sees the repeating "Generated on … Page N"
+// footer dates / boilerplate. The PDFs stay in the KB folder for viewing,
+// page-links, membership, and Restore (all unchanged).
+const CLEAN_INDEX_SUBFOLDER = '_clean';
+function kbCleanIndexFolder(userId, kbName) {
+  return `${userId}/${kbName}/${CLEAN_INDEX_SUBFOLDER}/`;
+}
+
+function buildKbDataSourcePath(userId, kbName, _sourceKey, useEphemeralSpaces, cleanIndex = false) {
   if (useEphemeralSpaces) {
     return buildTempKbFolder(userId, kbName);
+  }
+  if (cleanIndex) {
+    return kbCleanIndexFolder(userId, kbName);
   }
   return `${userId}/${kbName}/`;
 }
@@ -323,7 +337,11 @@ function buildTempKbObjectKey(userId, kbName, sourceKey) {
 function isKbFolderDataSourcePath(path, userId, kbName) {
   const normalizedPath = normalizeDataSourcePath(path);
   if (!normalizedPath) return false;
-  return normalizedPath === `${userId}/${kbName}`;
+  // Accept the PDF folder (legacy/standard) OR the clean-index sidecar
+  // folder (footer-stripped KBs). Both represent "the KB's folder data
+  // source" for membership/dedup/restore purposes.
+  return normalizedPath === `${userId}/${kbName}` ||
+         normalizedPath === `${userId}/${kbName}/${CLEAN_INDEX_SUBFOLDER}`;
 }
 
 async function ensureSingleKbDataSource(kbId, bucketName, folderPath, region, userId, kbName) {
@@ -493,6 +511,66 @@ async function createUserBucketFolders(userId, kbName) {
   } catch (err) {
     throw new Error(`Failed to create bucket folders: ${err.message}`);
   }
+}
+
+/**
+ * Generate footer-stripped text "sidecars" for clean-index KBs.
+ *
+ * For each PDF in the KB folder, extract its text (pdf-parse), strip the
+ * repeating page header/footer boilerplate (including the "Generated on …
+ * Page N" date/time), and upload the result to the KB's `_clean/`
+ * subfolder as `<originalName>.txt`. The DO data source for a clean-index
+ * KB points at `_clean/`, so RAG indexes only this footer-free text. The
+ * original PDFs are untouched (viewing / page-links / membership / Restore
+ * all keep using them). Best-effort: a file that fails to parse is skipped.
+ *
+ * Returns { written, skipped, folder }.
+ */
+async function generateCleanIndexSidecars(userId, kbName, kbFiles) {
+  const bucketUrl = getSpacesBucketName();
+  if (!bucketUrl) return { written: 0, skipped: 0, folder: null };
+  const bucketName = bucketUrl.split('//')[1]?.split('.')[0] || 'maia';
+  const folder = kbCleanIndexFolder(userId, kbName);
+  const { S3Client, PutObjectCommand } = await import('@aws-sdk/client-s3');
+  const s3Client = new S3Client({
+    endpoint: getSpacesEndpoint(),
+    region: 'us-east-1',
+    forcePathStyle: process.env.S3_FORCE_PATH_STYLE === 'true',
+    credentials: {
+      accessKeyId: process.env.DIGITALOCEAN_AWS_ACCESS_KEY_ID || process.env.SPACES_AWS_ACCESS_KEY_ID || '',
+      secretAccessKey: process.env.DIGITALOCEAN_AWS_SECRET_ACCESS_KEY || process.env.SPACES_AWS_SECRET_ACCESS_KEY || ''
+    }
+  });
+  const pdfParse = (await import('pdf-parse')).default;
+  const { stripHeadersFooters } = await import('./utils/encounters-extractor.js');
+
+  const pdfs = (kbFiles || []).filter(f =>
+    f?.bucketKey && (/\.pdf$/i.test(f.fileName || '') || /pdf/i.test(f.fileType || ''))
+  );
+  let written = 0, skipped = 0;
+  for (const f of pdfs) {
+    try {
+      const buf = await readSpacesObjectBuffer(f.bucketKey);
+      if (!buf) { skipped++; continue; }
+      const data = await pdfParse(buf);
+      const cleaned = stripHeadersFooters(data.text, data.numpages);
+      const base = (f.fileName || f.bucketKey.split('/').pop() || 'document.pdf')
+        .replace(/[^a-zA-Z0-9._-]/g, '_')
+        .replace(/\.pdf$/i, '');
+      await s3Client.send(new PutObjectCommand({
+        Bucket: bucketName,
+        Key: `${folder}${base}.txt`,
+        Body: Buffer.from(cleaned, 'utf-8'),
+        ContentType: 'text/plain'
+      }));
+      written++;
+    } catch (e) {
+      skipped++;
+      console.warn(`[clean-index] sidecar failed for ${f.fileName}: ${e?.message || e}`);
+    }
+  }
+  console.log(`[clean-index] ${userId}/${kbName}: wrote ${written} sidecar(s), skipped ${skipped} → ${folder}`);
+  return { written, skipped, folder };
 }
 
 async function deleteKbFolderPlaceholder(userId, kbName) {
@@ -3811,7 +3889,7 @@ async function provisionUserAsync(userId, token) {
       topP: 1,
       temperature: 0.1,
       k: 10,
-      retrievalMethod: 'RETRIEVAL_METHOD_NONE'
+      retrievalMethod: 'RETRIEVAL_METHOD_REWRITE'
     });
 
     if (!newAgent || !newAgent.uuid) {
@@ -4019,7 +4097,7 @@ async function provisionUserAsync(userId, token) {
       top_p: 1,
       temperature: 0.1,
       k: 10,
-      retrieval_method: 'RETRIEVAL_METHOD_NONE'
+      retrieval_method: 'RETRIEVAL_METHOD_REWRITE'
     });
 
     // Verify temperature was actually set to 0.1
@@ -6563,8 +6641,28 @@ async function setupKnowledgeBase(userId, kbName, filesInKB, bucketName, existin
       };
     }
     
+    // Clean-index (footer-stripped) indexing is opt-in for NEW KBs created
+    // via the standard (non-ephemeral) Spaces flow. Generate the cleaned
+    // `_clean/` sidecars first, then point the data source at that folder so
+    // DO indexes footer-free text. Best-effort: if no sidecars are written
+    // (e.g. parse failure / no PDFs), fall back to the raw PDF folder.
+    let cleanIndex = false;
+    if (!useEphemeralSpaces) {
+      try {
+        const sidecar = await generateCleanIndexSidecars(userId, kbName, filesInKB);
+        cleanIndex = (sidecar?.written || 0) > 0;
+        if (cleanIndex) {
+          await appendUserProvisioningEvent(userId, {
+            event: 'clean-index-built', kbName, fileCount: sidecar.written, folder: sidecar.folder
+          });
+        }
+      } catch (e) {
+        console.warn(`[clean-index] generation failed (using raw PDFs): ${e?.message || e}`);
+      }
+    }
+
     try {
-      console.log(`📝 Creating new KB in DO: ${kbName}`);
+      console.log(`📝 Creating new KB in DO: ${kbName} (cleanIndex=${cleanIndex})`);
     // KB tuning from NEW-AGENT.txt "## Knowledge Bases": chunking is
     // per-datasource; reranking is top-level on the KB. (OpenSearch DB
     // is NOT configured here — always the existing account cluster.)
@@ -6573,7 +6671,7 @@ async function setupKnowledgeBase(userId, kbName, filesInKB, bucketName, existin
       {
         spaces_data_source: {
           bucket_name: bucketName,
-          item_path: buildKbDataSourcePath(userId, kbName, null, useEphemeralSpaces),
+          item_path: buildKbDataSourcePath(userId, kbName, null, useEphemeralSpaces, cleanIndex),
           region: getDoRegion()
         },
         ...chunking
@@ -6610,6 +6708,25 @@ async function setupKnowledgeBase(userId, kbName, filesInKB, bucketName, existin
       
       kbId = kbResult.uuid || kbResult.id;
       console.log(`✅ Created new KB: ${kbName} (${kbId})`);
+
+      // Persist the clean-index flag so re-index / restore keep pointing the
+      // data source at the `_clean/` folder for this KB.
+      if (cleanIndex) {
+        for (let attempt = 0; attempt < 3; attempt++) {
+          try {
+            const doc = await cloudant.getDocument('maia_users', userId);
+            if (!doc) break;
+            doc.kbCleanIndex = true;
+            doc.updatedAt = new Date().toISOString();
+            await cloudant.saveDocument('maia_users', doc);
+            break;
+          } catch (e) {
+            if (e?.statusCode === 409 && attempt < 2) continue;
+            console.warn(`[clean-index] could not persist kbCleanIndex for ${userId}: ${e?.message || e}`);
+            break;
+          }
+        }
+      }
 
       // Record the ACTUAL parameters used to create this KB so they
       // appear in the user's maia-log.pdf (rendered by the
@@ -7099,7 +7216,18 @@ app.post('/api/update-knowledge-base', async (req, res) => {
           // Get current datasources from KB
           let datasources = kbDetails?.datasources || kbDetails?.data_sources || kbDetails?.knowledge_base_data_sources || [];
           const useSingleBucketDatasource = true;
-          const kbFolderPath = buildKbDataSourcePath(userId, kbName, null, useEphemeralSpaces);
+          // Clean-index KBs index the footer-stripped `_clean/` folder.
+          // Regenerate the sidecars first (files may have changed since the
+          // last index) so the re-index picks up current content.
+          const cleanIndex = userDoc?.kbCleanIndex === true && !useEphemeralSpaces;
+          if (cleanIndex) {
+            try {
+              await generateCleanIndexSidecars(userId, kbName, (userDoc.files || []).filter(f => (f.bucketKey || '').startsWith(`${userId}/${kbName}/`) && !(f.bucketKey || '').includes(`/${CLEAN_INDEX_SUBFOLDER}/`)));
+            } catch (e) {
+              console.warn(`[clean-index] re-index sidecar refresh failed: ${e?.message || e}`);
+            }
+          }
+          const kbFolderPath = buildKbDataSourcePath(userId, kbName, null, useEphemeralSpaces, cleanIndex);
           let folderDataSourceUuid = null;
 
           if (useSingleBucketDatasource) {
@@ -9401,6 +9529,14 @@ app.put('/api/account/rehydrate', async (req, res) => {
     for (const f of REGENERABLE_SECRET_FIELDS) delete docToWrite[f];
     if (existing?._rev) docToWrite._rev = existing._rev;
 
+    // Restore always rebuilds/re-indexes the KB from re-uploaded files, so
+    // make it footer-stripped (clean-index) — the current standard. This
+    // upgrades pre-v1.3.95 accounts to clean-index on restore. The flag is
+    // read by /api/update-knowledge-base (re-index → regenerates `_clean/`
+    // sidecars and points the data source there); a from-scratch rebuild
+    // via setupKnowledgeBase clean-indexes new KBs regardless.
+    docToWrite.kbCleanIndex = true;
+
     // assignedAgentId / kbId in the incoming backup are STALE pointers to
     // resources destroyed by "Destroy Cloud Account". They're hints, not
     // truth. If a previous rehydrate pass already created live resources
@@ -10331,8 +10467,10 @@ app.post('/api/attach-kb-to-agent', async (req, res) => {
       // Attach KB to agent
       await doClient.agent.attachKB(userDoc.assignedAgentId, userDoc.kbId);
       console.log(`✅ Attached KB ${userDoc.kbId} to agent ${userDoc.assignedAgentId}`);
-      
-      res.json({ 
+      // Ensure the agent actually retrieves from its KB (heal legacy NONE).
+      await ensureAgentRetrieval(userDoc.assignedAgentId);
+
+      res.json({
         success: true, 
         message: 'Knowledge base attached to agent successfully',
         agentId: userDoc.assignedAgentId,
@@ -10606,6 +10744,8 @@ app.post('/api/patient-summary/draft', async (req, res) => {
           return res.status(503).json({ success: false, error: 'KB_NOT_ATTACHED' });
         }
       }
+      // Ensure the agent actually retrieves from its KB (heal legacy NONE).
+      await ensureAgentRetrieval(userDoc.assignedAgentId);
     } else if (!userDoc.kbId) {
       return res.status(400).json({ success: false, error: 'NO_KB' });
     }
@@ -10624,11 +10764,24 @@ app.post('/api/patient-summary/draft', async (req, res) => {
       chatResp = await agentProvider.chat(chatMessages, chatOptions);
     } catch (firstError) {
       const sc = firstError.status || firstError.statusCode || 0;
-      if (sc === 401 && userDoc.assignedAgentId) {
-        const { recreateAgentApiKey } = await import('./utils/agent-helper.js');
-        const newApiKey = await recreateAgentApiKey(doClient, cloudant, userId, userDoc.assignedAgentId);
-        const retry = new DigitalOceanProvider(newApiKey, { baseURL: userDoc.agentEndpoint });
-        chatResp = await retry.chat(chatMessages, chatOptions);
+      // 401/403 from a DO agent usually means a stale key OR the agent isn't
+      // serving yet (still deploying). Recreate the key and retry once.
+      if ((sc === 401 || sc === 403) && userDoc.assignedAgentId) {
+        try {
+          const { recreateAgentApiKey } = await import('./utils/agent-helper.js');
+          const newApiKey = await recreateAgentApiKey(doClient, cloudant, userId, userDoc.assignedAgentId);
+          const retry = new DigitalOceanProvider(newApiKey, { baseURL: userDoc.agentEndpoint });
+          chatResp = await retry.chat(chatMessages, chatOptions);
+        } catch (retryError) {
+          const rsc = retryError.status || retryError.statusCode || 0;
+          // Still not serving → agent not ready. Return a structured 202 (not
+          // a 500) so the client backs off and retries, and log it.
+          if (rsc === 401 || rsc === 403) {
+            await appendUserProvisioningEvent(userId, { event: 'draft-summary-failed', reason: 'AGENT_NOT_READY', status: rsc });
+            return res.status(202).json({ success: false, pending: true, reason: 'AGENT_NOT_READY', message: 'Private AI is still deploying — try again shortly.' });
+          }
+          throw retryError;
+        }
       } else {
         throw firstError;
       }
@@ -10662,6 +10815,8 @@ app.post('/api/patient-summary/draft', async (req, res) => {
     res.json({ success: true, summary, lines, chars: summary.length, generationSeconds });
   } catch (error) {
     console.error('Error generating draft patient summary:', error);
+    const sc = error.status || error.statusCode || 0;
+    try { await appendUserProvisioningEvent(userId, { event: 'draft-summary-failed', reason: error.message || 'error', status: sc || undefined }); } catch { /* non-fatal */ }
     res.status(500).json({ success: false, error: error.message });
   }
 });
@@ -10718,40 +10873,32 @@ app.post('/api/medications/extract', async (req, res) => {
       if (!appleHealthFile || !appleHealthFile.fileName) {
         return softSkip('NO_APPLE_HEALTH_FILE');
       }
-      const cleanName = String(appleHealthFile.fileName).replace(/[^a-zA-Z0-9.-]/g, '_');
-      const mdName = cleanName.replace(/\.pdf$/i, '.md');
-      const markdownKey = `${userId}/Lists/${mdName}`;
-
-      const bucketUrl = getSpacesBucketName();
-      if (!bucketUrl) return res.status(500).json({ success: false, error: 'BUCKET_NOT_CONFIGURED' });
-      const bucketName = bucketUrl.split('//')[1]?.split('.')[0] || 'maia';
-      const { S3Client, GetObjectCommand } = await import('@aws-sdk/client-s3');
-      const s3Client = new S3Client({
-        endpoint: getSpacesEndpoint(),
-        region: 'us-east-1',
-        forcePathStyle: process.env.S3_FORCE_PATH_STYLE === 'true',
-        credentials: {
-          accessKeyId: process.env.DIGITALOCEAN_AWS_ACCESS_KEY_ID || '',
-          secretAccessKey: process.env.DIGITALOCEAN_AWS_SECRET_ACCESS_KEY || ''
-        }
-      });
+      // Prefer the focused, dated "Medication Records" category markdown —
+      // every entry has a date, so the agent can reliably determine the
+      // patient's CURRENT medications. Fall back to the full Apple Health
+      // markdown only if the medication category isn't present.
       let appleHealthMd = '';
-      try {
-        const r = await s3Client.send(new GetObjectCommand({ Bucket: bucketName, Key: markdownKey }));
-        const chunks = [];
-        for await (const c of r.Body) chunks.push(c);
-        appleHealthMd = Buffer.concat(chunks).toString('utf-8');
-      } catch (e) {
-        // Lists/*.md not written yet (race with process-initial-file).
-        // Optional enhancement — soft-skip so Lists.vue cleanly uses
-        // the patient-summary meds and the log records it.
-        return softSkip('APPLE_HEALTH_MARKDOWN_MISSING');
+      const medMd = await findMedicationRecordsMarkdown(userId);
+      if (medMd?.text) {
+        appleHealthMd = medMd.text;
+      } else {
+        const cleanName = String(appleHealthFile.fileName).replace(/[^a-zA-Z0-9.-]/g, '_');
+        const mdName = cleanName.replace(/\.pdf$/i, '.md');
+        appleHealthMd = await readSpacesTextObject(`${userId}/Lists/${mdName}`) || '';
+        if (!appleHealthMd) {
+          // Lists/*.md not written yet (race with process-initial-file).
+          // Optional enhancement — soft-skip so Lists.vue cleanly uses
+          // the patient-summary meds and the log records it.
+          return softSkip('APPLE_HEALTH_MARKDOWN_MISSING');
+        }
       }
 
       const contextBlock = Array.isArray(contextMeds) && contextMeds.length > 0
-        ? `\n\nFor context, these medications were identified in the patient summary you generated earlier from the full knowledge base:\n${contextMeds.map(m => '- ' + m).join('\n')}\n\nUse this list as a starting point, then reconcile and refine against the Apple Health data below. Apply your system instructions for any medications that must be omitted or redacted.\n`
+        ? `\n\nFor context, these medications were identified in the patient summary you generated earlier from the full knowledge base:\n${contextMeds.map(m => '- ' + m).join('\n')}\n\nUse this list as a starting point, then reconcile and refine against the Apple Health data below.\n`
         : '';
-      prompt = `Extract the Current Medications from the following Apple Health export. List one medication per line, no commentary.${contextBlock}\n\n${appleHealthMd}`;
+      prompt = `Below are this patient's dated medication records from their Apple Health export. Identify the patient's CURRENT medications: for each distinct drug, the most recent dated entry reflects the current prescription (and current strength). Exclude entries that are clearly one-time inpatient/anesthesia administrations (e.g. propofol, fentanyl, IV infusions) and older strengths that have been superseded by a newer one. Apply your system instructions for any medications that must be omitted or redacted (e.g. sexual-function drugs/syringes).
+
+Output ONLY the list of current medications — one medication per line (name and current strength). Do NOT include the patient's name or age, any heading, any dates, any bullets, any bold, any blank lines, or any other commentary.${contextBlock}\n\n${appleHealthMd}`;
     }
 
     if (!userDoc.agentApiKey) {
@@ -10767,11 +10914,19 @@ app.post('/api/medications/extract', async (req, res) => {
       chatResp = await agentProvider.chat([{ role: 'user', content: prompt }], chatOptions);
     } catch (firstError) {
       const sc = firstError.status || firstError.statusCode || 0;
-      if (sc === 401 && userDoc.assignedAgentId) {
-        const { recreateAgentApiKey } = await import('./utils/agent-helper.js');
-        const newApiKey = await recreateAgentApiKey(doClient, cloudant, userId, userDoc.assignedAgentId);
-        const retry = new DigitalOceanProvider(newApiKey, { baseURL: userDoc.agentEndpoint });
-        chatResp = await retry.chat([{ role: 'user', content: prompt }], chatOptions);
+      if ((sc === 401 || sc === 403) && userDoc.assignedAgentId) {
+        try {
+          const { recreateAgentApiKey } = await import('./utils/agent-helper.js');
+          const newApiKey = await recreateAgentApiKey(doClient, cloudant, userId, userDoc.assignedAgentId);
+          const retry = new DigitalOceanProvider(newApiKey, { baseURL: userDoc.agentEndpoint });
+          chatResp = await retry.chat([{ role: 'user', content: prompt }], chatOptions);
+        } catch (retryError) {
+          const rsc = retryError.status || retryError.statusCode || 0;
+          // Agent still not serving → soft-skip (this extract is optional;
+          // Lists.vue falls back). Records the reason in maia-log.
+          if (rsc === 401 || rsc === 403) return softSkip('AGENT_NOT_READY');
+          throw retryError;
+        }
       } else {
         throw firstError;
       }
@@ -10780,7 +10935,15 @@ app.post('/api/medications/extract', async (req, res) => {
     const raw = (chatResp.content || chatResp.text || '').trim();
     const medications = raw.split('\n')
       .map(l => l.replace(/^\s*[-*••\d.)]+\s*/, '').trim())
-      .filter(l => l.length > 0);
+      .map(l => l.replace(/\*\*/g, '').trim()) // drop bold markers
+      .filter(l => l.length > 0)
+      // Drop preamble/heading lines a model might add despite instructions:
+      // markdown headings, a "Current Medications" label, the patient
+      // name/age line, and AI refusals ("no current medications…").
+      .filter(l => !/^#{1,6}\s/.test(l))
+      .filter(l => !/^current medications\b/i.test(l))
+      .filter(l => !/\b(year[- ]old|age\s|sex\s|\bmale\b|\bfemale\b)/i.test(l) || /\d+\s*(mg|mcg|ml|%|unit|tablet|capsule|cream|injection|inhaler|patch|solution|spray)/i.test(l))
+      .filter(l => !/^(based on|there are no|no current medications|the (provided|available))/i.test(l));
 
     res.json({
       success: true,
@@ -10791,6 +10954,604 @@ app.post('/api/medications/extract', async (req, res) => {
     });
   } catch (error) {
     console.error('Error extracting medications:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// Current Medications Worksheet — a structured medication table built by
+// a specific Private AI agent (profile 'default' = Deepseek, 'gpt' =
+// GPT) using its attached knowledge base (retrieval). One row per
+// medication: Status (Current/Discontinued/Inpatient), Last date
+// prescribed, and a Source cited as "File N p.#" against a file legend
+// the SERVER supplies (so numbering is consistent across both agents
+// and the model can't invent file names). Result is persisted to
+// userDoc.medsWorksheets[profile] and rendered in My Lists.
+
+// Self-heal: agents created before v1.3.85 used retrieval_method
+// RETRIEVAL_METHOD_NONE, which makes the agent IGNORE its attached
+// knowledge base (every answer comes back "no records found"). Flip any
+// such agent to RETRIEVAL_METHOD_REWRITE so KB retrieval actually runs.
+// Idempotent and best-effort — never throws.
+async function ensureAgentRetrieval(agentId) {
+  if (!agentId) return;
+  try {
+    const agent = await doClient.agent.get(agentId);
+    const method = agent?.retrieval_method;
+    if (!method || method === 'RETRIEVAL_METHOD_NONE') {
+      await doClient.agent.update(agentId, { retrieval_method: 'RETRIEVAL_METHOD_REWRITE' });
+      console.log(`[retrieval] healed agent ${agentId}: ${method || 'unset'} -> RETRIEVAL_METHOD_REWRITE`);
+    }
+  } catch (e) {
+    console.warn(`[retrieval] ensureAgentRetrieval(${agentId}) failed: ${e?.message || e}`);
+  }
+}
+
+function buildWorksheetPrompt(legendLines, cutoffDate) {
+  return `You are building a Current Medications Worksheet from this patient's records in your knowledge base. Use ONLY information found in your knowledge base; never infer, assume, or add a medication that is not present. Include EVERY medication you find.
+
+Output a GitHub-flavored Markdown table with EXACTLY these columns — no title, no notes, no text before or after the table:
+
+| Medication | Status | Last date prescribed | Source |
+
+Rules per column:
+- Medication: the drug name with the strength/form FROM ITS MOST RECENT entry (e.g. "atorvastatin 20 MG tablet"). One row per drug — see de-duplication below.
+- Status: exactly one of —
+    Current — this drug's most recent entry is actively prescribed (not stopped/held/discontinued) AND its Last date prescribed is on or after ${cutoffDate} (within the last 18 months).
+    Discontinued — this drug's most recent entry is explicitly stopped/inactive/held, OR its Last date prescribed is BEFORE ${cutoffDate} (more than 18 months ago). A medication not prescribed in over 18 months is NOT current.
+    Inpatient — administered during a hospital/inpatient encounter, not an outpatient take-home prescription.
+  A drug can only be Current if its Last date prescribed is on or after ${cutoffDate}. Do not invent a status.
+- Last date prescribed: the most recent date the drug was actually prescribed/ordered (e.g. an "Ordered on" or "Start date"), as YYYY-MM-DD; "—" if none is found. IGNORE document footer dates such as "Generated on <date>" / "Exported on <date>" — those are when the report was printed, NOT when the medication was prescribed.
+- Source: cite the entry that established the Last date prescribed, formatted as "File N p.<page>" using the file tags below. Do NOT write full file names in the table — use only the "File N" tag. If you cannot determine a page, use just "File N".
+
+De-duplication (IMPORTANT): treat all entries for the same drug as ONE medication, regardless of strength or dose. A change in dose/strength over time is NOT a separate medication. Output exactly ONE row per drug, using ONLY the entry with the most recent Last date prescribed — its strength, date, and page. Do NOT create extra rows or a "Discontinued" row for older strengths/doses of the same drug; simply drop the older entries.
+
+Apply your system instructions for any medications that must be omitted or redacted.
+
+Source file tags (use only these in the Source column):
+${legendLines}`;
+}
+
+// Worksheet prompt built from a structured Apple Health "Medication
+// Records" markdown passed INLINE (each entry has a date, the medication,
+// and a page number). This is far more reliable than k=10 KB retrieval
+// over a large multi-hundred-page record — the agent sees every entry,
+// so both Deepseek and GPT produce complete tables. `ahFileTag` is the
+// "File N" legend tag for the Apple Health source file.
+function buildWorksheetPromptFromMarkdown(ahFileTag, medMarkdown, legendLines, cutoffDate) {
+  return `Below are this patient's medication records, extracted directly from their Apple Health export (${ahFileTag}). Each entry shows a date, the medication name and strength, and the page number it appears on.
+
+Build a GitHub-flavored Markdown table with EXACTLY these columns — no title, no notes, no text before or after the table:
+
+| Medication | Status | Last date prescribed | Source |
+
+Rules per column:
+- Medication: the drug name with the strength/form FROM ITS MOST RECENT entry (e.g. "atorvastatin 20 MG tablet"). One row per drug — see de-duplication below.
+- Status: exactly one of —
+    Current — this drug's most recent entry is an outpatient prescription (not stopped/held/discontinued) AND its Last date prescribed is on or after ${cutoffDate} (within the last 18 months).
+    Discontinued — this drug's most recent entry is explicitly stopped/inactive/held, OR its Last date prescribed is BEFORE ${cutoffDate} (more than 18 months ago). A medication not prescribed in over 18 months is NOT current.
+    Inpatient — administered during a hospital/inpatient encounter (e.g. anesthesia agents like propofol/fentanyl, IV infusions), not an outpatient take-home prescription.
+  A drug can only be Current if its Last date prescribed is on or after ${cutoffDate}. Do not invent a status.
+- Last date prescribed: the most recent date for that drug, as YYYY-MM-DD.
+- Source: "${ahFileTag} p.<page>" using the page number of that most-recent entry. If no page is shown, use just "${ahFileTag}".
+
+De-duplication (IMPORTANT): treat all entries for the same drug as ONE medication, regardless of strength or dose. A change in dose/strength over time is NOT a separate medication. Output exactly ONE row per drug, using ONLY the entry with the latest date — that entry's strength, date, and page. Do NOT create extra rows or a "Discontinued" row for older strengths/doses of the same drug; simply drop the older entries. (Different salts/formulations that are clinically distinct may be separate rows.)
+
+Include EVERY distinct drug present in the records below (one row each). Apply your system instructions for any medications that must be omitted or redacted (e.g. sexual-function drugs/syringes).
+
+File tags (for the Source column):
+${legendLines}
+
+Medication records:
+${medMarkdown}`;
+}
+
+// Read a UTF-8 text object from the Spaces "maia" bucket. Returns null on
+// any miss/error. Used to pull the Apple Health category markdown.
+async function readSpacesTextObject(key) {
+  const bucketUrl = getSpacesBucketName();
+  if (!bucketUrl) return null;
+  const bucketName = bucketUrl.split('//')[1]?.split('.')[0] || 'maia';
+  try {
+    const { S3Client, GetObjectCommand } = await import('@aws-sdk/client-s3');
+    const s3Client = new S3Client({
+      endpoint: getSpacesEndpoint(),
+      region: 'us-east-1',
+      forcePathStyle: process.env.S3_FORCE_PATH_STYLE === 'true',
+      credentials: {
+        accessKeyId: process.env.DIGITALOCEAN_AWS_ACCESS_KEY_ID || process.env.SPACES_AWS_ACCESS_KEY_ID || '',
+        secretAccessKey: process.env.DIGITALOCEAN_AWS_SECRET_ACCESS_KEY || process.env.SPACES_AWS_SECRET_ACCESS_KEY || ''
+      }
+    });
+    const r = await s3Client.send(new GetObjectCommand({ Bucket: bucketName, Key: key }));
+    const chunks = [];
+    for await (const c of r.Body) chunks.push(c);
+    return Buffer.concat(chunks).toString('utf-8');
+  } catch {
+    return null;
+  }
+}
+
+// Worksheet prompt built from a deterministically-extracted, dated Epic
+// medication list (name | action+date | File N p.page). The dates here are
+// the REAL Ordered-on / Discontinued-on dates, so the agent must use them
+// verbatim and must NOT pull dates from the document body (in particular
+// the repeating "Generated on …" footer date).
+function buildWorksheetPromptFromMedList(medListText, legendLines, cutoffDate) {
+  return `Below is this patient's medication list, extracted directly from the record. Each line gives the medication (name and strength), its most recent action and date (ordered or discontinued), and the page it appears on. These actions and dates are AUTHORITATIVE.
+
+Build a GitHub-flavored Markdown table with EXACTLY these columns — no title, no notes, no text before or after the table:
+
+| Medication | Status | Last date prescribed | Source |
+
+Rules per column:
+- Medication: the drug name with strength/form exactly as given. One row per drug — see de-duplication.
+- Status: exactly one of —
+    Current — the action is "ordered" AND the date is on or after ${cutoffDate} (within the last 18 months).
+    Discontinued — the action is "discontinued", OR the date is before ${cutoffDate} (more than 18 months ago).
+    Inpatient — a hospital/inpatient administration (e.g. anesthesia agents, IV infusions).
+  A drug can only be Current if its date is on or after ${cutoffDate}.
+- Last date prescribed: the date given for that medication, as YYYY-MM-DD. Use ONLY the date provided on that medication's line. Do NOT use any other date from the documents, and NEVER use a document "Generated on" footer date.
+- Source: the "File N p.<page>" exactly as given on that medication's line.
+
+De-duplication: one row per drug, regardless of strength/dose changes.
+
+Apply your system instructions for any medications that must be omitted or redacted (e.g. sexual-function drugs/syringes).
+
+File tags (for the Source column):
+${legendLines}
+
+Medication list:
+${medListText}`;
+}
+
+// Read a binary object (e.g. a PDF) from the Spaces "maia" bucket as a
+// Buffer. Returns null on any miss/error.
+async function readSpacesObjectBuffer(key) {
+  const bucketUrl = getSpacesBucketName();
+  if (!bucketUrl) return null;
+  const bucketName = bucketUrl.split('//')[1]?.split('.')[0] || 'maia';
+  try {
+    const { S3Client, GetObjectCommand } = await import('@aws-sdk/client-s3');
+    const s3Client = new S3Client({
+      endpoint: getSpacesEndpoint(),
+      region: 'us-east-1',
+      forcePathStyle: process.env.S3_FORCE_PATH_STYLE === 'true',
+      credentials: {
+        accessKeyId: process.env.DIGITALOCEAN_AWS_ACCESS_KEY_ID || process.env.SPACES_AWS_ACCESS_KEY_ID || '',
+        secretAccessKey: process.env.DIGITALOCEAN_AWS_SECRET_ACCESS_KEY || process.env.SPACES_AWS_SECRET_ACCESS_KEY || ''
+      }
+    });
+    const r = await s3Client.send(new GetObjectCommand({ Bucket: bucketName, Key: key }));
+    const chunks = [];
+    for await (const c of r.Body) chunks.push(c);
+    return Buffer.concat(chunks);
+  } catch {
+    return null;
+  }
+}
+
+// Locate the Apple Health "Medication Records" category markdown for a
+// user (e.g. `${userId}/Lists/medication_records.md`). Lists the Lists/
+// prefix and returns the first non-source markdown whose name mentions
+// "medication". Returns { key, text } or null.
+async function findMedicationRecordsMarkdown(userId) {
+  const bucketUrl = getSpacesBucketName();
+  if (!bucketUrl) return null;
+  const bucketName = bucketUrl.split('//')[1]?.split('.')[0] || 'maia';
+  try {
+    const { S3Client, ListObjectsV2Command } = await import('@aws-sdk/client-s3');
+    const s3Client = new S3Client({
+      endpoint: getSpacesEndpoint(),
+      region: 'us-east-1',
+      forcePathStyle: process.env.S3_FORCE_PATH_STYLE === 'true',
+      credentials: {
+        accessKeyId: process.env.DIGITALOCEAN_AWS_ACCESS_KEY_ID || process.env.SPACES_AWS_ACCESS_KEY_ID || '',
+        secretAccessKey: process.env.DIGITALOCEAN_AWS_SECRET_ACCESS_KEY || process.env.SPACES_AWS_SECRET_ACCESS_KEY || ''
+      }
+    });
+    const list = await s3Client.send(new ListObjectsV2Command({ Bucket: bucketName, Prefix: `${userId}/Lists/` }));
+    const key = (list.Contents || [])
+      .map(o => o.Key)
+      .find(k => /\/medication[^/]*\.md$/i.test(k));
+    if (!key) return null;
+    const text = await readSpacesTextObject(key);
+    return text ? { key, text } : null;
+  } catch {
+    return null;
+  }
+}
+
+app.post('/api/medications/worksheet', async (req, res) => {
+  try {
+    const userId = resolveUserId(req, res);
+    if (!userId) return;
+    const profileKey = req.body?.agentProfileKey === 'gpt' ? 'gpt' : 'default';
+
+    let userDoc = await cloudant.getDocument('maia_users', userId);
+    if (!userDoc) return res.status(404).json({ success: false, error: 'USER_NOT_FOUND' });
+
+    // Resolve the agent endpoint/id/key/model for the requested profile.
+    let agentId, endpoint, model;
+    if (profileKey === 'gpt') {
+      let gpt = userDoc.agentProfiles?.gpt;
+      // Auto-provision GPT on demand if missing/not yet deployed.
+      if (!gpt?.agentId || !gpt?.endpoint) {
+        try {
+          const { ensureSecondaryAgent } = await import('./routes/auth.js');
+          userDoc = await ensureSecondaryAgent(doClient, cloudant, userDoc);
+          gpt = userDoc.agentProfiles?.gpt;
+        } catch (e) {
+          return res.status(202).json({ success: false, pending: true, reason: 'GPT_PROVISIONING', message: 'Provisioning Private AI (GPT)…' });
+        }
+        if (!gpt?.endpoint) {
+          // Created but still deploying — caller should retry shortly.
+          return res.status(202).json({ success: false, pending: true, reason: 'GPT_DEPLOYING', message: 'Private AI (GPT) is deploying — try Refresh in a few minutes.' });
+        }
+      }
+      agentId = gpt.agentId;
+      endpoint = gpt.endpoint;
+      model = gpt.modelName || 'openai-gpt-oss-120b';
+    } else {
+      if (!userDoc.assignedAgentId || !userDoc.agentEndpoint) {
+        return res.status(400).json({ success: false, error: 'AGENT_NOT_CONFIGURED' });
+      }
+      agentId = userDoc.assignedAgentId;
+      endpoint = userDoc.agentEndpoint;
+      model = userDoc.agentModelName || 'deepseek-v4-pro';
+    }
+
+    // File legend from the indexed KB files (File 1..N). Server-supplied
+    // so the table's "File N" tags are stable across both agents.
+    const kbName = getKBNameFromUserDoc(userDoc, userId);
+    const kbPrefix = kbName ? `${userId}/${kbName}/` : null;
+    const kbFiles = (userDoc.files || []).filter(f =>
+      f?.fileName && (!kbPrefix || (f.bucketKey || '').startsWith(kbPrefix))
+    );
+    if (kbFiles.length === 0) {
+      return res.status(400).json({ success: false, error: 'NO_INDEXED_FILES', message: 'No indexed files to build a worksheet from.' });
+    }
+    // legend carries bucketKey so the client's Source links can open the
+    // exact file (not just the Apple Health initial file).
+    const legend = kbFiles.map((f, i) => ({ tag: `File ${i + 1}`, fileName: f.fileName, bucketKey: f.bucketKey || null }));
+    const legendLines = legend.map(l => `${l.tag} = ${l.fileName}`).join('\n');
+
+    // Prefer the structured Apple Health "Medication Records" markdown as
+    // the source (every entry has a date + page number), passed INLINE.
+    // This is reliable across models — k=10 KB retrieval over a large
+    // record routinely misses the medication pages (especially Deepseek),
+    // producing blank worksheets. Fall back to KB retrieval when no Apple
+    // Health medication markdown exists.
+    // 18-month "Current" cutoff (YYYY-MM-DD): any medication whose most
+    // recent prescription predates this is Discontinued/Inpatient, never
+    // Current. Computed server-side so it doesn't depend on the model
+    // knowing today's date.
+    const cutoff = new Date();
+    cutoff.setMonth(cutoff.getMonth() - 18);
+    const cutoffDate = cutoff.toISOString().slice(0, 10);
+
+    let prompt;
+    let worksheetSourceMode = 'kb-retrieval';
+
+    // 1) Apple Health: the structured "Medication Records" markdown (dated,
+    //    paged) passed inline.
+    const ahFileIdx = kbFiles.findIndex(f => f.isAppleHealth);
+    if (ahFileIdx !== -1) {
+      const medMd = await findMedicationRecordsMarkdown(userId);
+      if (medMd?.text) {
+        const ahFileTag = `File ${ahFileIdx + 1}`;
+        prompt = buildWorksheetPromptFromMarkdown(ahFileTag, medMd.text, legendLines, cutoffDate);
+        worksheetSourceMode = 'apple-health-markdown';
+      }
+    }
+
+    // 2) Epic / MGB: deterministically extract the dated "Medication List"
+    //    entries (real Ordered-on / Discontinued-on dates + page numbers)
+    //    from the PDFs and feed them inline. This avoids KB retrieval, whose
+    //    chunks include the repeating "Generated on …" footer date that the
+    //    model otherwise reports as the prescription date.
+    if (!prompt) {
+      try {
+        const { extractEpicMedications, mergeMedications, buildMedListText } = await import('./utils/meds-extractor.js');
+        const pdfParse = (await import('pdf-parse')).default;
+        const pdfFiles = kbFiles.filter(f => /\.pdf$/i.test(f.fileName) || /pdf/i.test(f.fileType || ''));
+        const allMeds = [];
+        for (let i = 0; i < kbFiles.length; i++) {
+          const f = kbFiles[i];
+          if (!pdfFiles.includes(f) || !f.bucketKey) continue;
+          const buf = await readSpacesObjectBuffer(f.bucketKey);
+          if (!buf) continue;
+          try {
+            const data = await pdfParse(buf);
+            const { meds } = extractEpicMedications(data.text, data.numpages, `File ${i + 1}`);
+            allMeds.push(...meds);
+          } catch (e) {
+            console.warn(`[worksheet] meds parse failed for ${f.fileName}: ${e?.message || e}`);
+          }
+        }
+        if (allMeds.length > 0) {
+          const merged = mergeMedications(allMeds);
+          prompt = buildWorksheetPromptFromMedList(buildMedListText(merged), legendLines, cutoffDate);
+          worksheetSourceMode = 'epic-medication-list';
+        }
+      } catch (e) {
+        console.warn(`[worksheet] Epic medication extraction error: ${e?.message || e}`);
+      }
+    }
+
+    // 3) Fallback: KB retrieval (only when no structured source was found).
+    if (!prompt) {
+      prompt = buildWorksheetPrompt(legendLines, cutoffDate);
+    }
+
+    // Ensure the KB is attached to THIS agent before calling, so retrieval
+    // returns the patient's records. Without this the agent answers from an
+    // empty context and produces a table with only the header row (the bug
+    // that made both worksheets come back blank). Mirrors the
+    // /api/patient-summary/draft endpoint, which attaches before calling.
+    const worksheetKbId = userDoc.kbId;
+    if (worksheetKbId && agentId) {
+      try {
+        await doClient.agent.attachKB(agentId, worksheetKbId);
+      } catch (attachError) {
+        if (!attachError.message?.includes('already')) {
+          console.warn(`[worksheet] attachKB(${profileKey}) failed (continuing): ${attachError.message}`);
+        }
+      }
+    }
+    // Ensure the agent actually retrieves from its KB (heal legacy NONE).
+    await ensureAgentRetrieval(agentId);
+
+    const apiKey = await getOrCreateAgentApiKey(doClient, cloudant, userId, agentId, profileKey);
+    const { DigitalOceanProvider } = await import('../lib/chat-client/providers/digitalocean.js');
+    const chatOptions = { model, stream: false };
+
+    let chatResp;
+    try {
+      chatResp = await new DigitalOceanProvider(apiKey, { baseURL: endpoint }).chat([{ role: 'user', content: prompt }], chatOptions);
+    } catch (firstError) {
+      const sc = firstError.status || firstError.statusCode || 0;
+      if ((sc === 401 || sc === 403) && agentId) {
+        try {
+          const { recreateAgentApiKey } = await import('./utils/agent-helper.js');
+          const newApiKey = await recreateAgentApiKey(doClient, cloudant, userId, agentId, profileKey);
+          chatResp = await new DigitalOceanProvider(newApiKey, { baseURL: endpoint }).chat([{ role: 'user', content: prompt }], chatOptions);
+        } catch (retryError) {
+          const rsc = retryError.status || retryError.statusCode || 0;
+          if (rsc === 401 || rsc === 403) {
+            // Agent (e.g. the GPT one) is still deploying — return a structured
+            // pending response, not a 500, and record it.
+            await appendUserProvisioningEvent(userId, { event: 'meds-worksheet-pending', agentProfileKey: profileKey, reason: 'AGENT_NOT_READY', status: rsc });
+            return res.status(202).json({ success: false, pending: true, reason: 'AGENT_NOT_READY', agentProfileKey: profileKey, message: `Private AI (${profileKey === 'gpt' ? 'GPT' : 'Deepseek'}) is still deploying — try Refresh shortly.` });
+          }
+          throw retryError;
+        }
+      } else {
+        throw firstError;
+      }
+    }
+
+    const table = (chatResp.content || chatResp.text || '').trim();
+    const generatedAt = new Date().toISOString();
+    const entry = { table, legend, model, generatedAt, sourceMode: worksheetSourceMode };
+
+    // Persist (conflict-tolerant). Non-fatal if it can't save.
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        const doc = await cloudant.getDocument('maia_users', userId);
+        if (!doc) break;
+        if (!doc.medsWorksheets || typeof doc.medsWorksheets !== 'object') doc.medsWorksheets = {};
+        doc.medsWorksheets[profileKey] = entry;
+        doc.updatedAt = new Date().toISOString();
+        await cloudant.saveDocument('maia_users', doc);
+        break;
+      } catch (e) {
+        if (e?.statusCode === 409 && attempt < 2) continue;
+        console.warn(`[worksheet] could not persist ${profileKey} for ${userId}: ${e?.message || e}`);
+        break;
+      }
+    }
+
+    await appendUserProvisioningEvent(userId, {
+      event: 'meds-worksheet-generated',
+      agentProfileKey: profileKey,
+      model,
+      fileCount: legend.length,
+      sourceMode: worksheetSourceMode
+    });
+
+    res.json({ success: true, agentProfileKey: profileKey, ...entry });
+  } catch (error) {
+    console.error('Error building medications worksheet:', error);
+    const sc = error.status || error.statusCode || 0;
+    try {
+      const pk = req.body?.agentProfileKey === 'gpt' ? 'gpt' : 'default';
+      await appendUserProvisioningEvent(userId, { event: 'meds-worksheet-failed', agentProfileKey: pk, reason: error.message || 'error', status: sc || undefined });
+    } catch { /* non-fatal */ }
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// Read persisted worksheets (no AI call).
+app.get('/api/medications/worksheet', async (req, res) => {
+  try {
+    const userId = resolveUserId(req, res);
+    if (!userId) return;
+    const userDoc = await cloudant.getDocument('maia_users', userId);
+    if (!userDoc) return res.status(404).json({ success: false, error: 'USER_NOT_FOUND' });
+    res.json({ success: true, worksheets: userDoc.medsWorksheets || {} });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// Encounters worksheet — a reverse-chronological list of clinical
+// encounters across ALL of the patient's source PDFs. Built
+// deterministically (no agent / no KB retrieval): each PDF is parsed,
+// encounter headers are detected (Epic-optimized, generic fallback),
+// merged, deduped, and rendered as a GFM table with "File N p.<page>"
+// Source links. Persisted to userDoc.encountersWorksheet.
+app.post('/api/encounters/worksheet', async (req, res) => {
+  try {
+    const userId = resolveUserId(req, res);
+    if (!userId) return;
+    const userDoc = await cloudant.getDocument('maia_users', userId);
+    if (!userDoc) return res.status(404).json({ success: false, error: 'USER_NOT_FOUND' });
+
+    // Source files: PDFs in the patient's KB folder.
+    const kbName = getKBNameFromUserDoc(userDoc, userId);
+    const kbPrefix = kbName ? `${userId}/${kbName}/` : null;
+    const pdfFiles = (userDoc.files || []).filter(f =>
+      f?.fileName &&
+      (!kbPrefix || (f.bucketKey || '').startsWith(kbPrefix)) &&
+      (/\.pdf$/i.test(f.fileName) || /pdf/i.test(f.fileType || ''))
+    );
+    if (pdfFiles.length === 0) {
+      return res.status(400).json({ success: false, error: 'NO_PDF_FILES', message: 'No PDF files to build an encounters list from.' });
+    }
+
+    const legend = pdfFiles.map((f, i) => ({ tag: `File ${i + 1}`, fileName: f.fileName, bucketKey: f.bucketKey || null }));
+
+    const { extractEncountersFromText, buildEncountersTable } = await import('./utils/encounters-extractor.js');
+    const pdfParse = (await import('pdf-parse')).default;
+
+    const allEncounters = [];
+    const modes = {};
+    for (let i = 0; i < pdfFiles.length; i++) {
+      const f = pdfFiles[i];
+      const tag = `File ${i + 1}`;
+      if (!f.bucketKey) { modes[tag] = 'missing-key'; continue; }
+      const buf = await readSpacesObjectBuffer(f.bucketKey);
+      if (!buf) { modes[tag] = 'download-failed'; continue; }
+      try {
+        const data = await pdfParse(buf);
+        const { encounters, mode } = extractEncountersFromText(data.text, data.numpages, tag);
+        modes[tag] = mode;
+        allEncounters.push(...encounters);
+      } catch (e) {
+        modes[tag] = 'parse-error';
+        console.warn(`[encounters] parse failed for ${f.fileName}: ${e?.message || e}`);
+      }
+    }
+
+    const { table, count } = buildEncountersTable(allEncounters);
+    const generatedAt = new Date().toISOString();
+    const entry = { table, legend, generatedAt, fileCount: pdfFiles.length, encounterCount: count, modes };
+
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        const doc = await cloudant.getDocument('maia_users', userId);
+        if (!doc) break;
+        doc.encountersWorksheet = entry;
+        doc.updatedAt = new Date().toISOString();
+        await cloudant.saveDocument('maia_users', doc);
+        break;
+      } catch (e) {
+        if (e?.statusCode === 409 && attempt < 2) continue;
+        console.warn(`[encounters] could not persist for ${userId}: ${e?.message || e}`);
+        break;
+      }
+    }
+
+    await appendUserProvisioningEvent(userId, {
+      event: 'encounters-worksheet-generated',
+      fileCount: pdfFiles.length,
+      encounterCount: count
+    });
+
+    res.json({ success: true, ...entry });
+  } catch (error) {
+    console.error('Error building encounters worksheet:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// Read the persisted encounters worksheet (no parsing).
+app.get('/api/encounters/worksheet', async (req, res) => {
+  try {
+    const userId = resolveUserId(req, res);
+    if (!userId) return;
+    const userDoc = await cloudant.getDocument('maia_users', userId);
+    if (!userDoc) return res.status(404).json({ success: false, error: 'USER_NOT_FOUND' });
+    res.json({ success: true, encounters: userDoc.encountersWorksheet || null });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// Ensure the secondary "Private AI (GPT)" agent is provisioned and report
+// whether it has finished deploying (endpoint resolved). The Setup wizard
+// calls this and polls until ready:true so BOTH Private AIs exist before
+// Setup completes. Safe to call repeatedly (ensureSecondaryAgent is
+// idempotent and mutex-guarded).
+app.post('/api/agents/ensure-secondary', async (req, res) => {
+  try {
+    const userId = resolveUserId(req, res);
+    if (!userId) return;
+    let userDoc = await cloudant.getDocument('maia_users', userId);
+    if (!userDoc) return res.status(404).json({ success: false, error: 'USER_NOT_FOUND' });
+
+    const hadAgentBefore = !!userDoc.agentProfiles?.gpt?.agentId;
+
+    const { ensureSecondaryAgent } = await import('./routes/auth.js');
+    try {
+      userDoc = await ensureSecondaryAgent(doClient, cloudant, userDoc);
+    } catch (e) {
+      // Creation may still be in-flight under the mutex — report not-ready
+      // rather than 500 so the client keeps polling.
+      return res.json({ success: true, ready: false, provisioning: true, reason: e?.message || 'provisioning' });
+    }
+
+    let gpt = userDoc.agentProfiles?.gpt || {};
+
+    // Log GPT creation exactly once (when it first appears).
+    if (!hadAgentBefore && gpt.agentId) {
+      try {
+        await appendUserProvisioningEvent(userId, {
+          event: 'gpt-agent-created', agentId: gpt.agentId, agentName: gpt.agentName || null
+        });
+      } catch { /* non-fatal */ }
+    }
+
+    // Readiness mirrors the primary agent: require BOTH a deployment URL and
+    // STATUS_RUNNING (a URL alone 403s while still deploying).
+    let endpoint = null;
+    let isRunning = false;
+    if (gpt.agentId) {
+      try {
+        const live = await doClient.agent.get(gpt.agentId);
+        const status = live?.deployment?.status || live?.deployment_status || 'unknown';
+        isRunning = status === 'STATUS_RUNNING';
+        endpoint = live?.deployment?.url ? `${live.deployment.url}/api/v1` : null;
+      } catch { /* still deploying */ }
+    }
+    const ready = !!endpoint && isRunning;
+
+    if (ready) {
+      // Persist endpoint + log "deployed" exactly once (deployedLoggedAt guard).
+      const alreadyLogged = !!userDoc.agentProfiles?.gpt?.deployedLoggedAt;
+      for (let attempt = 0; attempt < 3; attempt++) {
+        try {
+          const doc = await cloudant.getDocument('maia_users', userId);
+          if (!doc) break;
+          if (!doc.agentProfiles) doc.agentProfiles = {};
+          doc.agentProfiles.gpt = { ...(doc.agentProfiles.gpt || {}), endpoint, deployedLoggedAt: doc.agentProfiles.gpt?.deployedLoggedAt || new Date().toISOString() };
+          doc.updatedAt = new Date().toISOString();
+          await cloudant.saveDocument('maia_users', doc);
+          break;
+        } catch (err) {
+          if (err?.statusCode === 409 && attempt < 2) continue;
+          break;
+        }
+      }
+      if (!alreadyLogged) {
+        try {
+          await appendUserProvisioningEvent(userId, { event: 'gpt-agent-deployed', agentId: gpt.agentId || null });
+        } catch { /* non-fatal */ }
+      }
+    }
+
+    res.json({ success: true, ready, agentId: gpt.agentId || null, endpoint });
+  } catch (error) {
     res.status(500).json({ success: false, error: error.message });
   }
 });
