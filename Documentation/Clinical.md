@@ -1,12 +1,29 @@
 # Clinical Features
 
-A living reference for the clinical-data-handling features of MAIA:
-**My Lists Categories** and **Current Medications**. Update this file as
-clinical features are enhanced.
+A living reference for MAIA's clinical-data-handling features:
+**My Lists Categories**, **Current Medications**, **Medication
+Worksheets**, **Encounters**, **Patient Summary**, and the supporting
+indexing/agent architecture.
 
-Companion docs:
-- `NEW-AGENT.txt` — agent and knowledge-base configuration (canonical
-  source for the parameters below).
+## Architecture: three layers
+
+MAIA splits "what each clinical process does" across three files so each
+concern is editable in one place and the layers don't drift:
+
+| Layer | File | Contents | Edited by |
+|---|---|---|---|
+| 1. **Provisioning / infra config** | `NEW-AGENT.txt` (repo root) | Models, KB params (embedding/reranking/chunking), OpenSearch rule, regions, setup-wizard text, random names, App Platform settings, and the **generic guardrail** System Instruction (`## MAIA INSTRUCTION TEXT`). Runtime-parsed by `server/routes/auth.js`, `server/utils/kb-config.js`, etc. | Admin / operator |
+| 2. **Clinical prompt registry** | `clinical-prompts.md` (repo root) | The **per-request prompts** MAIA sends to a Private AI for each clinical deliverable: medication worksheets (Apple Health / Epic / KB-retrieval), current-medications extraction, patient-summary draft. One block per prompt id with `{placeholder}` substitution. Loaded by `server/utils/clinical-prompts.js`; auto-reloads on file change. | Clinical author |
+| 3. **Reference docs** | `Documentation/Clinical.md` (this file) | How the flows work end-to-end, which endpoint, which prompt id, which source. **No verbatim prompts** — points at Layer 2 by id. Includes the moved Agent API spec and footer-stripped indexing details. | Engineer |
+
+The **system prompt** (Layer 1) is the generic guardrail — applied to
+every chat and every inference. The **per-deliverable prompts** (Layer 2)
+specify the *shape* of each thing MAIA produces. Drift between them is
+prevented by single-source-of-truth: code requests prompts by id
+(`getClinicalPrompt('worksheet.epic-medication-list', vars)`), and this
+file *references* the same ids — never re-types them.
+
+Other companion docs:
 - `Documentation/Wizards.md` / `Wizards2.md` — Setup and Restore flow.
 - `Documentation/NewRestore.md` — full-doc backup / rehydrate design.
 
@@ -102,116 +119,76 @@ configured). The `appleHealthFileInfo` ref is derived from
 ## 2. Current Medications
 
 Current Medications is a **user-verified** authoritative medication list
-that supersedes anything an AI pulls out of the knowledge base. The
-Patient Summary uses it as its source of truth (see the **MAIA
-INSTRUCTION TEXT** section of `NEW-AGENT.txt`, which instructs the
-agent: *"if a Current Medications list is provided in the request, use
-it as the authoritative source"*).
+that supersedes anything an AI pulls out of the knowledge base. When
+saved (`userDoc.currentMedications`) it is injected into the Patient
+Summary draft via the `{currentMedications}` placeholder of
+`patient-summary.draft` (Layer 2) — replacing the old system-prompt
+"Current Medications Priority" rule.
 
-### Where the list comes from (in order of preference)
+### Unified pipeline (v1.3.99+, Step 4)
 
-The wizard's Current Medications step (`src/components/ChatInterface.vue`
-+ `Lists.vue`) tries the following sources and offers the result for
-**human verification** before saving:
+`Lists.vue → loadCurrentMedications()` makes **one** deterministic call
+to `GET /api/medications/current`. The server:
 
-1. **Apple Health (`source: apple-health`).** If the user has an Apple
-   Health Export PDF and the agent endpoint is ready, the client calls
-   `POST /api/medications/extract` with `mode: 'apple-health'`. The
-   server:
-   - reads the focused, dated **`${userId}/Lists/medication_records.md`**
-     category markdown (via `findMedicationRecordsMarkdown`); falls back
-     to the full AH markdown `${userId}/Lists/<file>.md` only if that
-     category file is missing,
-   - sends the prompt below (see *Exact Private AI instructions*) to the
-     user's **primary Private AI agent** (Deepseek; see `NEW-AGENT.txt`
-     → *Private AI Agents*), using any `contextMeds` from an earlier
-     `from-summary` extraction as reconciliation context,
-   - parses the response into one med per line, then **filters out**
-     preamble the model may add (markdown headings, a "Current
-     Medications" label, the patient name/age line, bold markers, and
-     "no current medications…" refusals).
-   - **Soft-skip**: if the AH markdown isn't written yet, the user doc
-     isn't found, the agent isn't configured, or there's no AH file,
-     the endpoint returns `200 {success:true, skipped:true, reason}`
-     and emits a `medications-extract-skipped` provisioning event (so
-     the step shows in `maia-log.pdf`). The client cleanly falls back
-     to the next source.
+1. Calls `resolvePatientMedicationSource(userId)` which picks the best
+   *dated* structured source, in this priority order:
+   - **Apple Health** — parses `${userId}/Lists/medication_records.md`
+     deterministically (`parseAppleHealthMedRecords`). Source mode
+     `apple-health`.
+   - **Epic / MGB** — extracts the dated "Medication List" entries
+     from each PDF in the KB folder (`extractEpicMedications`). Source
+     mode `epic`.
+   - **none** — KB-only patient with no structured source.
+2. Merges + dedupes by drug (`mergeMedications`, keeping the latest
+   entry per drug).
+3. Returns the **Current candidates**: rows where `status === 'active'`
+   AND `isoDate >= cutoffDate` (today − 18 months). No agent call.
 
-2. **Patient-summary draft (`source: patient-summary`).** The wizard
-   first generates a draft Patient Summary (`/api/patient-summary/draft`)
-   from the full knowledge base, then calls
-   `POST /api/medications/extract` with `mode: 'from-summary'`. The
-   server prompts the agent to extract Current Medications from the
-   draft text.
+The client pre-fills the verify/edit card with these. On Verify the user
+POSTs to `/api/user-current-medications` → `userDoc.currentMedications`
+(authoritative), which the Patient Summary then injects.
 
-3. **Existing `userDoc.currentMedications` (`source: user-doc`).** On
-   Restore / resume, if a verified list already exists on the user doc
-   it's offered as-is for re-verification — no AI call.
+#### Sources of the displayed list
 
-4. **Manual (`source: manual`).** If every automated path returns
-   nothing, the wizard offers an empty editor for the user to type in.
+| `currentMedicationsSource` | Meaning |
+|---|---|
+| `user-doc` | A verified list already existed on the user doc (Restore / re-open) — re-offered as-is. |
+| `apple-health` | Deterministic from `medication_records.md`. |
+| `epic` | Deterministic from Epic "Medication List" entries. |
+| `manual` | No structured source produced any candidates; the user enters meds manually. |
+| `patient-summary` (legacy) | Older pre-Step-4 source label (the old `/api/medications/extract` from-summary path). Retained for backward display compatibility. |
 
-### Exact Private AI instructions
+The legacy `/api/medications/extract` endpoint (modes `from-summary` /
+`apple-health`) is left in place but is **no longer called** by the
+client. It can be removed once any external callers have migrated.
+
+### Prompts (Layer 2 ids — edit in `clinical-prompts.md`)
 
 Two layers drive every AI extraction:
 
 **(a) Standing system instructions** — the agent is created with the
-`## MAIA INSTRUCTION TEXT` from `NEW-AGENT.txt` (editable per agent
-afterward). MAIA does **not** hard-code medication rules into the system
-instructions; the only standing clause that affects medication output is
-the redaction policy, currently:
+`## MAIA INSTRUCTION TEXT` from `NEW-AGENT.txt`. MAIA keeps this
+**generic** (a guardrail applied to every chat and inference) — agent
+perspective, redaction policy, output language/formatting. It does
+**not** carry deliverable-specific rules; those live in Layer 2.
 
-> **Errors and Redactions** — Remove any mention of problems or
-> medications for sexual function including syringes that may be
-> prescribed.
+**(b) Deterministic Current Medications** (default since Step 4): no
+agent call. `GET /api/medications/current` returns the dated Current
+candidates from the unified pipeline above; the client pre-fills the
+verify/edit card from them.
 
-(This is just an example of a redaction-type instruction; whatever a
-user puts in their System Instructions is applied at extraction time.)
-All extraction logic lives in the **per-request prompts** below, so it
-keeps working regardless of how the user edits their System Instructions.
+**(c) Legacy per-request prompts** — `POST /api/medications/extract`
+still exists and uses these Layer-2 prompt ids, but is **not called by
+the current client**. Kept for backward compatibility:
 
-**(b) Per-request prompts** — sent by `POST /api/medications/extract`
-(in `server/index.js`) to the user's **primary Private AI** (Deepseek).
-Verbatim as of v1.3.89:
+| Mode | Prompt id (legacy) | Placeholders |
+|---|---|---|
+| `from-summary` | `current-medications.extract.from-summary` | `{draftText}` |
+| `apple-health` | `current-medications.extract.apple-health`   | `{appleHealthMd}` `{contextBlock}` |
 
-`mode: 'from-summary'` (extract from the draft Patient Summary;
-`<draftPatientSummary.text>` is interpolated):
-```
-Below is a patient summary. Extract the Current Medications as a simple list, one medication per line, no commentary. Follow your system instructions for any medications that must be omitted or redacted.
-
-<draftPatientSummary.text>
-```
-
-`mode: 'apple-health'` (extract from the dated medication-records
-markdown; `<context block>` is included only when a prior `from-summary`
-call supplied `contextMeds`; `<medication records markdown>` is the
-`medication_records.md` text):
-```
-Below are this patient's dated medication records from their Apple Health export. Identify the patient's CURRENT medications: for each distinct drug, the most recent dated entry reflects the current prescription (and current strength). Exclude entries that are clearly one-time inpatient/anesthesia administrations (e.g. propofol, fentanyl, IV infusions) and older strengths that have been superseded by a newer one. Apply your system instructions for any medications that must be omitted or redacted (e.g. sexual-function drugs/syringes).
-
-Output ONLY the list of current medications — one medication per line (name and current strength). Do NOT include the patient's name or age, any heading, any dates, any bullets, any bold, any blank lines, or any other commentary.<context block>
-
-<medication records markdown>
-```
-
-where `<context block>` is:
-```
-
-
-For context, these medications were identified in the patient summary you generated earlier from the full knowledge base:
-- <med 1>
-- <med 2>
-
-Use this list as a starting point, then reconcile and refine against the Apple Health data below.
-```
-
-Net effect: a one-medication-per-line list, no preamble; the "apply your
-system instructions for omitted/redacted medications" clause defers to
-the redaction rules at extraction time; the apple-health path reconciles
-against the summary-derived list and dedups dose changes to the latest
-strength per drug.
-**These prompts must stay in sync with this doc** — if you change the
-strings in `/api/medications/extract`, update them here too.
+These prompts can be edited in `clinical-prompts.md` (loader auto-reloads
+on save) but only matter if the deprecated endpoint is invoked by an
+external caller.
 
 ### Verification → Save
 
@@ -282,7 +259,8 @@ retrieving from the knowledge base.
   `202 {pending:true}` and the client (My Lists REFRESH) retries.
 - **Prompt**: one GFM table, columns `Medication | Status | Last date
   prescribed | Source`. Status is exactly one of Current / Discontinued
-  / Inpatient. Two key rules (see verbatim prompts below):
+  / Inpatient. The actual prompt text lives in `clinical-prompts.md`
+  (see prompt-id table at the end of this section). Two key rules:
   - **De-duplication by drug, not dose** — all entries for the same drug
     collapse to ONE row using the latest-dated entry's strength; dose
     changes never create extra rows.
@@ -328,76 +306,30 @@ retrieving from the knowledge base.
   `meds-worksheet-failed`, `meds-worksheet-pending` (so the *cause* of a
   skipped/blank step is visible, not just the symptom).
 
-### Exact worksheet prompts
+### Worksheet prompts (Layer 2 ids — edit in `clinical-prompts.md`)
 
-Built in `server/index.js`. `${cutoffDate}` = today − 18 months
-(`YYYY-MM-DD`); `${ahFileTag}` = the `File N` tag of the Apple Health
-file; `${legendLines}` = the `File N = <filename>` legend;
-`${medMarkdown}` = the `medication_records.md` text. Verbatim as of
-v1.3.89:
+The three worksheet prompts are stored under stable ids; each `sourceMode`
+maps to one prompt id. To change worksheet output, edit the corresponding
+prompt body in `clinical-prompts.md` (no code change needed; loader
+auto-reloads on save):
 
-**Apple Health source** (`buildWorksheetPromptFromMarkdown`, used when
-an Apple Health medication-records markdown exists →
-`sourceMode: 'apple-health-markdown'`):
-```
-Below are this patient's medication records, extracted directly from their Apple Health export (${ahFileTag}). Each entry shows a date, the medication name and strength, and the page number it appears on.
+| `sourceMode` | Prompt id | Placeholders |
+|---|---|---|
+| `apple-health-markdown` | `worksheet.apple-health-markdown` | `{ahFileTag}` `{medMarkdown}` `{legendLines}` `{cutoffDate}` |
+| `epic-medication-list`  | `worksheet.epic-medication-list`  | `{medListText}` `{legendLines}` `{cutoffDate}` |
+| `kb-retrieval`          | `worksheet.kb-retrieval`          | `{legendLines}` `{cutoffDate}` |
 
-Build a GitHub-flavored Markdown table with EXACTLY these columns — no title, no notes, no text before or after the table:
+Placeholder semantics:
+- `{cutoffDate}` — server-computed (today − 18 months, `YYYY-MM-DD`).
+- `{ahFileTag}` — the `File N` tag of the Apple Health source file.
+- `{legendLines}` — the `File N = <filename>` legend, one line each.
+- `{medMarkdown}` — the Apple Health `medication_records.md` body.
+- `{medListText}` — the deterministic Epic medication list (one line
+  per drug: name | last action+date | `File N p.page`).
 
-| Medication | Status | Last date prescribed | Source |
-
-Rules per column:
-- Medication: the drug name with the strength/form FROM ITS MOST RECENT entry (e.g. "atorvastatin 20 MG tablet"). One row per drug — see de-duplication below.
-- Status: exactly one of —
-    Current — this drug's most recent entry is an outpatient prescription (not stopped/held/discontinued) AND its Last date prescribed is on or after ${cutoffDate} (within the last 18 months).
-    Discontinued — this drug's most recent entry is explicitly stopped/inactive/held, OR its Last date prescribed is BEFORE ${cutoffDate} (more than 18 months ago). A medication not prescribed in over 18 months is NOT current.
-    Inpatient — administered during a hospital/inpatient encounter (e.g. anesthesia agents like propofol/fentanyl, IV infusions), not an outpatient take-home prescription.
-  A drug can only be Current if its Last date prescribed is on or after ${cutoffDate}. Do not invent a status.
-- Last date prescribed: the most recent date for that drug, as YYYY-MM-DD.
-- Source: "${ahFileTag} p.<page>" using the page number of that most-recent entry. If no page is shown, use just "${ahFileTag}".
-
-De-duplication (IMPORTANT): treat all entries for the same drug as ONE medication, regardless of strength or dose. A change in dose/strength over time is NOT a separate medication. Output exactly ONE row per drug, using ONLY the entry with the latest date — that entry's strength, date, and page. Do NOT create extra rows or a "Discontinued" row for older strengths/doses of the same drug; simply drop the older entries. (Different salts/formulations that are clinically distinct may be separate rows.)
-
-Include EVERY distinct drug present in the records below (one row each). Apply your system instructions for any medications that must be omitted or redacted (e.g. sexual-function drugs/syringes).
-
-File tags (for the Source column):
-${legendLines}
-
-Medication records:
-${medMarkdown}
-```
-
-**Knowledge-base fallback** (`buildWorksheetPrompt`, used when no Apple
-Health medication markdown exists → `sourceMode: 'kb-retrieval'`; the
-endpoint attaches the KB and calls `ensureAgentRetrieval` first):
-```
-You are building a Current Medications Worksheet from this patient's records in your knowledge base. Use ONLY information found in your knowledge base; never infer, assume, or add a medication that is not present. Include EVERY medication you find.
-
-Output a GitHub-flavored Markdown table with EXACTLY these columns — no title, no notes, no text before or after the table:
-
-| Medication | Status | Last date prescribed | Source |
-
-Rules per column:
-- Medication: the drug name with the strength/form FROM ITS MOST RECENT entry (e.g. "atorvastatin 20 MG tablet"). One row per drug — see de-duplication below.
-- Status: exactly one of —
-    Current — this drug's most recent entry is actively prescribed (not stopped/held/discontinued) AND its Last date prescribed is on or after ${cutoffDate} (within the last 18 months).
-    Discontinued — this drug's most recent entry is explicitly stopped/inactive/held, OR its Last date prescribed is BEFORE ${cutoffDate} (more than 18 months ago). A medication not prescribed in over 18 months is NOT current.
-    Inpatient — administered during a hospital/inpatient encounter, not an outpatient take-home prescription.
-  A drug can only be Current if its Last date prescribed is on or after ${cutoffDate}. Do not invent a status.
-- Last date prescribed: the most recent date the drug was prescribed or ordered, as YYYY-MM-DD (use what is given if only a month/year is present; "—" if no date is found).
-- Source: cite the entry that established the Last date prescribed, formatted as "File N p.<page>" using the file tags below. Do NOT write full file names in the table — use only the "File N" tag. If you cannot determine a page, use just "File N".
-
-De-duplication (IMPORTANT): treat all entries for the same drug as ONE medication, regardless of strength or dose. A change in dose/strength over time is NOT a separate medication. Output exactly ONE row per drug, using ONLY the entry with the most recent Last date prescribed — its strength, date, and page. Do NOT create extra rows or a "Discontinued" row for older strengths/doses of the same drug; simply drop the older entries.
-
-Apply your system instructions for any medications that must be omitted or redacted.
-
-Source file tags (use only these in the Source column):
-${legendLines}
-```
-
-**These prompts must stay in sync with this doc** — if you change the
-strings in `buildWorksheetPromptFromMarkdown` / `buildWorksheetPrompt`,
-update them here too.
+The hardcoded prompt in `server/index.js`'s `build*Prompt` helpers is
+preserved as a safety-net fallback in case `clinical-prompts.md` is
+missing or malformed.
 
 ---
 
@@ -455,10 +387,10 @@ Do not duplicate those values here — link to the sections instead.
 - **`## MAIA INSTRUCTION TEXT`** — the seed System Instructions used to
   create both Private AI agents. As currently configured it carries the
   agent's perspective, the redaction policy (e.g. sexual-function
-  meds/syringes), and output formatting — medication-extraction logic is
+  meds/syringes), and output formatting — deliverable-specific logic is
   NOT in the system instructions; it lives in the per-request prompts
-  (§2, §2.5). Per-agent instructions diverge after creation (editable in
-  My Stuff → My AI Agent sub-tabs).
+  in `clinical-prompts.md` (see §2, §2.5, §4). Per-agent instructions
+  diverge after creation (editable in My Stuff → My AI Agent sub-tabs).
 - **`## Private AI Agents`** — two agents per user:
   - **Primary**: Private AI (Deepseek) — `inference_name:
     deepseek-v4-pro`. The agent used by Setup/Restore wizard automation
@@ -488,6 +420,143 @@ The actual parameters used at each KB creation are logged to
 
 ---
 
+## 4. Patient Summary
+
+A clinical summary of the patient generated by the user's primary
+Private AI (Deepseek) from the indexed knowledge base.
+
+- **Endpoints**: every Patient Summary endpoint shares ONE prompt
+  builder (`buildPatientSummaryPromptForUser`) that applies the Layer-2
+  `patient-summary.draft` prompt + `{currentMedications}` + past-12-month
+  `{encounters}`. No more drift between paths.
+  - `POST /api/patient-summary/draft` — wizard flow (single agent draft).
+  - `POST /api/generate-patient-summary` — legacy single-agent endpoint
+    (still in use by some flows; now uses the shared builder).
+  - `POST /api/patient-summary/generate-pair` (v1.3.102+) — runs the
+    same prompt on **both** Private AIs in parallel and returns both
+    summaries so the user can compare and pick one. Used by "Request
+    New Summary" on the Patient Summary tab. Per-agent failures (e.g.
+    GPT not deployed yet) come back as `{ok:false, reason}` so the call
+    never 500s on a single-agent issue.
+- **Prompt**: `patient-summary.draft` in `clinical-prompts.md`. The
+  deliverable spec (sections: Medical History incl. surgical; Recent
+  Visits past 12 months with providers + diagnoses; Current Medications;
+  Stopped or Inactive Medications; Allergies; Social History; Radiology
+  past 12 months; Other Testing past 12 months) lives in the prompt
+  body — **not** in the system prompt, which stays generic. A
+  `{currentMedications}` placeholder is injected by the endpoint: when
+  `userDoc.currentMedications` is set (verified by the patient), the
+  prompt instructs the agent to use that list **AS-IS** for the
+  Current Medications section (the "Current Medications Priority" rule,
+  relocated from the system prompt to this per-request prompt). When
+  the verified list is absent, the placeholder is empty and the agent
+  extracts meds from the knowledge base as usual.
+- **Resilience**: on a 401/403 (agent still deploying) the endpoint
+  recreates the API key and retries; on persistent not-ready it returns
+  `202 AGENT_NOT_READY` and logs `draft-summary-failed`.
+- **Post-Restore**: a restored Patient Summary comes back as a draft.
+  The post-reload guided-flow resume re-opens Setup at the summary
+  step and logs `setup-resumed` so maia-log explains the re-entry.
+
+---
+
+## 5. Reference: DigitalOcean Agent API
+
+The exact GradientAI Platform API calls MAIA makes
+(<https://docs.digitalocean.com/reference/api/digitalocean/#tag/GradientAI-Platform>).
+(Moved from `NEW-AGENT.txt`.)
+
+### Create agent
+`POST /v2/gen-ai/agents`
+
+```
+{
+  "name": "{userId}-agent-{YYYYMMDDThhmmss}",
+  "instruction": "<seed from ## MAIA INSTRUCTION TEXT>",
+  "model": { "uuid": "{model_uuid}" },
+  "project_id": "{project_id}",
+  "region": "tor1",
+  "max_tokens": 16384,
+  "top_p": 1,
+  "temperature": 0.1,
+  "k": 10,
+  "retrieval_method": "RETRIEVAL_METHOD_REWRITE"
+}
+```
+Required: `name`, `model.uuid`, `project_id`. Response's
+`deployment.status` starts `STATUS_PENDING`.
+
+> **`retrieval_method` MUST NOT be `RETRIEVAL_METHOD_NONE`.** `NONE`
+> disables KB retrieval — every answer comes back "no records found"
+> (caused blank Patient Summaries and worksheets historically). MAIA
+> creates agents with `RETRIEVAL_METHOD_REWRITE` and `ensureAgentRetrieval`
+> heals any existing agent still set to `NONE`.
+
+### Update agent instruction
+`PUT /v2/gen-ai/agents/{agent_uuid}` — body `{ "instruction": "…" }`.
+`name`, `model`, `project_id` cannot change after creation.
+
+### Poll deployment
+`GET /v2/gen-ai/agents/{agent_uuid}` — poll until
+`deployment.status === "STATUS_RUNNING"` (1–3 min typical); then read
+`deployment.url` as the agent's inference endpoint. MAIA requires
+RUNNING (not just URL-present) before marking the agent ready, because
+the inference endpoint 403s until then.
+
+### Create agent API key
+`POST /v2/gen-ai/agents/{agent_uuid}/api_keys` — key name
+`agent-{agent_uuid}-api-key`; secret stored per profile in
+`userDoc.agentProfiles[<key>].apiKey` (flat `agentApiKey` is the primary
+agent's key only).
+
+### Knowledge base
+`POST /v2/gen-ai/knowledge_bases` (create — see §3),
+`GET /v2/gen-ai/knowledge_bases/{kb_uuid}/indexing_jobs`,
+`…/data_sources`.
+
+### Resolution rules
+- **Model UUID** — primary: `DO_MODEL_ID` env → DO catalog match for
+  `deepseek-v4-pro` → existing agent's model → first catalog model.
+  Alternate: DO catalog match for `openai-gpt-oss-120b` only.
+- **Project ID** — `DO_PROJECT_ID` env → discovered from an existing
+  agent / the account's default project.
+- **`k` (top-k retrieval)** — DO valid range 1–50 (probed; 100+ rejected).
+
+---
+
+## 6. Reference: Footer-stripped (clean-index) KB indexing
+
+(Moved from `NEW-AGENT.txt`.)
+
+KBs created from **v1.3.95** on (`userDoc.kbCleanIndex === true`) do
+**not** index the raw PDFs. At KB creation each PDF is parsed and its
+repeating page header/footer boilerplate — institution/address, MRN/DOB,
+and especially the **"Generated on `<date>` Page N"** footer — is
+stripped deterministically (`generateCleanIndexSidecars` →
+`stripHeadersFooters` in `server/utils/encounters-extractor.js`). The
+footer-free text is written to `${userId}/${kbName}/_clean/<name>.txt`
+and the DO data source `item_path` points at `_clean/`. This keeps the
+report generation date/time out of every retrieved chunk (RAG was
+otherwise reporting that date as the prescription date).
+
+PDFs remain in the KB folder untouched — viewing, page-links, file
+membership (`kbIndexedBucketKeys`), and Restore all continue to use them.
+`isKbFolderDataSourcePath` recognizes both the PDF folder and `_clean/`
+as "the KB's folder data source". Re-index regenerates sidecars first.
+If sidecar generation yields nothing (no PDFs / parse failure), the KB
+falls back to indexing the raw PDF folder. Pre-v1.3.95 KBs keep
+indexing raw PDFs until re-created.
+
+**Restore always sets `kbCleanIndex = true`** (rehydrate), so a restored
+account's KB is rebuilt/re-indexed against the `_clean/` sidecars —
+upgrading pre-v1.3.95 accounts on restore. A KB that literally survived
+a partial rehydrate (still has its old PDF-folder data source) is the
+one exception until it is re-created.
+
+Logged in `maia-log.pdf` as `clean-index-built (N files)`.
+
+---
+
 ## Change log
 
 - *2026-05-19* — Initial version. Documents My Lists Categories and
@@ -499,6 +568,91 @@ The actual parameters used at each KB creation are logged to
   cutoff. Clarified that medication logic lives in the prompts, not the
   System Instructions, and noted worksheet UI sorting + Source-page
   hyperlinks.
+- *2026-05-23* — v1.3.107. `{outOfRangeLabs}` extraction fixed for
+  Apple Health. The AH "OUT OF RANGE" annotation is rendered as red
+  text in the PDF and is preserved only by **pdfjs**' structured
+  markdown — `pdf-parse` drops it. `extractAppleHealthOorLabs` now
+  walks the `extractPdfWithPages` fullMarkdown, tracking `## Page N`
+  markers across the whole document (so page numbers stay correct even
+  though the Lab Results heading starts after a page marker), tracks
+  the visit-date line at each lab session, and captures every
+  observation ending in "OUT OF RANG[E]?". Output is a clean
+  per-observation list with date + page injected into
+  `{outOfRangeLabs}`. Verified on natalie86's AH export: 26 OOR rows
+  with accurate dates and pages (Hemoglobin A1c, Potassium, BUN, LDL,
+  Triglycerides, ALT, etc.).
+- *2026-05-23* — v1.3.106. Patient Summary gains `{outOfRangeLabs}`
+  placeholder. When the user has an Apple Health PDF, the server slices
+  its Lab Results section (`extractAppleHealthLabSection`) and hands it
+  to the agent as authoritative — the agent lists only entries marked
+  out of range / abnormal / High / Low / critical. With no AH file, the
+  block instructs the agent to write a fixed note: *"Ask the Private AI
+  for lists or graphs of specific lab results."* (User-edited prompt also
+  dropped "(past 12 months)" qualifiers from sections other than Recent
+  Visits.)
+- *2026-05-23* — v1.3.105. Patient Summary improvements:
+  - **{patientIdentity}** placeholder injects deterministically-extracted
+    name / DOB / age / sex from the source PDF header
+    (`server/utils/patient-identity.js`; covers Apple Health "Name:/Date
+    of birth:/Legal sex:" and Epic "LastName, FirstName / DOB:/Legal
+    Sex:" formats). Fixes summaries that said "age and sex not
+    specified" even though the values were in the header.
+  - **Per-agent Patient Summary instructions**: each Private AI can
+    have its own prompt override at
+    `userDoc.agentProfiles[profileKey].patientSummaryPrompt`. Endpoints
+    `GET / POST /api/agent-instructions/patient-summary?profileKey=…`;
+    `generate-pair` uses per-agent overrides; My Stuff → Patient Summary
+    gained sub-tabs **Summary / Instructions for Deepseek / Instructions
+    for GPT** with textarea + Save / Reset to default. The same
+    `{patientIdentity} {currentMedications} {encounters} {allergies}`
+    placeholders are substituted in overrides.
+- *2026-05-23* — v1.3.103. Encounters: AH Clinical Notes (`clinical_notes.md`)
+  is now the authoritative encounter source for Apple Health files
+  (`parseAppleHealthClinicalNotes`); falls back to PDF parsing if the
+  sidecar is missing. `buildEncountersTable` dedupes by **ISO date only**
+  — same-date encounters across multiple files collapse into one row whose
+  Source cell lists every contributing `File N p.<page>` (rendered as
+  individual links in `Lists.vue`). Patient Summary draft prompt gained
+  `{allergies}`: Apple Health's `allergies.md` is injected as an
+  authoritative Allergies block when present.
+- *2026-05-22* — v1.3.102. "Request New Summary" was using a different
+  endpoint with a stub prompt that returned near-empty output. All
+  Patient Summary paths now share `buildPatientSummaryPromptForUser`
+  (Layer-2 spec + verified meds + past-12-month encounters). New
+  `/api/patient-summary/generate-pair` runs the same prompt on BOTH
+  Private AIs in parallel; MyStuffDialog renders both candidates with a
+  "Choose this one" button per candidate (routes through the existing
+  save flow).
+- *2026-05-22* — v1.3.101. Wizard now verifies Current Medications
+  before Patient Summary (restored). The unified `/api/medications/current`
+  pre-fills the verify card instantly from the deterministic source. A
+  server-side redaction filter (`server/utils/medication-redactor.js`,
+  matching the System Instructions "sexual function + syringes" rule)
+  drops obvious matches (sildenafil/tadalafil/vardenafil/avanafil/
+  alprostadil/papaverine/phentolamine/trimix/yohimbine) before the list
+  reaches the user. The Patient Summary draft prompt gained an
+  `{encounters}` placeholder, populated by inline encounters extraction
+  (past 12 months) so the agent has authoritative dated visits for the
+  Recent Visits section.
+- *2026-05-22* — v1.3.100. **Step 4 — unified Current Medications.**
+  New `GET /api/medications/current` returns deterministic Current
+  candidates via `resolvePatientMedicationSource(userId)` (Apple Health
+  `medication_records.md` → Epic "Medication List" → none) +
+  18-month cutoff. Lists.vue replaces the dual `/api/medications/extract`
+  agent calls with this single deterministic fetch. New
+  `parseAppleHealthMedRecords()` produces the same normalized shape as
+  `extractEpicMedications`. The legacy extract endpoint is retained but
+  no longer called.
+- *2026-05-22* — v1.3.99. **Step 3 — Patient Summary spec.**
+  `patient-summary.draft` (Layer 2) expanded into the full deliverable;
+  `{currentMedications}` injection moves the "Current Medications
+  Priority" rule out of the system prompt into the per-request prompt.
+- *2026-05-22* — v1.3.98. Three-layer architecture: Layer 1 infra config
+  (`NEW-AGENT.txt`, slimmed), Layer 2 clinical prompts (`clinical-prompts.md`,
+  single editable source of truth), Layer 3 reference docs (this file).
+  Removed verbatim prompt blocks from this file in favor of prompt-id
+  references; moved the Agent API spec (§5) and footer-stripped indexing
+  reference (§6) here from `NEW-AGENT.txt`; added §4 Patient Summary.
 - *2026-05-22* — v1.3.94. Medication worksheets now extract the dated
   Epic "Medication List" deterministically (real Ordered-on/Discontinued-on
   dates + accurate page links, footer-stripped) and feed it inline to both

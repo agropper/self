@@ -952,6 +952,118 @@
 
           <!-- Patient Summary Tab -->
           <q-tab-panel name="summary">
+            <!-- Sub-tabs: Summary itself + per-agent Patient Summary
+                 instruction prompt editors. -->
+            <q-tabs
+              v-model="summarySubTab"
+              dense
+              align="left"
+              class="text-grey-7 q-mb-md"
+              active-color="primary"
+              indicator-color="primary"
+            >
+              <q-tab name="summary" label="Summary" />
+              <q-tab name="inst-default" label="Instructions for GPT" />
+              <q-tab name="inst-gpt" label="Instructions for Deepseek" />
+            </q-tabs>
+
+            <!-- Instruction editor (per-agent Patient Summary prompt override) -->
+            <template v-if="summarySubTab === 'inst-default' || summarySubTab === 'inst-gpt'">
+              <div class="text-caption text-grey-7 q-mb-sm">
+                Per-agent Patient Summary instructions. Saved to your account;
+                used by this agent when generating a Patient Summary. The
+                <code>{patientIdentity}</code>, <code>{currentMedications}</code>,
+                <code>{encounters}</code>, and <code>{allergies}</code>
+                placeholders are substituted with the patient's data at request
+                time. Leave empty to revert to the default.
+              </div>
+              <div v-if="summaryInstr.loading" class="text-center q-pa-md">
+                <q-spinner size="1.5em" color="primary" />
+              </div>
+              <template v-else>
+                <q-input
+                  v-model="summaryInstr.text"
+                  type="textarea"
+                  autogrow
+                  filled
+                  class="bg-grey-1 rounded-borders"
+                  placeholder="(using the default Patient Summary prompt)"
+                />
+                <div class="row items-center q-gutter-sm q-mt-sm">
+                  <q-btn
+                    label="Save"
+                    color="primary"
+                    icon="save"
+                    :loading="summaryInstr.saving"
+                    :disable="summaryInstr.saving"
+                    @click="savePatientSummaryInstructions"
+                  />
+                  <q-btn
+                    flat
+                    label="Reset to default"
+                    color="grey-7"
+                    icon="restart_alt"
+                    :disable="summaryInstr.saving"
+                    @click="resetPatientSummaryInstructions"
+                  />
+                  <q-space />
+                  <div v-if="summaryInstr.status" class="text-caption text-grey-7">{{ summaryInstr.status }}</div>
+                </div>
+              </template>
+            </template>
+
+            <!-- Summary sub-tab: existing content unchanged. -->
+            <template v-else>
+            <!-- Dual-AI Summary Chooser: appears above the saved summary when
+                 the user clicks "Request New Summary". Both Private AIs run
+                 the same prompt in parallel; the user picks one. -->
+            <div v-if="loadingPair || summaryPair" class="q-mb-md">
+              <div v-if="loadingPair" class="text-center q-pa-md bg-grey-1 rounded-borders">
+                <q-spinner size="1.5em" color="primary" />
+                <div class="q-mt-sm text-body2">Generating from both Private AIs (this can take 30–90 seconds)…</div>
+              </div>
+              <template v-else-if="summaryPair">
+                <div class="text-caption text-grey-7 q-mb-sm">
+                  Compare the two summaries and choose one. The unchosen one is discarded.
+                </div>
+                <q-card v-for="(cand, idx) in [summaryPair.default, summaryPair.gpt]" :key="idx" flat bordered class="q-mb-sm">
+                  <q-card-section v-if="cand">
+                    <div class="row items-center justify-between q-mb-sm">
+                      <div>
+                        <div class="text-subtitle2">
+                          Private AI ({{ /gpt/i.test(String(cand.model || '')) ? 'GPT' : (/deepseek/i.test(String(cand.model || '')) ? 'Deepseek' : (cand.profileKey === 'gpt' ? 'Deepseek' : 'GPT')) }})
+                          <span v-if="cand.ok" class="text-caption text-grey-7 q-ml-sm">
+                            {{ cand.model }}{{ cand.generationSeconds ? ` · ${cand.generationSeconds}s` : '' }}
+                          </span>
+                        </div>
+                      </div>
+                      <q-btn
+                        v-if="cand.ok && cand.text"
+                        label="Choose this one"
+                        color="primary"
+                        dense
+                        @click="chooseSummaryCandidate(cand.text)"
+                      />
+                    </div>
+                    <div v-if="cand.ok && cand.text" class="text-body2 q-pa-sm bg-grey-1 rounded-borders">
+                      <vue-markdown :source="cand.text" />
+                    </div>
+                    <div v-else class="text-caption text-orange-9">
+                      Not available: {{ cand.reason || cand.error || 'unknown' }}.
+                      <span v-if="cand.reason === 'AGENT_NOT_READY' || cand.reason === 'GPT_NOT_READY'">
+                        The agent is still deploying — try Refresh in a minute.
+                      </span>
+                    </div>
+                  </q-card-section>
+                </q-card>
+                <div class="row q-gutter-sm q-mt-sm">
+                  <q-btn flat label="Discard both" color="grey-7" @click="dismissSummaryPair" />
+                  <q-space />
+                  <q-btn flat label="Regenerate" color="primary" icon="refresh" @click="requestNewSummaryPair" />
+                </div>
+              </template>
+            </div>
+
             <div v-if="loadingSummary" class="text-center q-pa-md">
               <q-spinner size="2em" />
               <div class="q-mt-sm">Loading patient summary...</div>
@@ -1058,10 +1170,10 @@
                 <q-btn
                   label="Request New Summary"
                   color="primary"
-                  @click="requestNewSummary"
+                  @click="requestNewSummaryPair"
                   icon="refresh"
-                  :disable="isEditingSummaryTab || isSavingSummary"
-                  :loading="loadingSummary"
+                  :disable="isEditingSummaryTab || isSavingSummary || loadingPair"
+                  :loading="loadingPair"
                 />
               </div>
             </div>
@@ -1070,14 +1182,16 @@
               <q-icon name="description" size="3em" />
               <div class="q-mt-sm">No patient summary found</div>
               <div class="q-mt-md">
-                <q-btn 
-                  label="Request Summary" 
-                  color="primary" 
-                  @click="requestNewSummary"
+                <q-btn
+                  label="Request Summary"
+                  color="primary"
+                  @click="requestNewSummaryPair"
                   icon="add"
+                  :loading="loadingPair"
                 />
               </div>
             </div>
+            </template>
           </q-tab-panel>
         </q-tab-panels>
       </q-card-section>
@@ -1109,36 +1223,11 @@
       </q-card>
     </q-dialog>
 
-    <!-- Current Medications Mismatch Warning -->
-    <q-dialog v-model="showMedsMismatchDialog" persistent>
-      <q-card style="min-width: 420px; max-width: 560px">
-        <q-card-section>
-          <div class="text-h6 text-negative">
-            <q-icon name="warning" class="q-mr-sm" />
-            Medications Mismatch
-          </div>
-        </q-card-section>
-        <q-card-section class="q-pt-none text-body2">
-          The Current Medications section in the Patient Summary does not match
-          your verified Current Medications list. An inconsistent Patient Summary
-          could lead to incorrect medical information being shared.
-        </q-card-section>
-        <q-card-actions align="right" class="q-gutter-sm">
-          <q-btn
-            flat
-            label="I UNDERSTAND"
-            color="grey-8"
-            @click="handleMedsMismatchAcknowledge"
-          />
-          <q-btn
-            unelevated
-            label="UPDATE"
-            color="primary"
-            @click="handleMedsMismatchUpdate"
-          />
-        </q-card-actions>
-      </q-card>
-    </q-dialog>
+    <!-- (The "Medications Mismatch" modal that previously offered an
+         I UNDERSTAND / UPDATE choice was removed: when verified Current
+         Medications exist and disagree with the Patient Summary, the
+         summary is auto-patched in place. See checkMedicationsConsistency
+         + handleMedsMismatchUpdate.) -->
 
     <!-- PDF Viewer Modal -->
     <PdfViewerModal
@@ -1404,7 +1493,8 @@ const agentError = ref('');
 const agentInstructions = ref('');
 const editMode = ref(false);
 const editedInstructions = ref('');
-// Private AI agent profiles (Deepseek = 'default', GPT = 'gpt'). The
+// Private AI agent profiles (GPT = 'default' [primary], Deepseek = 'gpt'
+// [secondary] — profile keys kept for historical reasons; see auth.js). The
 // My AI Agent tab shows one sub-tab per profile, each with its own
 // system prompt + KB-attach toggle, all keyed by activeAgentProfile.
 const agentProfilesList = ref<Array<{ key: string; label: string }>>([]);
@@ -5198,6 +5288,169 @@ const loadPatientSummary = async () => {
   }
 };
 
+/* ── Dual-AI Patient Summary chooser ──────────────────────────────────
+ * "Request New Summary" runs the prompt against BOTH Private AIs
+ * (Deepseek + GPT) in parallel via /api/patient-summary/generate-pair and
+ * lets the user pick one with "Choose this one". Each candidate carries
+ * the model name + generation time so the comparison is transparent.
+ * Choosing routes through the existing handleReplaceSummary save flow
+ * (auto-saves to an empty slot, or shows the Replace dialog when full).
+ */
+interface SummaryCandidate {
+  ok: boolean; profileKey: string; model: string;
+  text?: string; error?: string; reason?: string; status?: number;
+  generationSeconds?: number;
+}
+const summaryPair = ref<{ generatedAt: string; default: SummaryCandidate | null; gpt: SummaryCandidate | null } | null>(null);
+const loadingPair = ref(false);
+const pairError = ref('');
+
+/* ── Patient Summary sub-tabs ─────────────────────────────────────────
+ * "Summary" + "Instructions for Deepseek" + "Instructions for GPT".
+ * Each instruction tab edits the per-agent Patient Summary prompt
+ * (userDoc.agentProfiles[profileKey].patientSummaryPrompt). Empty saves
+ * clear the override and revert to the Layer-2 default.
+ */
+const summarySubTab = ref<'summary' | 'inst-default' | 'inst-gpt'>('summary');
+const summaryInstr = ref<{ loading: boolean; saving: boolean; profileKey: string; text: string; defaultText: string; status: string }>({
+  loading: false, saving: false, profileKey: 'default', text: '', defaultText: '', status: ''
+});
+
+const loadPatientSummaryInstructions = async (profileKey: 'default' | 'gpt') => {
+  if (!props.userId) return;
+  summaryInstr.value = { loading: true, saving: false, profileKey, text: '', defaultText: '', status: '' };
+  try {
+    const r = await fetch(`/api/agent-instructions/patient-summary?userId=${encodeURIComponent(props.userId)}&profileKey=${profileKey}`, { credentials: 'include' });
+    const d = await r.json().catch(() => ({}));
+    if (r.ok && d.success) {
+      summaryInstr.value = {
+        loading: false, saving: false,
+        profileKey,
+        // If no override is set, pre-fill the editor with the default so the
+        // user can see/edit the current template rather than starting blank.
+        text: (d.override && d.override.trim()) ? d.override : (d.default || ''),
+        defaultText: d.default || '',
+        status: d.override ? 'Custom override saved' : 'Using default'
+      };
+    } else {
+      summaryInstr.value = { loading: false, saving: false, profileKey, text: '', defaultText: '', status: d.error || 'Failed to load' };
+    }
+  } catch (err) {
+    summaryInstr.value = { loading: false, saving: false, profileKey, text: '', defaultText: '', status: err instanceof Error ? err.message : 'Failed to load' };
+  }
+};
+
+const savePatientSummaryInstructions = async () => {
+  if (!props.userId) return;
+  const profileKey = summaryInstr.value.profileKey;
+  // If the user left the editor identical to the default, save as a clear
+  // (null) so the override doesn't stick around as redundant noise.
+  const text = summaryInstr.value.text;
+  const isDefault = text.trim() === (summaryInstr.value.defaultText || '').trim();
+  summaryInstr.value.saving = true;
+  summaryInstr.value.status = 'Saving…';
+  try {
+    const r = await fetch('/api/agent-instructions/patient-summary', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify({ userId: props.userId, profileKey, prompt: isDefault ? '' : text })
+    });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok || d.success === false) throw new Error(d.error || `HTTP ${r.status}`);
+    summaryInstr.value.status = d.cleared ? 'Reverted to default' : 'Saved';
+    if ($q?.notify) $q.notify({ type: 'positive', message: d.cleared ? 'Reverted to default Patient Summary prompt' : 'Patient Summary instructions saved', timeout: 2500 });
+  } catch (err) {
+    summaryInstr.value.status = err instanceof Error ? err.message : 'Save failed';
+    if ($q?.notify) $q.notify({ type: 'negative', message: summaryInstr.value.status, timeout: 5000 });
+  } finally {
+    summaryInstr.value.saving = false;
+  }
+};
+
+const resetPatientSummaryInstructions = async () => {
+  if (!props.userId) return;
+  const profileKey = summaryInstr.value.profileKey;
+  summaryInstr.value.saving = true;
+  summaryInstr.value.status = 'Clearing override…';
+  try {
+    const r = await fetch('/api/agent-instructions/patient-summary', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify({ userId: props.userId, profileKey, prompt: '' })
+    });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok || d.success === false) throw new Error(d.error || `HTTP ${r.status}`);
+    // After clearing, reload to pre-fill with the default body again.
+    await loadPatientSummaryInstructions(profileKey === 'gpt' ? 'gpt' : 'default');
+  } catch (err) {
+    summaryInstr.value.status = err instanceof Error ? err.message : 'Reset failed';
+  } finally {
+    summaryInstr.value.saving = false;
+  }
+};
+
+// Switch to an instruction tab → fetch its current override.
+watch(summarySubTab, (tab) => {
+  if (tab === 'inst-default') void loadPatientSummaryInstructions('default');
+  else if (tab === 'inst-gpt') void loadPatientSummaryInstructions('gpt');
+});
+
+const requestNewSummaryPair = async () => {
+  if (!props.userId) return;
+  loadingPair.value = true;
+  pairError.value = '';
+  summaryPair.value = null;
+  try {
+    const res = await fetch('/api/patient-summary/generate-pair', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify({ userId: props.userId })
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || data.success === false) {
+      throw new Error(data.error || `HTTP ${res.status}`);
+    }
+    summaryPair.value = {
+      generatedAt: data.generatedAt || new Date().toISOString(),
+      default: data.default || null,
+      gpt: data.gpt || null
+    };
+  } catch (err) {
+    pairError.value = err instanceof Error ? err.message : 'Failed to generate summaries';
+    if ($q && typeof $q.notify === 'function') {
+      $q.notify({ type: 'negative', message: pairError.value, timeout: 5000 });
+    }
+  } finally {
+    loadingPair.value = false;
+  }
+};
+
+const chooseSummaryCandidate = async (text: string) => {
+  if (!text || !text.trim()) return;
+  const trimmed = text.trim();
+  // Reuse the existing save path: auto-save to an empty slot if available,
+  // otherwise prompt the user to pick which existing summary to replace.
+  const summaryCount = patientSummaries.value.length;
+  if (summaryCount < 3) {
+    await handleReplaceSummary('newest', trimmed);
+  } else {
+    savedCurrentSummaryForUndo.value = patientSummaries.value[patientSummaries.value.length - 1] || null;
+    newSummaryToReplace.value = trimmed;
+    showReplaceSummaryDialog.value = true;
+  }
+  // Clear the chooser — the chosen summary now lives in patientSummary.
+  summaryPair.value = null;
+  pairError.value = '';
+};
+
+const dismissSummaryPair = () => {
+  summaryPair.value = null;
+  pairError.value = '';
+};
+
 const requestNewSummary = async () => {
   // Guard: verify session is ready before calling agent endpoint
   if (!props.userId) {
@@ -5353,14 +5606,19 @@ const checkMedicationsConsistency = async () => {
     const normalizedSummary = normalizeMedsText(medsFromSummary);
 
     if (normalizedList !== normalizedSummary) {
-      showMedsMismatchDialog.value = true;
-      // Log to setup log
+      // The Patient Summary disagrees with the user's Validated Current
+      // Medications list. The verified list is always authoritative — auto-
+      // patch the summary in place, no modal prompt (the previous
+      // "Medications Mismatch" dialog with UPDATE / I UNDERSTAND buttons
+      // is gone; an inconsistent summary is unsafe enough that we just fix
+      // it). The user still sees a positive toast.
       fetch('/api/wizard-log', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
-        body: JSON.stringify({ userId: props.userId, event: 'Dialog: Medications Mismatch shown', details: {} })
+        body: JSON.stringify({ userId: props.userId, event: 'Patient Summary auto-updated with verified Current Medications (mismatch detected)', details: {} })
       }).catch(() => {});
+      await handleMedsMismatchUpdate();
     }
   } catch (err) {
     console.warn('[MyStuff] Failed to check medications consistency:', err);
@@ -5599,17 +5857,9 @@ const updateSummaryWithVerifiedMeds = async () => {
   }
 };
 
-/**
- * Handle I UNDERSTAND from the mismatch dialog: user accepts the difference.
- */
-const handleMedsMismatchAcknowledge = () => {
-  showMedsMismatchDialog.value = false;
-  medsMismatchAcknowledged.value = true;
-  fetch('/api/wizard-log', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'include',
-    body: JSON.stringify({ userId: props.userId, event: 'Dialog: Medications Mismatch — user chose I UNDERSTAND', details: {} })
-  }).catch(() => {});
-};
+// (handleMedsMismatchAcknowledge removed with the Medications Mismatch
+// dialog — when verified meds differ from the Patient Summary we now
+// auto-patch in checkMedicationsConsistency, no user prompt.)
 
 const saveSummaryFromTab = async () => {
   if (!props.userId) {

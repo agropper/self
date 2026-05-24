@@ -22,6 +22,7 @@ import { moveObjectWithVerify } from './utils/spaces-move.js';
 import { deleteObjectWithLog } from './utils/spaces-ops.js';
 import { ChatClient } from '../lib/chat-client/index.js';
 import { findUserAgent, getOrCreateAgentApiKey } from './utils/agent-helper.js';
+import { getClinicalPrompt } from './utils/clinical-prompts.js';
 import { normalizeStorageEnv, getSpacesEndpoint, getSpacesBucketName, getSpacesRegion } from './utils/storage-config.js';
 import { getDoRegion, getPort } from './utils/new-agent-config.js';
 import { getOrCreateOpenSearchDatabaseId } from './utils/opensearch-config.js';
@@ -3512,15 +3513,16 @@ async function provisionUserAsync(userId, token) {
       projectId = await getProjectIdForGenAI(doClient) || projectId;
     }
 
-    // PREFERRED PATH: look up Deepseek V4 Pro in the DO catalog FIRST.
-    // Only fall back to an existing agent's model if the catalog lookup fails.
+    // PREFERRED PATH: look up GPT-OSS-120B (the primary model) in the DO
+    // catalog FIRST. Only fall back to an existing agent's model if the
+    // catalog lookup fails.
     if (!isValidUUID(modelId)) {
       try {
         const modelsResponse = await doClient.request('/v2/gen-ai/models');
         const models = modelsResponse.models || modelsResponse.data?.models || [];
         if (models.length > 0) {
           const preferredModel = models.find(m =>
-            m.inference_name === 'deepseek-v4-pro' || m.name === 'Deepseek V4 Pro' || m.id === 'deepseek-v4-pro'
+            m.inference_name === 'openai-gpt-oss-120b' || m.name === 'OpenAI GPT-oss-120b' || m.id === 'openai-gpt-oss-120b'
           );
           if (preferredModel && preferredModel.uuid && isValidUUID(preferredModel.uuid)) {
             modelId = preferredModel.uuid;
@@ -4381,7 +4383,7 @@ async function provisionUserAsync(userId, token) {
               const response = await agentProvider.chat(
                 [{ role: 'user', content: prompt }],
                 { 
-                  model: agentModelName || 'deepseek-v4-pro',
+                  model: agentModelName || 'openai-gpt-oss-120b',
                   stream: false
                 }
               );
@@ -4471,7 +4473,7 @@ async function provisionUserAsync(userId, token) {
 
             const summaryResponse = await agentProvider.chat(
               [{ role: 'user', content: summaryPrompt }],
-              { model: agentModelName || 'deepseek-v4-pro' }
+              { model: agentModelName || 'openai-gpt-oss-120b' }
             );
 
             const summary = summaryResponse.content || summaryResponse.text || '';
@@ -8713,7 +8715,7 @@ async function deleteUserAndResources(userId, options = {}) {
           }
         }
       }
-      // Explicitly delete the secondary "Private AI (GPT)" agent. (It
+      // Explicitly delete the secondary "Private AI (Deepseek)" agent. (It
       // is also caught by the orphan scan below since its name matches
       // `${userId}-agent-`, but delete it directly so it goes even if
       // the naming convention ever changes.)
@@ -9662,7 +9664,7 @@ app.put('/api/account/rehydrate', async (req, res) => {
       }
     }
 
-    // Rebuild the SECONDARY "Private AI (GPT)" agent too if its backed-up
+    // Rebuild the SECONDARY "Private AI (Deepseek)" agent too if its backed-up
     // id no longer resolves (Destroy Cloud Account removed it). Its KB is
     // re-attached by the post-restore /api/chat/providers poll once the
     // KB exists. Best-effort — never fail the whole restore over it.
@@ -10629,18 +10631,17 @@ app.post('/api/generate-patient-summary', async (req, res) => {
       baseURL: userDoc.agentEndpoint
     });
 
-    // Build prompt - simple trigger, rely on agent instruction text for format
-    // Include Current Medications if available (user-reviewed list takes precedence)
-    let summaryPrompt = 'Please generate a patient summary.';
-    
-    if (userDoc.currentMedications && userDoc.currentMedications.trim().length > 0) {
-      summaryPrompt += `\n\nUse this as the authoritative source for Current Medications (the patient has reviewed and confirmed this list):\n\n${userDoc.currentMedications}`;
-    }
-    
+    // Use the shared Patient Summary prompt builder so the manual "Request
+    // New Summary" produces the same structured output as the wizard draft
+    // (Layer-2 spec + verified currentMedications + past-12mo encounters
+    // context). Replaces the old stub "Please generate a patient summary."
+    // that returned near-empty output once the system prompt was trimmed.
+    const summaryPrompt = await buildPatientSummaryPromptForUser(userId, userDoc);
+
     try {
       // chat() method signature: chat(messages, options, onUpdate)
       const chatMessages = [{ role: 'user', content: summaryPrompt }];
-      const chatOptions = { model: userDoc.agentModelName || 'deepseek-v4-pro', stream: false };
+      const chatOptions = { model: userDoc.agentModelName || 'openai-gpt-oss-120b', stream: false };
 
       let summaryResponse;
       try {
@@ -10718,6 +10719,444 @@ app.post('/api/generate-patient-summary', async (req, res) => {
   }
 });
 
+/**
+ * Build the per-request Patient Summary prompt for a user. Single source
+ * of truth used by EVERY summary endpoint (the wizard draft, the manual
+ * "Request New Summary", and the dual-AI generate-pair). Substitutes the
+ * Layer-2 `patient-summary.draft` prompt with:
+ *   {currentMedications} — the verified meds block (authoritative), or ''
+ *   {encounters}         — past-12-month deterministic encounters list, or ''
+ * Returns the substituted prompt string. Falls back to a minimal default
+ * if Layer 2 is missing/broken.
+ */
+/**
+ * Extract Apple Health "Out of Range" lab observations from the structured
+ * pdfjs markdown of an AH PDF (produced by extractPdfWithPages — pdf-parse
+ * does NOT preserve the red-text "OUT OF RANGE" annotation that AH uses).
+ * The Lab Results section is page-segmented (`## Page N`) and dated lines
+ * like "Apr 8, 2026   Mass General Brigham" head each lab visit; abnormal
+ * results are individual lines ending with "OUT   OF   RANG" (multi-space).
+ * Returns [{ isoDate, page, line }] in document order.
+ */
+function extractAppleHealthOorLabs(fullMarkdown) {
+  const out = [];
+  const lines = String(fullMarkdown || '').split('\n');
+  let currentPage = 1;
+  let currentIso = '';
+  let inLab = false;
+  // Walk the WHOLE document. `## Page N` markers can appear BEFORE the
+  // `### Lab Results` heading on the page where the section starts, so
+  // tracking page+section across the full document is more reliable than
+  // starting at the heading.
+  for (let i = 0; i < lines.length; i++) {
+    const t = (lines[i] || '').trim();
+    const pg = t.match(/^##\s*Page\s+(\d+)/i);
+    if (pg) { currentPage = parseInt(pg[1], 10); continue; }
+    if (/^#{3,4}\s*Lab Results\b/i.test(t)) { inLab = true; continue; }
+    // A sibling `###`-level heading ends the Lab Results section.
+    if (inLab && /^#{3,4}\s+/.test(t) && !/^#{3,4}\s*Lab Results/i.test(t)) {
+      inLab = false;
+      continue;
+    }
+    if (!inLab) continue;
+    const d = t.match(/^([A-Z][a-z]{2,8}\.?\s+\d{1,2},\s+\d{4})\b/);
+    if (d) {
+      const iso = toIsoDateMonthName(d[1]);
+      if (iso) currentIso = iso;
+      continue;
+    }
+    if (/OUT\s+OF\s+RANG/i.test(t)) {
+      // Strip the trailing "OUT OF RANG[E]?" marker (the final E is often
+      // dropped in the pdfjs text extraction) so the cleaned line shows just
+      // the observation.
+      const clean = t.replace(/\s+/g, ' ').replace(/\s*OUT\s+OF\s+RANG[A-Z]*\s*$/i, '').trim();
+      out.push({ isoDate: currentIso, page: currentPage, line: clean });
+    }
+  }
+  return out;
+}
+
+/** Lightweight "Mon D, YYYY" → YYYY-MM-DD parser (avoids importing). */
+function toIsoDateMonthName(s) {
+  const MONTHS = { jan:1, feb:2, mar:3, apr:4, may:5, jun:6, jul:7, aug:8, sep:9, oct:10, nov:11, dec:12 };
+  const m = String(s || '').match(/^([A-Za-z]{3,})\.?\s+(\d{1,2}),\s+(\d{4})$/);
+  if (!m) return '';
+  const mo = MONTHS[m[1].slice(0, 3).toLowerCase()];
+  if (!mo) return '';
+  return `${m[3]}-${String(mo).padStart(2,'0')}-${String(m[2]).padStart(2,'0')}`;
+}
+
+/** Substitute `{name}` placeholders. Unknown names pass through unchanged. */
+function substitutePromptPlaceholders(body, vars) {
+  return String(body || '').replace(/\{([A-Za-z0-9_]+)\}/g, (_, name) =>
+    Object.prototype.hasOwnProperty.call(vars, name) ? String(vars[name] ?? '') : `{${name}}`);
+}
+
+async function buildPatientSummaryPromptForUser(userId, userDoc, profileKey = 'default') {
+  const verifiedMeds = String(userDoc?.currentMedications || '').trim();
+  const currentMedications = verifiedMeds
+    ? `**Authoritative Current Medications (verified by the patient):**\n${verifiedMeds}\n\nUse this list AS-IS for the "Current Medications" section above — do NOT replace it with anything from the knowledge base.`
+    : '';
+
+  // Patient identity (name / DOB / age / sex) — deterministic from the
+  // PDF header (Apple Health "Date of birth: …" / Epic "DOB: …, Legal
+  // Sex: …"). Also: locate the Apple Health PDF so the {outOfRangeLabs}
+  // builder below can run pdfjs on it (pdf-parse misses the red-text
+  // "OUT OF RANGE" annotation; pdfjs preserves it).
+  let patientIdentity = '';
+  let ahBuf = null;
+  let hasAppleHealth = false;
+  try {
+    const { parsePatientIdentityFromText, renderPatientIdentityBlock } = await import('./utils/patient-identity.js');
+    const pdfParse = (await import('pdf-parse')).default;
+    const kbNamePI = getKBNameFromUserDoc(userDoc, userId);
+    const kbPrefixPI = kbNamePI ? `${userId}/${kbNamePI}/` : null;
+    const pdfFilesPI = (userDoc?.files || []).filter(f =>
+      f?.fileName && (!kbPrefixPI || (f.bucketKey || '').startsWith(kbPrefixPI)) &&
+      (/\.pdf$/i.test(f.fileName) || /pdf/i.test(f.fileType || ''))
+    );
+    hasAppleHealth = pdfFilesPI.some(f => f.isAppleHealth);
+    pdfFilesPI.sort((a, b) => (b.isAppleHealth ? 1 : 0) - (a.isAppleHealth ? 1 : 0));
+    let id = null;
+    for (const f of pdfFilesPI) {
+      if (!f.bucketKey) continue;
+      const buf = await readSpacesObjectBuffer(f.bucketKey);
+      if (!buf) continue;
+      try {
+        const data = await pdfParse(buf);
+        if (f.isAppleHealth && !ahBuf) ahBuf = buf;
+        if (!id) {
+          const parsed = parsePatientIdentityFromText(data.text);
+          if (parsed && (parsed.dobIso || parsed.name || parsed.sex)) id = parsed;
+        }
+        if (id && (ahBuf || !hasAppleHealth)) break;
+      } catch { /* try next file */ }
+    }
+    patientIdentity = renderPatientIdentityBlock(id);
+  } catch (e) {
+    console.warn(`[patient-summary] identity extraction failed: ${e?.message || e}`);
+  }
+
+  // Out-of-Range Labs:
+  //   • With an Apple Health PDF — run pdfjs (extractPdfWithPages) to get
+  //     the structured markdown that preserves the "OUT OF RANGE" annotation
+  //     (pdf-parse drops it). Build a clean per-lab list with date + page
+  //     and inject it AUTHORITATIVELY for the Out of Range Labs section.
+  //   • Without an AH PDF — emit a fixed instruction telling the agent to
+  //     write the standing "Ask the Private AI for lists or graphs of
+  //     specific lab results." note.
+  let outOfRangeLabs = '';
+  if (ahBuf) {
+    try {
+      const { extractPdfWithPages } = await import('./utils/pdf-parser.js');
+      const result = await extractPdfWithPages(ahBuf);
+      const fullMarkdown = (result?.pages || [])
+        .map(p => `## Page ${p.page}\n\n${p.markdown}`)
+        .join('\n\n---\n\n');
+      const oors = extractAppleHealthOorLabs(fullMarkdown);
+      if (oors.length > 0) {
+        const lines = oors.map(o =>
+          `- ${o.isoDate || '(undated)'} (p.${o.page}): ${o.line} [OUT OF RANGE]`
+        ).join('\n');
+        outOfRangeLabs = `**Authoritative Out-of-Range Labs (from Apple Health):**\n${lines}\n\nUse these AS-IS for the "Out of Range Labs" section above (drop the bracketed "[OUT OF RANGE]" flag and the leading dash if you reformat — the data is authoritative). If empty, write exactly: "No out-of-range labs in the provided records."`;
+      } else {
+        outOfRangeLabs = `**For the "Out of Range Labs" section above**, write exactly: "No out-of-range labs in the provided records."`;
+      }
+    } catch (e) {
+      console.warn(`[patient-summary] OOR extraction failed: ${e?.message || e}`);
+    }
+  } else if (!hasAppleHealth) {
+    outOfRangeLabs = `**For the "Out of Range Labs" section above**, write exactly this and nothing more: "Ask the Private AI for lists or graphs of specific lab results."`;
+  }
+
+  // Encounters context: extract deterministically from PDFs and keep the
+  // past 12 months so the agent has authoritative dated visits for the
+  // "Recent Visits (past 12 months)" section.
+  let encounters = '';
+  try {
+    const { extractEncountersFromText, parseAppleHealthClinicalNotes } = await import('./utils/encounters-extractor.js');
+    const pdfParse = (await import('pdf-parse')).default;
+    const kbName = getKBNameFromUserDoc(userDoc, userId);
+    const kbPrefix = kbName ? `${userId}/${kbName}/` : null;
+    const pdfFiles = (userDoc?.files || []).filter(f =>
+      f?.fileName && (!kbPrefix || (f.bucketKey || '').startsWith(kbPrefix)) &&
+      (/\.pdf$/i.test(f.fileName) || /pdf/i.test(f.fileType || ''))
+    );
+    const collected = [];
+    for (let i = 0; i < pdfFiles.length; i++) {
+      const f = pdfFiles[i];
+      if (!f.bucketKey) continue;
+      // Apple Health: prefer Clinical Notes sidecar (it IS the encounters).
+      if (f.isAppleHealth) {
+        const cn = await readSpacesTextObject(`${userId}/Lists/clinical_notes.md`);
+        if (cn) {
+          const enc = parseAppleHealthClinicalNotes(cn, `File ${i + 1}`);
+          if (enc.length > 0) { collected.push(...enc); continue; }
+        }
+      }
+      const buf = await readSpacesObjectBuffer(f.bucketKey);
+      if (!buf) continue;
+      try {
+        const data = await pdfParse(buf);
+        const { encounters: enc } = extractEncountersFromText(data.text, data.numpages, `File ${i + 1}`);
+        collected.push(...enc);
+      } catch { /* per-file best-effort */ }
+    }
+    const cutoff12 = new Date(); cutoff12.setMonth(cutoff12.getMonth() - 12);
+    const cutoff12Iso = cutoff12.toISOString().slice(0, 10);
+    const seen = new Map();
+    for (const e of collected) {
+      if (!e.isoDate || e.isoDate < cutoff12Iso) continue;
+      const key = `${e.isoDate}|${(e.description || '').toLowerCase()}`;
+      if (!seen.has(key)) seen.set(key, e);
+    }
+    const recent = [...seen.values()].sort((a, b) => (a.isoDate < b.isoDate ? 1 : a.isoDate > b.isoDate ? -1 : 0));
+    if (recent.length > 0) {
+      const lines = recent.map(e => `- ${e.isoDate} (${e.type || 'Visit'}) — ${e.description || ''}`).join('\n');
+      encounters = `**Recent encounters (past 12 months, reverse-chronological)** — extracted deterministically from this patient's records. Use these for the "Recent Visits (past 12 months)" section above and do NOT re-extract visits from the knowledge base for that section:\n${lines}`;
+    }
+  } catch (e) {
+    console.warn(`[patient-summary] encounters context build failed: ${e?.message || e}`);
+  }
+
+  // Allergies context: Apple Health's `allergies.md` is the authoritative
+  // structured list. If present, inject it so the agent uses it AS-IS for
+  // the Allergies section.
+  //
+  // Race-resistant fallback: during Setup, the PS draft is fired
+  // immediately after KB indexing completes, but the Lists/*.md sidecars
+  // (built by the Apple Health category-split pipeline) may not be
+  // written yet. If allergies.md is missing AND we already have the AH
+  // PDF markdown loaded in memory (`ahBuf`, used above for OOR labs),
+  // extract the "### Allergies" section inline so the placeholder is
+  // never empty just because the sidecar was racing.
+  let allergies = '';
+  try {
+    let allergiesMd = await readSpacesTextObject(`${userId}/Lists/allergies.md`);
+    if ((!allergiesMd || !allergiesMd.trim()) && ahBuf) {
+      try {
+        const { extractPdfWithPages } = await import('./utils/pdf-parser.js');
+        const { extractAllergiesFromAppleHealthMarkdown } = await import('./utils/ah-section-extract.js');
+        const result = await extractPdfWithPages(ahBuf);
+        const fullMd = (result?.pages || []).map(p => p.markdown).join('\n\n');
+        const section = extractAllergiesFromAppleHealthMarkdown(fullMd);
+        if (section && section.trim()) allergiesMd = section;
+      } catch (e) {
+        console.warn(`[patient-summary] inline AH allergies fallback failed: ${e?.message || e}`);
+      }
+    }
+    if (allergiesMd && allergiesMd.trim()) {
+      allergies = `**Authoritative Allergies (from Apple Health):**\n${allergiesMd.trim()}\n\nUse this for the "Allergies" section above — do NOT replace it with anything from the knowledge base.`;
+    }
+  } catch { /* no AH allergies — agent extracts from KB */ }
+
+  const vars = { patientIdentity, currentMedications, encounters, allergies, outOfRangeLabs };
+  // Per-agent override (My Stuff → Patient Summary → "Instructions for
+  // <Agent>"). When set, takes precedence over the Layer-2 default; the
+  // same `{placeholders}` are substituted so the user can rearrange the
+  // template and still get the injected data.
+  const override = userDoc?.agentProfiles?.[profileKey]?.patientSummaryPrompt;
+  if (override && override.trim()) {
+    return substitutePromptPlaceholders(override, vars);
+  }
+  return getClinicalPrompt('patient-summary.draft', vars)
+    || 'Please generate a patient summary.';
+}
+
+/**
+ * Dual-AI Patient Summary: run the shared Patient Summary prompt against
+ * BOTH Private AIs (Deepseek + GPT) in parallel and return both summaries
+ * so the user can compare and choose. Used by the manual "Request New
+ * Summary" button on the Patient Summary tab. Each agent result includes
+ * the model name and a per-agent error (so a single-agent failure or
+ * GPT-not-ready returns partial results, not 500).
+ */
+app.post('/api/patient-summary/generate-pair', async (req, res) => {
+  try {
+    const userId = resolveUserId(req, res);
+    if (!userId) return;
+    const userDoc = await cloudant.getDocument('maia_users', userId);
+    if (!userDoc) return res.status(404).json({ success: false, error: 'USER_NOT_FOUND' });
+    if (!userDoc.assignedAgentId || !userDoc.agentEndpoint) {
+      return res.status(400).json({ success: false, error: 'AGENT_NOT_CONFIGURED' });
+    }
+
+    // Build the prompt PER AGENT — each can have its own "Instructions for
+    // <Agent>" override (My Stuff → Patient Summary sub-tabs). When neither
+    // agent has an override, both get the same Layer-2 default; placeholder
+    // data (identity, meds, encounters, allergies) is the same for both.
+    const defaultPrompt = await buildPatientSummaryPromptForUser(userId, userDoc, 'default');
+    const gptPrompt     = await buildPatientSummaryPromptForUser(userId, userDoc, 'gpt');
+
+    // Resolve both agents. GPT may need lazy provisioning; on not-ready
+    // we surface a per-agent reason rather than failing the whole call.
+    const { DigitalOceanProvider } = await import('../lib/chat-client/providers/digitalocean.js');
+
+    // Default (Deepseek) — ensure key + KB attach + retrieval method.
+    if (!userDoc.agentApiKey) {
+      userDoc.agentApiKey = await getOrCreateAgentApiKey(doClient, cloudant, userId, userDoc.assignedAgentId);
+    }
+    if (userDoc.kbId && userDoc.assignedAgentId) {
+      try { await doClient.agent.attachKB(userDoc.assignedAgentId, userDoc.kbId); } catch { /* may already be attached */ }
+    }
+    await ensureAgentRetrieval(userDoc.assignedAgentId);
+
+    // GPT — resolve via the secondary-agent helper. Returns null when not ready.
+    let gptAgentId = userDoc.agentProfiles?.gpt?.agentId || null;
+    let gptEndpoint = userDoc.agentProfiles?.gpt?.endpoint || null;
+    let gptModel = userDoc.agentProfiles?.gpt?.modelName || 'openai-gpt-oss-120b';
+    let gptApiKey = userDoc.agentProfiles?.gpt?.apiKey || null;
+    let gptError = null;
+    if (!gptAgentId || !gptEndpoint) {
+      try {
+        const { ensureSecondaryAgent } = await import('./routes/auth.js');
+        const updated = await ensureSecondaryAgent(doClient, cloudant, userDoc);
+        gptAgentId = updated?.agentProfiles?.gpt?.agentId || null;
+        gptEndpoint = updated?.agentProfiles?.gpt?.endpoint || null;
+        gptApiKey = updated?.agentProfiles?.gpt?.apiKey || gptApiKey;
+        if (!gptEndpoint) gptError = 'GPT_NOT_READY';
+      } catch (e) {
+        gptError = e?.message || 'GPT_PROVISIONING_FAILED';
+      }
+    }
+    if (gptAgentId && gptEndpoint && !gptApiKey) {
+      try {
+        gptApiKey = await getOrCreateAgentApiKey(doClient, cloudant, userId, gptAgentId, 'gpt');
+      } catch (e) {
+        gptError = gptError || (e?.message || 'GPT_KEY_FAILED');
+      }
+    }
+    if (gptAgentId) {
+      try { if (userDoc.kbId) await doClient.agent.attachKB(gptAgentId, userDoc.kbId); } catch { /* may already be attached */ }
+      await ensureAgentRetrieval(gptAgentId);
+    }
+
+    // Each call is independently resilient (401/403 recreate-and-retry) and
+    // never throws past Promise.allSettled.
+    const callOne = async (apiKey, endpoint, modelName, profileKey, agentId, promptText) => {
+      const t0 = Date.now();
+      const msgs = [{ role: 'user', content: promptText }];
+      try {
+        let resp;
+        try {
+          resp = await new DigitalOceanProvider(apiKey, { baseURL: endpoint }).chat(msgs, { model: modelName, stream: false });
+        } catch (firstError) {
+          const sc = firstError.status || firstError.statusCode || 0;
+          if ((sc === 401 || sc === 403) && agentId) {
+            const { recreateAgentApiKey } = await import('./utils/agent-helper.js');
+            const newKey = await recreateAgentApiKey(doClient, cloudant, userId, agentId, profileKey);
+            resp = await new DigitalOceanProvider(newKey, { baseURL: endpoint }).chat(msgs, { model: modelName, stream: false });
+          } else {
+            throw firstError;
+          }
+        }
+        const text = (resp.content || resp.text || '').trim();
+        if (!text) throw new Error('Empty summary');
+        return { ok: true, profileKey, model: modelName, text, generationSeconds: Math.round(((Date.now() - t0) / 1000) * 10) / 10 };
+      } catch (e) {
+        const sc = e.status || e.statusCode || 0;
+        return { ok: false, profileKey, model: modelName, error: e?.message || 'error', status: sc || undefined, reason: (sc === 401 || sc === 403) ? 'AGENT_NOT_READY' : undefined };
+      }
+    };
+
+    const tasks = [
+      callOne(userDoc.agentApiKey, userDoc.agentEndpoint, userDoc.agentModelName || 'openai-gpt-oss-120b', 'default', userDoc.assignedAgentId, defaultPrompt)
+    ];
+    if (gptAgentId && gptEndpoint && gptApiKey && !gptError) {
+      tasks.push(callOne(gptApiKey, gptEndpoint, gptModel, 'gpt', gptAgentId, gptPrompt));
+    }
+    const settled = await Promise.allSettled(tasks);
+    const results = settled.map(s => s.status === 'fulfilled' ? s.value : { ok: false, error: String(s.reason?.message || s.reason) });
+    const defaultResult = results.find(r => r.profileKey === 'default') || null;
+    const gptResult = results.find(r => r.profileKey === 'gpt')
+      || (gptError ? { ok: false, profileKey: 'gpt', model: gptModel, error: gptError, reason: 'GPT_NOT_READY' } : null);
+
+    try {
+      await appendUserProvisioningEvent(userId, {
+        event: 'patient-summary-pair-generated',
+        defaultOk: !!defaultResult?.ok,
+        gptOk: !!gptResult?.ok,
+        gptReason: gptResult?.reason || null
+      });
+    } catch { /* non-fatal */ }
+
+    res.json({
+      success: true,
+      generatedAt: new Date().toISOString(),
+      default: defaultResult,
+      gpt: gptResult
+    });
+  } catch (error) {
+    console.error('[patient-summary/generate-pair] error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+/**
+ * Per-agent Patient Summary prompt (override).
+ *
+ * Each Private AI agent can have its own Patient Summary instruction text
+ * stored at `userDoc.agentProfiles[profileKey].patientSummaryPrompt`. When
+ * set, it replaces the Layer-2 `patient-summary.draft` body for that agent
+ * (the `{patientIdentity} {currentMedications} {encounters} {allergies}`
+ * placeholders are still substituted). Edited from My Stuff → Patient
+ * Summary → "Instructions for <Agent>" sub-tabs.
+ */
+app.get('/api/agent-instructions/patient-summary', async (req, res) => {
+  try {
+    const userId = resolveUserId(req, res);
+    if (!userId) return;
+    const profileKey = req.query?.profileKey === 'gpt' ? 'gpt' : 'default';
+    const userDoc = await cloudant.getDocument('maia_users', userId);
+    if (!userDoc) return res.status(404).json({ success: false, error: 'USER_NOT_FOUND' });
+    const override = userDoc?.agentProfiles?.[profileKey]?.patientSummaryPrompt || null;
+    const def = getClinicalPrompt('patient-summary.draft', {}) || '';
+    res.json({
+      success: true,
+      profileKey,
+      override,
+      default: def,
+      effective: (override && override.trim()) ? override : def
+    });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+app.post('/api/agent-instructions/patient-summary', async (req, res) => {
+  try {
+    const userId = resolveUserId(req, res);
+    if (!userId) return;
+    const { profileKey: pkRaw, prompt } = req.body || {};
+    const profileKey = pkRaw === 'gpt' ? 'gpt' : 'default';
+    const incoming = typeof prompt === 'string' ? prompt : '';
+    // Empty string clears the override (revert to Layer-2 default).
+    const toStore = incoming.trim() ? incoming : null;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        const doc = await cloudant.getDocument('maia_users', userId);
+        if (!doc) return res.status(404).json({ success: false, error: 'USER_NOT_FOUND' });
+        if (!doc.agentProfiles) doc.agentProfiles = {};
+        if (!doc.agentProfiles[profileKey]) doc.agentProfiles[profileKey] = {};
+        if (toStore === null) {
+          delete doc.agentProfiles[profileKey].patientSummaryPrompt;
+        } else {
+          doc.agentProfiles[profileKey].patientSummaryPrompt = toStore;
+        }
+        doc.updatedAt = new Date().toISOString();
+        await cloudant.saveDocument('maia_users', doc);
+        return res.json({ success: true, profileKey, cleared: toStore === null });
+      } catch (e) {
+        if (e?.statusCode === 409 && attempt < 2) continue;
+        throw e;
+      }
+    }
+    res.status(500).json({ success: false, error: 'SAVE_CONFLICT' });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
 // Generate a DRAFT patient summary against the full KB and store it on userDoc.draftPatientSummary
 // (separate from the committed patientSummaries array). The wizard runs this after indexing
 // completes; the draft is NOT shown to the user until they verify medications and the summary.
@@ -10756,8 +11195,48 @@ app.post('/api/patient-summary/draft', async (req, res) => {
 
     const { DigitalOceanProvider } = await import('../lib/chat-client/providers/digitalocean.js');
     const agentProvider = new DigitalOceanProvider(userDoc.agentApiKey, { baseURL: userDoc.agentEndpoint });
-    const chatMessages = [{ role: 'user', content: 'Please generate a patient summary.' }];
-    const chatOptions = { model: userDoc.agentModelName || 'deepseek-v4-pro', stream: false };
+
+    // Synchronously ensure Apple Health Lists/*.md sidecars exist before
+    // building the prompt. Without this, Setup races the category-split
+    // pipeline and emits a PS with empty Allergies / Recent Visits
+    // sections (the fragility described in clinical-prompts.md). Helper
+    // is idempotent — a no-op if the sidecars are already in place.
+    try {
+      const { ensureAppleHealthListsBuilt } = await import('./utils/lists-builder.js');
+      const bucketUrl = getSpacesBucketName();
+      const bucketName = bucketUrl ? (bucketUrl.split('//')[1]?.split('.')[0] || 'maia') : null;
+      if (bucketName) {
+        const { S3Client } = await import('@aws-sdk/client-s3');
+        const s3Client = new S3Client({
+          endpoint: getSpacesEndpoint(),
+          region: 'us-east-1',
+          forcePathStyle: process.env.S3_FORCE_PATH_STYLE === 'true',
+          credentials: {
+            accessKeyId: process.env.DIGITALOCEAN_AWS_ACCESS_KEY_ID || process.env.SPACES_AWS_ACCESS_KEY_ID || '',
+            secretAccessKey: process.env.DIGITALOCEAN_AWS_SECRET_ACCESS_KEY || process.env.SPACES_AWS_SECRET_ACCESS_KEY || ''
+          }
+        });
+        const outcome = await ensureAppleHealthListsBuilt(userId, userDoc, {
+          readSpacesObjectBuffer, readSpacesTextObject,
+          s3Client, bucketName, cloudant
+        });
+        if (outcome === 'built') {
+          // Re-fetch userDoc so the prompt builder sees the freshly-set
+          // appleHealthCategoriesBuiltAt / isAppleHealth flags.
+          const refreshed = await cloudant.getDocument('maia_users', userId);
+          if (refreshed) userDoc = refreshed;
+        }
+      }
+    } catch (e) {
+      console.warn(`[DRAFT SUMMARY] AH lists pre-build failed (non-fatal): ${e?.message || e}`);
+    }
+
+    // Build the prompt via the shared helper (Layer-2 spec + currentMedications
+    // + past-12mo encounters context). Used by every summary endpoint so they
+    // can never drift.
+    const draftPrompt = await buildPatientSummaryPromptForUser(userId, userDoc);
+    const chatMessages = [{ role: 'user', content: draftPrompt }];
+    const chatOptions = { model: userDoc.agentModelName || 'openai-gpt-oss-120b', stream: false };
 
     let chatResp;
     try {
@@ -10867,7 +11346,8 @@ app.post('/api/medications/extract', async (req, res) => {
 
     let prompt;
     if (mode === 'from-summary') {
-      prompt = `Below is a patient summary. Extract the Current Medications as a simple list, one medication per line, no commentary. Follow your system instructions for any medications that must be omitted or redacted.\n\n${draftText}`;
+      prompt = getClinicalPrompt('current-medications.extract.from-summary', { draftText })
+        || `Below is a patient summary. Extract the Current Medications as a simple list, one medication per line, no commentary. Follow your system instructions for any medications that must be omitted or redacted.\n\n${draftText}`;
     } else {
       const appleHealthFile = (userDoc.files || []).find(f => f && f.isAppleHealth);
       if (!appleHealthFile || !appleHealthFile.fileName) {
@@ -10896,7 +11376,8 @@ app.post('/api/medications/extract', async (req, res) => {
       const contextBlock = Array.isArray(contextMeds) && contextMeds.length > 0
         ? `\n\nFor context, these medications were identified in the patient summary you generated earlier from the full knowledge base:\n${contextMeds.map(m => '- ' + m).join('\n')}\n\nUse this list as a starting point, then reconcile and refine against the Apple Health data below.\n`
         : '';
-      prompt = `Below are this patient's dated medication records from their Apple Health export. Identify the patient's CURRENT medications: for each distinct drug, the most recent dated entry reflects the current prescription (and current strength). Exclude entries that are clearly one-time inpatient/anesthesia administrations (e.g. propofol, fentanyl, IV infusions) and older strengths that have been superseded by a newer one. Apply your system instructions for any medications that must be omitted or redacted (e.g. sexual-function drugs/syringes).
+      prompt = getClinicalPrompt('current-medications.extract.apple-health', { appleHealthMd, contextBlock })
+        || `Below are this patient's dated medication records from their Apple Health export. Identify the patient's CURRENT medications: for each distinct drug, the most recent dated entry reflects the current prescription (and current strength). Exclude entries that are clearly one-time inpatient/anesthesia administrations (e.g. propofol, fentanyl, IV infusions) and older strengths that have been superseded by a newer one. Apply your system instructions for any medications that must be omitted or redacted (e.g. sexual-function drugs/syringes).
 
 Output ONLY the list of current medications — one medication per line (name and current strength). Do NOT include the patient's name or age, any heading, any dates, any bullets, any bold, any blank lines, or any other commentary.${contextBlock}\n\n${appleHealthMd}`;
     }
@@ -10907,7 +11388,7 @@ Output ONLY the list of current medications — one medication per line (name an
 
     const { DigitalOceanProvider } = await import('../lib/chat-client/providers/digitalocean.js');
     const agentProvider = new DigitalOceanProvider(userDoc.agentApiKey, { baseURL: userDoc.agentEndpoint });
-    const chatOptions = { model: userDoc.agentModelName || 'deepseek-v4-pro', stream: false };
+    const chatOptions = { model: userDoc.agentModelName || 'openai-gpt-oss-120b', stream: false };
 
     let chatResp;
     try {
@@ -10987,6 +11468,10 @@ async function ensureAgentRetrieval(agentId) {
 }
 
 function buildWorksheetPrompt(legendLines, cutoffDate) {
+  // Prefer the editable Layer-2 prompt; fall back to the hardcoded text
+  // below if the config file is missing/broken so the flow never breaks.
+  const fromFile = getClinicalPrompt('worksheet.kb-retrieval', { legendLines, cutoffDate });
+  if (fromFile != null) return fromFile;
   return `You are building a Current Medications Worksheet from this patient's records in your knowledge base. Use ONLY information found in your knowledge base; never infer, assume, or add a medication that is not present. Include EVERY medication you find.
 
 Output a GitHub-flavored Markdown table with EXACTLY these columns — no title, no notes, no text before or after the table:
@@ -11018,6 +11503,8 @@ ${legendLines}`;
 // so both Deepseek and GPT produce complete tables. `ahFileTag` is the
 // "File N" legend tag for the Apple Health source file.
 function buildWorksheetPromptFromMarkdown(ahFileTag, medMarkdown, legendLines, cutoffDate) {
+  const fromFile = getClinicalPrompt('worksheet.apple-health-markdown', { ahFileTag, medMarkdown, legendLines, cutoffDate });
+  if (fromFile != null) return fromFile;
   return `Below are this patient's medication records, extracted directly from their Apple Health export (${ahFileTag}). Each entry shows a date, the medication name and strength, and the page number it appears on.
 
 Build a GitHub-flavored Markdown table with EXACTLY these columns — no title, no notes, no text before or after the table:
@@ -11077,6 +11564,8 @@ async function readSpacesTextObject(key) {
 // verbatim and must NOT pull dates from the document body (in particular
 // the repeating "Generated on …" footer date).
 function buildWorksheetPromptFromMedList(medListText, legendLines, cutoffDate) {
+  const fromFile = getClinicalPrompt('worksheet.epic-medication-list', { medListText, legendLines, cutoffDate });
+  if (fromFile != null) return fromFile;
   return `Below is this patient's medication list, extracted directly from the record. Each line gives the medication (name and strength), its most recent action and date (ordered or discontinued), and the page it appears on. These actions and dates are AUTHORITATIVE.
 
 Build a GitHub-flavored Markdown table with EXACTLY these columns — no title, no notes, no text before or after the table:
@@ -11181,11 +11670,11 @@ app.post('/api/medications/worksheet', async (req, res) => {
           userDoc = await ensureSecondaryAgent(doClient, cloudant, userDoc);
           gpt = userDoc.agentProfiles?.gpt;
         } catch (e) {
-          return res.status(202).json({ success: false, pending: true, reason: 'GPT_PROVISIONING', message: 'Provisioning Private AI (GPT)…' });
+          return res.status(202).json({ success: false, pending: true, reason: 'GPT_PROVISIONING', message: 'Provisioning Private AI (Deepseek)…' });
         }
         if (!gpt?.endpoint) {
           // Created but still deploying — caller should retry shortly.
-          return res.status(202).json({ success: false, pending: true, reason: 'GPT_DEPLOYING', message: 'Private AI (GPT) is deploying — try Refresh in a few minutes.' });
+          return res.status(202).json({ success: false, pending: true, reason: 'GPT_DEPLOYING', message: 'Private AI (Deepseek) is deploying — try Refresh in a few minutes.' });
         }
       }
       agentId = gpt.agentId;
@@ -11197,7 +11686,7 @@ app.post('/api/medications/worksheet', async (req, res) => {
       }
       agentId = userDoc.assignedAgentId;
       endpoint = userDoc.agentEndpoint;
-      model = userDoc.agentModelName || 'deepseek-v4-pro';
+      model = userDoc.agentModelName || 'openai-gpt-oss-120b';
     }
 
     // File legend from the indexed KB files (File 1..N). Server-supplied
@@ -11321,7 +11810,7 @@ app.post('/api/medications/worksheet', async (req, res) => {
             // Agent (e.g. the GPT one) is still deploying — return a structured
             // pending response, not a 500, and record it.
             await appendUserProvisioningEvent(userId, { event: 'meds-worksheet-pending', agentProfileKey: profileKey, reason: 'AGENT_NOT_READY', status: rsc });
-            return res.status(202).json({ success: false, pending: true, reason: 'AGENT_NOT_READY', agentProfileKey: profileKey, message: `Private AI (${profileKey === 'gpt' ? 'GPT' : 'Deepseek'}) is still deploying — try Refresh shortly.` });
+            return res.status(202).json({ success: false, pending: true, reason: 'AGENT_NOT_READY', agentProfileKey: profileKey, message: `Private AI (${profileKey === 'gpt' ? 'Deepseek' : 'GPT'}) is still deploying — try Refresh shortly.` });
           }
           throw retryError;
         }
@@ -11384,6 +11873,114 @@ app.get('/api/medications/worksheet', async (req, res) => {
   }
 });
 
+/**
+ * Resolve the patient's best dated medication source and return a unified,
+ * normalized medication list. Source priority:
+ *   1. Apple Health  (`Lists/medication_records.md`, parsed deterministically)
+ *   2. Epic / MGB    ("Medication List" entries extracted from PDFs)
+ *   3. none          (KB-only patient — no structured source available)
+ * Each med: { name, status:'active'|'discontinued', isoDate, page, fileTag }.
+ * Returns { mode, meds, legend }.
+ */
+async function resolvePatientMedicationSource(userId, userDoc) {
+  if (!userDoc) userDoc = await cloudant.getDocument('maia_users', userId);
+  if (!userDoc) return { mode: 'none', meds: [], legend: [] };
+
+  const kbName = getKBNameFromUserDoc(userDoc, userId);
+  const kbPrefix = kbName ? `${userId}/${kbName}/` : null;
+  const kbFiles = (userDoc.files || []).filter(f =>
+    f?.fileName && (!kbPrefix || (f.bucketKey || '').startsWith(kbPrefix))
+  );
+  const legend = kbFiles.map((f, i) => ({ tag: `File ${i + 1}`, fileName: f.fileName, bucketKey: f.bucketKey || null, isAppleHealth: !!f.isAppleHealth }));
+
+  // 1) Apple Health medication_records.md
+  const ahFileIdx = kbFiles.findIndex(f => f.isAppleHealth);
+  if (ahFileIdx !== -1) {
+    const medMd = await findMedicationRecordsMarkdown(userId);
+    if (medMd?.text) {
+      const { parseAppleHealthMedRecords } = await import('./utils/meds-extractor.js');
+      const meds = parseAppleHealthMedRecords(medMd.text, `File ${ahFileIdx + 1}`);
+      if (meds.length > 0) return { mode: 'apple-health', meds, legend };
+    }
+  }
+
+  // 2) Epic / MGB structured "Medication List" across PDFs
+  try {
+    const { extractEpicMedications } = await import('./utils/meds-extractor.js');
+    const pdfParse = (await import('pdf-parse')).default;
+    const pdfFiles = kbFiles.filter(f => /\.pdf$/i.test(f.fileName) || /pdf/i.test(f.fileType || ''));
+    const all = [];
+    for (let i = 0; i < kbFiles.length; i++) {
+      const f = kbFiles[i];
+      if (!pdfFiles.includes(f) || !f.bucketKey) continue;
+      const buf = await readSpacesObjectBuffer(f.bucketKey);
+      if (!buf) continue;
+      try {
+        const data = await pdfParse(buf);
+        const { meds } = extractEpicMedications(data.text, data.numpages, `File ${i + 1}`);
+        all.push(...meds);
+      } catch (e) {
+        console.warn(`[meds-source] Epic parse failed for ${f.fileName}: ${e?.message || e}`);
+      }
+    }
+    if (all.length > 0) return { mode: 'epic', meds: all, legend };
+  } catch (e) {
+    console.warn(`[meds-source] Epic extraction error: ${e?.message || e}`);
+  }
+
+  return { mode: 'none', meds: [], legend };
+}
+
+/**
+ * Unified Current Medications endpoint. Returns the deterministic Current
+ * meds (status=active, last date within 18 months, deduped by drug) from
+ * the best structured source — the same source the worksheets use. The
+ * client's verify/edit card pre-fills from `currentText`; on Verify, the
+ * card POSTs to /api/user-current-medications which writes
+ * userDoc.currentMedications (then consumed by the Patient Summary draft
+ * via the patient-summary.draft prompt's {currentMedications} placeholder).
+ */
+app.get('/api/medications/current', async (req, res) => {
+  try {
+    const userId = resolveUserId(req, res);
+    if (!userId) return;
+    const userDoc = await cloudant.getDocument('maia_users', userId);
+    if (!userDoc) return res.status(404).json({ success: false, error: 'USER_NOT_FOUND' });
+
+    const { mode, meds, legend } = await resolvePatientMedicationSource(userId, userDoc);
+    const cutoff = new Date();
+    cutoff.setMonth(cutoff.getMonth() - 18);
+    const cutoffDate = cutoff.toISOString().slice(0, 10);
+
+    // Dedupe by drug (latest entry wins), then keep only current candidates.
+    const { mergeMedications } = await import('./utils/meds-extractor.js');
+    const merged = mergeMedications(meds);
+    const candidates = merged.filter(m => m.status === 'active' && m.isoDate >= cutoffDate);
+
+    // Apply server-side redaction (mirrors the System Instructions
+    // "remove sexual-function meds" rule). The deterministic pipeline
+    // bypasses the agent, so we apply the rule here before the user sees
+    // the pre-filled list.
+    const { redactMedications } = await import('./utils/medication-redactor.js');
+    const { kept: currentMeds, redacted } = redactMedications(candidates);
+    const currentText = currentMeds.map(m => `- ${m.name}`).join('\n');
+
+    res.json({
+      success: true,
+      sourceMode: mode,
+      cutoffDate,
+      currentMeds,
+      currentText,
+      allMeds: merged,
+      legend,
+      redactedCount: redacted.length
+    });
+  } catch (error) {
+    console.error('[medications/current] error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
 // Encounters worksheet — a reverse-chronological list of clinical
 // encounters across ALL of the patient's source PDFs. Built
 // deterministically (no agent / no KB retrieval): each PDF is parsed,
@@ -11411,7 +12008,7 @@ app.post('/api/encounters/worksheet', async (req, res) => {
 
     const legend = pdfFiles.map((f, i) => ({ tag: `File ${i + 1}`, fileName: f.fileName, bucketKey: f.bucketKey || null }));
 
-    const { extractEncountersFromText, buildEncountersTable } = await import('./utils/encounters-extractor.js');
+    const { extractEncountersFromText, parseAppleHealthClinicalNotes, buildEncountersTable } = await import('./utils/encounters-extractor.js');
     const pdfParse = (await import('pdf-parse')).default;
 
     const allEncounters = [];
@@ -11420,6 +12017,16 @@ app.post('/api/encounters/worksheet', async (req, res) => {
       const f = pdfFiles[i];
       const tag = `File ${i + 1}`;
       if (!f.bucketKey) { modes[tag] = 'missing-key'; continue; }
+      // Apple Health files: prefer the structured Clinical Notes category
+      // sidecar (Lists/clinical_notes.md) — these ARE the encounters. Falls
+      // back to PDF parsing if the sidecar is missing.
+      if (f.isAppleHealth) {
+        const cn = await readSpacesTextObject(`${userId}/Lists/clinical_notes.md`);
+        if (cn) {
+          const enc = parseAppleHealthClinicalNotes(cn, tag);
+          if (enc.length > 0) { modes[tag] = 'apple-health-clinical-notes'; allEncounters.push(...enc); continue; }
+        }
+      }
       const buf = await readSpacesObjectBuffer(f.bucketKey);
       if (!buf) { modes[tag] = 'download-failed'; continue; }
       try {
@@ -11478,7 +12085,7 @@ app.get('/api/encounters/worksheet', async (req, res) => {
   }
 });
 
-// Ensure the secondary "Private AI (GPT)" agent is provisioned and report
+// Ensure the secondary "Private AI (Deepseek)" agent is provisioned and report
 // whether it has finished deploying (endpoint resolved). The Setup wizard
 // calls this and polls until ready:true so BOTH Private AIs exist before
 // Setup completes. Safe to call repeatedly (ensureSecondaryAgent is
