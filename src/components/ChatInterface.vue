@@ -66,6 +66,13 @@
                 style="display: inline-block; max-width: 80%;"
                 @click="handlePageLinkClick"
               >
+                <div v-if="msg.reasoningContent && !isStreaming" class="reasoning-section">
+                  <div class="reasoning-toggle" @click="toggleReasoning(idx)">
+                    <span class="reasoning-arrow">{{ expandedReasoning[idx] ? '▼' : '▶' }}</span>
+                    {{ expandedReasoning[idx] ? 'Hide reasoning' : 'Show reasoning' }}
+                  </div>
+                  <div v-if="expandedReasoning[idx]" class="reasoning-content">{{ msg.reasoningContent }}</div>
+                </div>
                 <div v-html="messageDisplayHtml[idx]"></div>
                 <div class="q-mt-sm">
                   <q-btn
@@ -131,7 +138,27 @@
           </template>
           
           <div v-if="isStreaming" class="text-grey-6">
-            Thinking... <q-spinner-dots size="sm" />
+            <template v-if="streamingReasoning && !reasoningDone">
+              <div class="reasoning-section streaming">
+                <div class="reasoning-toggle">
+                  <q-spinner-dots size="sm" /> Reasoning...
+                </div>
+                <div ref="streamingReasoningRef" class="reasoning-content">{{ streamingReasoning }}</div>
+              </div>
+            </template>
+            <template v-else-if="reasoningDone">
+              <div class="reasoning-section">
+                <div class="reasoning-toggle" @click="streamingReasoningExpanded = !streamingReasoningExpanded">
+                  <span class="reasoning-arrow">{{ streamingReasoningExpanded ? '▼' : '▶' }}</span>
+                  {{ streamingReasoningExpanded ? 'Hide reasoning' : 'Show reasoning' }}
+                </div>
+                <div v-if="streamingReasoningExpanded" class="reasoning-content">{{ streamingReasoning }}</div>
+              </div>
+              Generating response... <q-spinner-dots size="sm" />
+            </template>
+            <template v-else>
+              Thinking... <q-spinner-dots size="sm" />
+            </template>
           </div>
         </div>
         
@@ -241,6 +268,7 @@
                 map-options
                 dense
                 outlined
+                behavior="menu"
                 style="min-width: 150px"
               >
                 <q-tooltip>Select AI provider: Private AI uses your knowledge base, Public AIs see only chat content</q-tooltip>
@@ -593,6 +621,7 @@
       :rehydration-active="props.rehydrationActive"
       :wizard-active="wizardActive"
       :meds-needs-verify="medsNeedsVerify"
+      :show-close-prompt="showWorkbookClosePrompt"
       @chat-selected="handleChatSelected"
       @indexing-started="handleIndexingStarted"
       @indexing-status-update="handleIndexingStatusUpdate"
@@ -813,6 +842,7 @@ interface Message {
   authorLabel?: string;
   authorType?: 'user' | 'assistant';
   providerKey?: string;
+  reasoningContent?: string;
 }
 
 interface User {
@@ -899,6 +929,14 @@ const originalMessages = ref<Message[]>([]); // Store original unfiltered messag
 const trulyOriginalMessages = ref<Message[]>([]); // Store truly original messages that never get overwritten (for filtering)
 const inputMessage = ref('');
 const isStreaming = ref(false);
+const streamingReasoning = ref('');
+const reasoningDone = ref(false);
+const streamingReasoningExpanded = ref(false);
+const streamingReasoningRef = ref<HTMLElement | null>(null);
+const expandedReasoning = ref<Record<number, boolean>>({});
+const toggleReasoning = (idx: number) => {
+  expandedReasoning.value[idx] = !expandedReasoning.value[idx];
+};
 const uploadedFiles = ref<UploadedFile[]>([]);
 const fileInput = ref<HTMLInputElement | null>(null);
 const isUploadingFile = ref(false);
@@ -909,6 +947,7 @@ const pdfInitialPage = ref<number | undefined>(undefined);
 const showSavedChatsModal = ref(false);
 const savedChatCount = ref(0);
 const showMyStuffDialog = ref(false);
+const showWorkbookClosePrompt = ref(false);
 const myStuffInitialTab = ref<string>('files');
 const myStuffDialogRef = ref<InstanceType<typeof MyStuffDialog> | null>(null);
 
@@ -1735,13 +1774,24 @@ watch(() => showPdfViewer.value, (isOpen) => {
   }
 });
 
-// Provider labels map
+// Provider labels map — updated dynamically from providerModels API response
 const providerLabels: Record<string, string> = {
   digitalocean: 'Private AI',
   anthropic: 'Anthropic',
   openai: 'ChatGPT',
   gemini: 'Gemini',
   deepseek: 'DeepSeek'
+};
+
+const modelDisplayNames: Record<string, string> = {
+  'anthropic-claude-4.6-sonnet': 'Claude Sonnet 4.6',
+  'anthropic-claude-5-sonnet': 'Claude Sonnet 5',
+  'openai-gpt-4o': 'GPT-4o',
+  'openai-gpt-5.5': 'GPT-5.5',
+  'openai-gpt-oss-120b': 'GPT OSS 120B',
+  'deepseek-v4-pro': 'DeepSeek V4 Pro',
+  'deepseek-r1-distill-llama-70b': 'DeepSeek R1 70B',
+  'nvidia-nemotron-3-super-120b': 'Nemotron 120B',
 };
 
 // Private AI profiles reported by /api/chat/providers. Each ready
@@ -2084,6 +2134,15 @@ const loadProviders = async () => {
     }
     
     providers.value = availableProviders;
+
+    if (data.providerModels) {
+      for (const [key, model] of Object.entries(data.providerModels)) {
+        if (model && modelDisplayNames[model as string]) {
+          providerLabels[key] = modelDisplayNames[model as string];
+        }
+      }
+    }
+
     privateAiProfiles.value = normalizePrivateAiProfiles(
       Array.isArray(data.privateAiProfiles) ? data.privateAiProfiles : []
     );
@@ -2219,6 +2278,9 @@ const sendMessage = async () => {
   // Defer snapshot updates so save buttons stay enabled until the user chooses how to persist the chat
   
   isStreaming.value = true;
+  streamingReasoning.value = '';
+  reasoningDone.value = false;
+  streamingReasoningExpanded.value = false;
 
   try {
     // If this is a patient summary request, check for existing summary first
@@ -2512,13 +2574,15 @@ const sendMessage = async () => {
     // network) wouldn't hit that — the client-side timeout is the
     // belt-and-suspenders.
     const STREAM_IDLE_TIMEOUT_MS = 90_000;
+    const STREAM_REASONING_TIMEOUT_MS = 300_000;
     const timeoutFor = (ms: number) => new Promise<{ done: true; value: undefined; timeout: true }>(resolve => {
       setTimeout(() => resolve({ done: true, value: undefined, timeout: true }), ms);
     });
     while (true) {
+      const idleMs = streamingReasoning.value ? STREAM_REASONING_TIMEOUT_MS : STREAM_IDLE_TIMEOUT_MS;
       const result = await Promise.race([
         reader!.read().then(r => ({ ...r, timeout: false })),
-        timeoutFor(STREAM_IDLE_TIMEOUT_MS)
+        timeoutFor(idleMs)
       ]) as { done: boolean; value?: Uint8Array; timeout?: boolean };
       if (result.timeout) {
         try { reader!.cancel(); } catch { /* ignore */ }
@@ -2536,11 +2600,23 @@ const sendMessage = async () => {
           try {
             const data = JSON.parse(line.slice(6));
             
+            if (data.reasoning) {
+              streamingReasoning.value += data.reasoning;
+              assistantMessage.reasoningContent = streamingReasoning.value;
+            }
+
             if (data.delta) {
+              if (streamingReasoning.value && !reasoningDone.value) {
+                reasoningDone.value = true;
+              }
               assistantMessage.content += data.delta;
             }
-            
+
             if (data.isComplete) {
+              if (data.reasoningContent) {
+                assistantMessage.reasoningContent = data.reasoningContent;
+              }
+              streamingReasoning.value = '';
               isStreaming.value = false;
 
               // Save patient summary if this was a summary request
@@ -2567,6 +2643,12 @@ const sendMessage = async () => {
     }
 
     isStreaming.value = false;
+
+    // Guard: if the stream ended without any content, show an error
+    // instead of leaving a blank bubble.
+    if (!assistantMessage.content.trim()) {
+      assistantMessage.content = `Error: ${assistantLabelForKey(providerKey)} returned an empty response. The service may be temporarily unavailable — try again or choose a different provider.`;
+    }
 
     // Save patient summary if this was a summary request
     if (isPatientSummaryRequest && props.user?.userId && assistantMessage.content) {
@@ -3706,6 +3788,7 @@ const generateSetupLogPdf = async () => {
         if (evt.event === 'medications-offered' && evt.outcome && evt.outcome !== 'success') return [180, 100, 0];
         if (evt.event === 'current-medications-recovery-failed') return [200, 0, 0];
         if (evt.event === 'draft-summary-failed' || evt.event === 'meds-worksheet-failed') return [200, 0, 0];
+        if (evt.event === 'chat-error') return [200, 0, 0];
         if (evt.event === 'meds-worksheet-pending') return [180, 100, 0];
         if (evt.event === 'gpt-agent-created' || evt.event === 'gpt-agent-deployed' || evt.event === 'gpt-agent-ready') return [0, 90, 160];
         return [0, 0, 0];
@@ -3852,6 +3935,7 @@ const generateSetupLogPdf = async () => {
           case 'test-completed': return `[${t}] TEST mode completed${evt.passed !== undefined ? (evt.passed ? ' — PASS' : ' — FAIL') : ''}`;
           case 'test-verification': return `[${t}] TEST verification: ${evt.label || ''} ${evt.passed ? 'PASS' : 'FAIL'}${evt.detail ? ' - ' + evt.detail : ''}`;
           case 'admin-notified': return `[${t}] Admin notified — from: ${evt.from || '?'}, to: ${evt.to || '?'}`;
+          case 'chat-error': return `[${t}] Chat ERROR: ${evt.provider || 'unknown'} — ${evt.error || 'unknown error'}`;
           case 'error': return `[${t}] ERROR: ${evt.step || ''} - ${evt.message || ''}`;
           case 'patient-identity-extraction-failed':
             // Bold red — appears in the log when the PS builder
@@ -6622,8 +6706,15 @@ const scrollToBottom = async () => {
 };
 
 // Watch for specific changes and trigger scroll with flush: 'post'
-watch(() => [messages.value.length, messages.value[messages.value.length - 1]?.content], () => {
+watch(() => [messages.value.length, messages.value[messages.value.length - 1]?.content, streamingReasoning.value], () => {
   scrollToBottom();
+  if (streamingReasoningRef.value) {
+    nextTick(() => {
+      if (streamingReasoningRef.value) {
+        streamingReasoningRef.value.scrollTop = streamingReasoningRef.value.scrollHeight;
+      }
+    });
+  }
 }, { flush: 'post' });
 
 const startSetupWizardPolling = () => {
@@ -7659,7 +7750,8 @@ const handlePatientSummaryVerified = async (payload?: { userId?: string; summary
     // Re-generate after delay to pick up server-side admin-notified event
     setTimeout(() => void generateSetupLogPdf(), 15000);
     emit('wizard-complete');
-    // Leave MyStuff open — user can close when ready
+    // Leave MyStuff open — prompt user to close it to start chatting
+    showWorkbookClosePrompt.value = true;
   }
 };
 
@@ -7845,6 +7937,7 @@ onMounted(async () => {
 
     watch(() => showMyStuffDialog.value, (isOpen, wasOpen) => {
       if (wasOpen && !isOpen) {
+        showWorkbookClosePrompt.value = false;
         // During guided flow, closing My Lists during the medications phase
         // advances directly to the Patient Summary phase. Per the 2-AI-call spec,
         // if the user didn't verify/edit meds, we keep the provisional summary
@@ -8353,6 +8446,48 @@ defineExpose({
 .page-link:hover {
   color: #1565c0;
   text-decoration: underline;
+}
+
+.reasoning-section {
+  margin-bottom: 8px;
+  border: 1px solid #e0e0e0;
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.reasoning-section.streaming {
+  border-color: #90caf9;
+  background: #f5f9ff;
+}
+
+.reasoning-toggle {
+  cursor: pointer;
+  padding: 6px 10px;
+  font-size: 12px;
+  color: #757575;
+  user-select: none;
+  background: #fafafa;
+}
+
+.reasoning-arrow {
+  font-size: 10px;
+  margin-right: 4px;
+}
+
+.reasoning-section.streaming .reasoning-toggle {
+  color: #1976d2;
+  background: #e3f2fd;
+}
+
+.reasoning-content {
+  padding: 8px 10px;
+  font-size: 12px;
+  color: #616161;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 300px;
+  overflow-y: auto;
+  line-height: 1.5;
 }
 </style>
 
