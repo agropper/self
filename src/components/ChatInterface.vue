@@ -994,7 +994,7 @@ const wizardCurrentMedications = ref(false);
 const wizardPatientSummary = ref(false);
 const wizardAgentReady = ref(false);
 const wizardStage1Complete = ref(false);
-// Secondary "Private AI (Deepseek)" provisioning state (variable kept as
+// Secondary "Private AI (GPT)" provisioning state (variable kept as
 // `gptAgentReady` for historical reasons — profile key is 'gpt'). Setup
 // gates completion on this so BOTH Private AIs exist before the wizard
 // finishes.
@@ -1793,6 +1793,7 @@ const modelDisplayNames: Record<string, string> = {
   'deepseek-v4-pro': 'DeepSeek V4 Pro',
   'deepseek-r1-distill-llama-70b': 'DeepSeek R1 70B',
   'nvidia-nemotron-3-super-120b': 'Nemotron 120B',
+  'kimi-k2.5': 'Kimi K2.5',
 };
 
 // Private AI profiles reported by /api/chat/providers. Each ready
@@ -1827,26 +1828,25 @@ const providerOptions = computed(() => {
 });
 
 // Re-derive each Private AI label from the actual model name and sort
-// GPT first, Deepseek second. We do this client-side (it also happens
+// Kimi first, GPT second. We do this client-side (it also happens
 // server-side) so the dropdown stays correctly ordered even if the
 // server response is cached/stale. The 'default' / 'gpt' profile keys
-// are HISTORICAL slot names — for accounts created before the
-// GPT/Deepseek swap, profile key 'default' may still point at a
-// Deepseek agent. Pure function — call it on the array we just got
-// from the server.
+// are HISTORICAL slot names. Pure function — call it on the array we
+// just got from the server.
 const normalizePrivateAiProfiles = (
   raw: Array<{ key: string; label: string; model?: string }>
 ): Array<{ key: string; label: string; model?: string }> => {
-  const labelFor = (m?: string, key?: string) => {
+  const labelFor = (m?: string) => {
     const s = String(m || '').toLowerCase();
+    if (s.includes('kimi')) return 'Private AI (Kimi)';
     if (s.includes('gpt')) return 'Private AI (GPT)';
     if (s.includes('deepseek')) return 'Private AI (Deepseek)';
-    return key === 'gpt' ? 'Private AI (Deepseek)' : 'Private AI (GPT)';
+    return 'Private AI';
   };
   const rank = (label: string) =>
-    /gpt/i.test(label) ? 0 : /deepseek/i.test(label) ? 1 : 2;
+    /kimi/i.test(label) ? 0 : /gpt/i.test(label) ? 1 : /deepseek/i.test(label) ? 2 : 3;
   return [...raw]
-    .map(pr => ({ ...pr, label: labelFor(pr.model, pr.key) }))
+    .map(pr => ({ ...pr, label: labelFor(pr.model) }))
     .sort((a, b) => rank(a.label) - rank(b.label));
 };
 

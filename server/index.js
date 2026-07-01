@@ -3561,7 +3561,7 @@ async function provisionUserAsync(userId, token) {
       projectId = await getProjectIdForGenAI(doClient) || projectId;
     }
 
-    // PREFERRED PATH: look up GPT-OSS-120B (the primary model) in the DO
+    // PREFERRED PATH: look up Kimi K2.5 (the primary model) in the DO
     // catalog FIRST. Only fall back to an existing agent's model if the
     // catalog lookup fails.
     if (!isValidUUID(modelId)) {
@@ -3570,7 +3570,7 @@ async function provisionUserAsync(userId, token) {
         const models = modelsResponse.models || modelsResponse.data?.models || [];
         if (models.length > 0) {
           const preferredModel = models.find(m =>
-            m.inference_name === 'openai-gpt-oss-120b' || m.name === 'OpenAI GPT-oss-120b' || m.id === 'openai-gpt-oss-120b'
+            m.inference_name === 'kimi-k2.5' || m.name === 'Kimi K2.5' || m.id === 'kimi-k2.5'
           );
           if (preferredModel && preferredModel.uuid && isValidUUID(preferredModel.uuid)) {
             modelId = preferredModel.uuid;
@@ -13876,7 +13876,8 @@ if (isProduction) {
     const modelsToCheck = [
       'anthropic-claude-4.6-sonnet', 'nvidia-nemotron-3-super-120b',
       'openai-gpt-5.5', 'openai-gpt-oss-120b',
-      'deepseek-v4-pro', 'deepseek-r1-distill-llama-70b'
+      'deepseek-v4-pro', 'deepseek-r1-distill-llama-70b',
+      'kimi-k2.5'
     ];
     const availableModels = new Set();
     await Promise.allSettled(modelsToCheck.map(async (model) => {

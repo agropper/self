@@ -594,23 +594,21 @@ export default function setupChatRoutes(app, chatClient, cloudant, doClient, app
   // The frontend renders one dropdown entry per ready profile and sends
   // `agentProfileKey` alongside provider 'digitalocean'.
   // Label is derived from the ACTUAL model behind each profile, not from
-  // the profile key. Profile keys 'default' / 'gpt' are historical slots
-  // — for accounts created before the GPT/Deepseek swap, profile key
-  // 'default' still points at a Deepseek agent and 'gpt' at GPT. We must
-  // not mis-label them. The dropdown is then sorted so GPT comes first
-  // (primary), Deepseek second, regardless of which slot each happens to
-  // live in for this user.
+  // the profile key. Profile keys 'default' / 'gpt' are historical slots.
+  // The dropdown is sorted so Kimi comes first (primary), GPT second.
   const labelForModel = (modelName) => {
     const m = String(modelName || '').toLowerCase();
+    if (m.includes('kimi')) return 'Private AI (Kimi)';
     if (m.includes('gpt')) return 'Private AI (GPT)';
     if (m.includes('deepseek')) return 'Private AI (Deepseek)';
     return 'Private AI';
   };
   const sortKeyForModel = (modelName) => {
     const m = String(modelName || '').toLowerCase();
-    if (m.includes('gpt')) return 0; // GPT first (primary)
-    if (m.includes('deepseek')) return 1;
-    return 2;
+    if (m.includes('kimi')) return 0; // Kimi first (primary)
+    if (m.includes('gpt')) return 1;
+    if (m.includes('deepseek')) return 2;
+    return 3;
   };
 
   const buildPrivateAiProfiles = async (doc) => {
@@ -630,14 +628,14 @@ export default function setupChatRoutes(app, chatClient, cloudant, doClient, app
       out.push({ key: 'default', label: labelForModel(model), model });
     }
 
-    // 'gpt' slot (historical name — may now be a Deepseek agent).
+    // 'gpt' slot (historical name — may hold GPT, Deepseek, or other model).
     const gpt = profiles.gpt || {};
     if (gpt.agentId && gpt.endpoint && await verifyAgentLive(gpt.agentId)) {
       const model = gpt.modelName || 'deepseek-v4-pro';
       out.push({ key: 'gpt', label: labelForModel(model), model });
     }
 
-    // Sort so the user always sees GPT (primary) first.
+    // Sort so the user always sees Kimi (primary) first.
     out.sort((a, b) => sortKeyForModel(a.model) - sortKeyForModel(b.model));
     return out;
   };
