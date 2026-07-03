@@ -698,24 +698,23 @@ export default function setupChatRoutes(app, chatClient, cloudant, doClient, app
           }
           providers = providers.filter((p) => p !== 'digitalocean');
         } else {
-          // Lazily provision (or REPAIR) the secondary "Private AI
-          // (GPT)" agent once the primary is up and a KB exists. This
-          // also backfills existing single-agent accounts and self-
-          // heals a stale gpt profile after a Restore: re-ensure when
-          // there is no gpt endpoint yet OR the recorded gpt agent is
-          // not actually live in DO (destroyed agent → stale profile).
-          // The dropdown only lists GPT once verifyAgentLive passes, so
-          // the user never selects a dead agent (no more 403s).
+          // REPAIR (not create) the secondary agent if it was previously
+          // deployed but is now stale (destroyed agent, missing endpoint
+          // after Restore). Only repair when agentProfiles.gpt.agentId
+          // already exists — first creation is the user's action via the
+          // Deploy button in My AI Agent.
           if (userDoc?.kbId) {
             const gptProf = userDoc?.agentProfiles?.gpt;
-            const gptLive = gptProf?.agentId ? await verifyAgentLive(gptProf.agentId) : false;
-            if (!gptProf?.endpoint || !gptLive) {
-              try {
-                userDoc = await ensureSecondaryAgent(doClient, cloudant, userDoc);
-                const newId = userDoc?.agentProfiles?.gpt?.agentId;
-                if (newId) agentLiveCache.delete(newId); // re-check fresh
-              } catch (gptErr) {
-                console.warn('[chat/providers] ensureSecondaryAgent failed:', gptErr?.message);
+            if (gptProf?.agentId) {
+              const gptLive = await verifyAgentLive(gptProf.agentId);
+              if (!gptProf?.endpoint || !gptLive) {
+                try {
+                  userDoc = await ensureSecondaryAgent(doClient, cloudant, userDoc);
+                  const newId = userDoc?.agentProfiles?.gpt?.agentId;
+                  if (newId) agentLiveCache.delete(newId);
+                } catch (gptErr) {
+                  console.warn('[chat/providers] ensureSecondaryAgent repair failed:', gptErr?.message);
+                }
               }
             }
           }

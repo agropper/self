@@ -11695,34 +11695,12 @@ app.post('/api/patient-summary/draft', async (req, res) => {
         await appendUserProvisioningEvent(userId, { event: 'draft-summary-auto-provision-primary-failed', elapsedSeconds: Number(provElapsed), reason: provErr.message });
       }
     }
-    if (!userDoc.agentProfiles?.gpt?.agentId || !userDoc.agentProfiles?.gpt?.endpoint) {
-      console.log(`[DRAFT SUMMARY] Secondary agent missing for ${userId} — attempting to provision`);
-      const provStartedAt = Date.now();
-      try {
-        const { ensureSecondaryAgent } = await import('./routes/auth.js');
-        userDoc = await ensureSecondaryAgent(doClient, cloudant, userDoc);
-        const provElapsed = ((Date.now() - provStartedAt) / 1000).toFixed(1);
-        console.log(`[DRAFT SUMMARY] Secondary agent provisioned for ${userId} in ${provElapsed}s`);
-        await appendUserProvisioningEvent(userId, { event: 'draft-summary-auto-provision-secondary', elapsedSeconds: Number(provElapsed), agentId: userDoc.agentProfiles?.gpt?.agentId || null });
-      } catch (provErr) {
-        const provElapsed = ((Date.now() - provStartedAt) / 1000).toFixed(1);
-        console.warn(`[DRAFT SUMMARY] Secondary agent provisioning failed for ${userId} in ${provElapsed}s: ${provErr.message}`);
-        await appendUserProvisioningEvent(userId, { event: 'draft-summary-auto-provision-secondary-failed', elapsedSeconds: Number(provElapsed), reason: provErr.message });
-      }
-    }
-
-    // Re-read after provisioning attempts
-    const freshProvDoc = await cloudant.getDocument('maia_users', userId);
-    if (freshProvDoc) userDoc = freshProvDoc;
-
     const hasPrimaryAgent = userDoc.assignedAgentId && userDoc.agentEndpoint;
-    const hasSecondaryAgent = userDoc.agentProfiles?.gpt?.agentId && userDoc.agentProfiles?.gpt?.endpoint;
-    if (!hasPrimaryAgent && !hasSecondaryAgent) {
+    if (!hasPrimaryAgent) {
       return res.status(400).json({ success: false, error: 'AGENT_NOT_CONFIGURED' });
     }
 
-    // Log draft summary start with agent availability
-    await appendUserProvisioningEvent(userId, { event: 'draft-summary-started', hasPrimaryAgent: !!hasPrimaryAgent, hasSecondaryAgent: !!hasSecondaryAgent, primaryModel: userDoc.agentModelName || null, secondaryModel: userDoc.agentProfiles?.gpt?.modelName || null });
+    await appendUserProvisioningEvent(userId, { event: 'draft-summary-started', primaryModel: userDoc.agentModelName || null });
 
     if (userDoc.kbId && userDoc.assignedAgentId) {
       try {
@@ -11836,34 +11814,6 @@ app.post('/api/patient-summary/draft', async (req, res) => {
           }
         }
         // For non-401/403 errors, chatResp stays null — fall through to secondary
-      }
-    }
-
-    // --- Secondary agent fallback ---
-    if (!chatResp && hasSecondaryAgent) {
-      const gptProfile = userDoc.agentProfiles.gpt;
-      const fallbackModel = gptProfile.modelName || 'openai-gpt-oss-120b';
-      console.log(`[DRAFT SUMMARY] ${hasPrimaryAgent ? 'Primary failed/empty' : 'No primary agent'} — falling back to secondary for ${userId} (model: ${fallbackModel})`);
-      await appendUserProvisioningEvent(userId, { event: 'draft-summary-fallback-started', model: fallbackModel, reason: hasPrimaryAgent ? 'primary_failed' : 'no_primary_agent' });
-      try {
-        // Attach KB to secondary agent so it can retrieve documents
-        if (userDoc.kbId) {
-          try { await doClient.agent.attachKB(gptProfile.agentId, userDoc.kbId); } catch (_) { /* already attached */ }
-          await ensureAgentRetrieval(gptProfile.agentId);
-        }
-        let gptApiKey = gptProfile.apiKey;
-        if (!gptApiKey) {
-          gptApiKey = await getOrCreateAgentApiKey(doClient, cloudant, userId, gptProfile.agentId, 'gpt');
-        }
-        const fallbackProvider = new DigitalOceanProvider(gptApiKey, { baseURL: gptProfile.endpoint });
-        chatResp = await fallbackProvider.chat(chatMessages, { model: fallbackModel, stream: false });
-        usedModel = fallbackModel;
-        console.log(`[DRAFT SUMMARY] Secondary agent succeeded for ${userId} (model: ${fallbackModel})`);
-        await appendUserProvisioningEvent(userId, { event: 'draft-summary-fallback-succeeded', model: fallbackModel });
-      } catch (fallbackErr) {
-        const fsc = fallbackErr.status || fallbackErr.statusCode || 0;
-        console.warn(`[DRAFT SUMMARY] Secondary agent also failed for ${userId} (status: ${fsc}): ${fallbackErr.message}`);
-        await appendUserProvisioningEvent(userId, { event: 'draft-summary-fallback-failed', model: fallbackModel, status: fsc || undefined, reason: fallbackErr.message });
       }
     }
 
@@ -13072,69 +13022,74 @@ app.post('/api/agents/ensure-secondary', async (req, res) => {
     let userDoc = await cloudant.getDocument('maia_users', userId);
     if (!userDoc) return res.status(404).json({ success: false, error: 'USER_NOT_FOUND' });
 
-    const hadAgentBefore = !!userDoc.agentProfiles?.gpt?.agentId;
-    const ensureStartedAt = Date.now();
+    const checkOnly = !!req.body?.checkOnly;
+    const existingAgentId = userDoc.agentProfiles?.gpt?.agentId;
 
+    // Check-only mode: return current status without creating the agent
+    if (checkOnly && !existingAgentId) {
+      return res.json({ success: true, ready: false, status: 'not_created' });
+    }
+
+    // Fast path: agent already created — just check if it's running.
+    // Avoids redundant DO API calls, KB attaches, and DB writes on every poll.
+    if (existingAgentId) {
+      let endpoint = null;
+      let isRunning = false;
+      let status = 'unknown';
+      try {
+        const live = await doClient.agent.get(existingAgentId);
+        status = live?.deployment?.status || live?.deployment_status || 'unknown';
+        isRunning = status === 'STATUS_RUNNING';
+        endpoint = live?.deployment?.url ? `${live.deployment.url}/api/v1` : null;
+      } catch { /* still deploying */ }
+      const ready = !!endpoint && isRunning;
+
+      if (ready) {
+        const alreadyLogged = !!userDoc.agentProfiles?.gpt?.deployedLoggedAt;
+        if (!alreadyLogged) {
+          for (let attempt = 0; attempt < 3; attempt++) {
+            try {
+              const doc = await cloudant.getDocument('maia_users', userId);
+              if (!doc) break;
+              if (!doc.agentProfiles) doc.agentProfiles = {};
+              doc.agentProfiles.gpt = { ...(doc.agentProfiles.gpt || {}), endpoint, deployedLoggedAt: new Date().toISOString() };
+              doc.updatedAt = new Date().toISOString();
+              await cloudant.saveDocument('maia_users', doc);
+              break;
+            } catch (err) {
+              if (err?.statusCode === 409 && attempt < 2) continue;
+              break;
+            }
+          }
+          try {
+            await appendUserProvisioningEvent(userId, { event: 'gpt-agent-deployed', agentId: existingAgentId });
+          } catch { /* non-fatal */ }
+        }
+      }
+      console.log(`[ensure-secondary] Poll for ${userId}: status=${status}, ready=${ready}`);
+      return res.json({ success: true, ready, agentId: existingAgentId, endpoint, status });
+    }
+
+    // Slow path: agent doesn't exist yet — create it.
+    const ensureStartedAt = Date.now();
     const { ensureSecondaryAgent } = await import('./routes/auth.js');
     try {
       userDoc = await ensureSecondaryAgent(doClient, cloudant, userDoc);
     } catch (e) {
-      // Creation may still be in-flight under the mutex — report not-ready
-      // rather than 500 so the client keeps polling.
       return res.json({ success: true, ready: false, provisioning: true, reason: e?.message || 'provisioning' });
     }
 
     const ensureElapsed = ((Date.now() - ensureStartedAt) / 1000).toFixed(1);
-    let gpt = userDoc.agentProfiles?.gpt || {};
-
-    // Log GPT creation exactly once (when it first appears).
-    if (!hadAgentBefore && gpt.agentId) {
+    const gpt = userDoc.agentProfiles?.gpt || {};
+    if (gpt.agentId) {
       try {
         await appendUserProvisioningEvent(userId, {
           event: 'gpt-agent-created', agentId: gpt.agentId, agentName: gpt.agentName || null, elapsedSeconds: Number(ensureElapsed)
         });
       } catch { /* non-fatal */ }
     }
-
-    // Readiness mirrors the primary agent: require BOTH a deployment URL and
-    // STATUS_RUNNING (a URL alone 403s while still deploying).
-    let endpoint = null;
-    let isRunning = false;
-    if (gpt.agentId) {
-      try {
-        const live = await doClient.agent.get(gpt.agentId);
-        const status = live?.deployment?.status || live?.deployment_status || 'unknown';
-        isRunning = status === 'STATUS_RUNNING';
-        endpoint = live?.deployment?.url ? `${live.deployment.url}/api/v1` : null;
-      } catch { /* still deploying */ }
-    }
-    const ready = !!endpoint && isRunning;
-
-    if (ready) {
-      // Persist endpoint + log "deployed" exactly once (deployedLoggedAt guard).
-      const alreadyLogged = !!userDoc.agentProfiles?.gpt?.deployedLoggedAt;
-      for (let attempt = 0; attempt < 3; attempt++) {
-        try {
-          const doc = await cloudant.getDocument('maia_users', userId);
-          if (!doc) break;
-          if (!doc.agentProfiles) doc.agentProfiles = {};
-          doc.agentProfiles.gpt = { ...(doc.agentProfiles.gpt || {}), endpoint, deployedLoggedAt: doc.agentProfiles.gpt?.deployedLoggedAt || new Date().toISOString() };
-          doc.updatedAt = new Date().toISOString();
-          await cloudant.saveDocument('maia_users', doc);
-          break;
-        } catch (err) {
-          if (err?.statusCode === 409 && attempt < 2) continue;
-          break;
-        }
-      }
-      if (!alreadyLogged) {
-        try {
-          await appendUserProvisioningEvent(userId, { event: 'gpt-agent-deployed', agentId: gpt.agentId || null });
-        } catch { /* non-fatal */ }
-      }
-    }
-
-    res.json({ success: true, ready, agentId: gpt.agentId || null, endpoint });
+    console.log(`[ensure-secondary] Created for ${userId} in ${ensureElapsed}s, agentId=${gpt.agentId}`);
+    res.json({ success: true, ready: false, agentId: gpt.agentId || null, endpoint: null, status: 'created' });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
   }

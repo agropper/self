@@ -82,13 +82,15 @@ function isValidUUID(value) {
 }
 
 // Model identifiers for the two Private AI agents. Matched against the
-// DO catalog by inference_name / name / id. The primary (Kimi K2.5)
-// is the default; the secondary (GPT-OSS-120B) backs the historical
+// DO catalog by inference_name / name / id. The primary (GPT-OSS-120B)
+// is the default; the secondary (Kimi K2.5) backs the historical
 // 'gpt' profile slot. NOTE: profile keys 'default' and 'gpt' stay as
 // historical identifiers (kept to avoid migrating every existing
 // userDoc.agentProfiles[*].agentId).
 export const MODEL_GPT = { inference_name: 'openai-gpt-oss-120b', name: 'OpenAI GPT-oss-120b', id: 'openai-gpt-oss-120b' };
 export const MODEL_KIMI = { inference_name: 'kimi-k2.5', name: 'Kimi K2.5', id: 'kimi-k2.5' };
+export const MODEL_PRIMARY = MODEL_GPT;
+export const MODEL_SECONDARY = MODEL_KIMI;
 
 const matchesModel = (m, spec) =>
   m.inference_name === spec.inference_name ||
@@ -98,8 +100,8 @@ const matchesModel = (m, spec) =>
 // `modelSpec` selects which catalog model to resolve (default Kimi, the
 // primary). `process.env.DO_MODEL_ID` only applies to the primary agent —
 // the secondary must always resolve its own model from the catalog.
-async function resolveModelAndProject(doClient, modelSpec = MODEL_KIMI) {
-  const isPrimary = modelSpec === MODEL_KIMI;
+async function resolveModelAndProject(doClient, modelSpec = MODEL_PRIMARY) {
+  const isPrimary = modelSpec === MODEL_PRIMARY;
   let modelId = isPrimary ? process.env.DO_MODEL_ID : undefined;
   let projectId = process.env.DO_PROJECT_ID;
 
@@ -499,19 +501,11 @@ export async function ensureSecondaryAgent(doClient, cloudant, userDoc) {
     lockPromise.catch(() => {});
     agentCreationLocks.set(lockKey, lockPromise);
     try {
-      const { modelId, projectId } = await resolveModelAndProject(doClient, MODEL_GPT);
+      const { modelId, projectId } = await resolveModelAndProject(doClient, MODEL_SECONDARY);
       if (!isValidUUID(modelId) || !isValidUUID(projectId)) {
-        throw new Error('Unable to resolve GPT model or project ID for secondary agent creation');
+        throw new Error('Unable to resolve secondary model or project ID for agent creation');
       }
-      // One-time copy of the primary agent's instruction.
-      let instruction = '';
-      if (userDoc.assignedAgentId) {
-        try {
-          const primary = await doClient.agent.get(userDoc.assignedAgentId);
-          instruction = primary?.instruction || '';
-        } catch { /* fall back below */ }
-      }
-      if (!instruction) instruction = getMaiaInstructionText();
+      const instruction = 'Do not hallucinate.';
       agent = await doClient.agent.create({
         name: buildAgentName(userId, 'gpt'),
         instruction,
@@ -547,7 +541,7 @@ export async function ensureSecondaryAgent(doClient, cloudant, userDoc) {
       agentId: gptAgentId,
       agentName: resolved.name,
       endpoint,
-      modelName: resolved.model?.inference_name || resolved.model?.name || MODEL_GPT.inference_name
+      modelName: resolved.model?.inference_name || resolved.model?.name || MODEL_SECONDARY.inference_name
     });
     userDoc.updatedAt = new Date().toISOString();
     try {

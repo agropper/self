@@ -319,7 +319,7 @@
                 </template>
               </div>
             </div>
-            <q-btn v-if="!wizardPreparingRecords" flat round dense icon="close" color="grey-7" @click="dismissWizard" />
+            <q-btn flat round dense icon="close" color="grey-7" @click="dismissWizard" />
           </div>
         </q-card-section>
 
@@ -410,12 +410,33 @@
               <q-item-section>
                 <q-item-label :class="{ 'text-grey-5': !wizardStage1Complete && !agentSetupPollingActive }">
                   Deploy {{ wizardPrimaryModelName || 'Primary AI' }} Agent
-                  <span v-if="wizardStage1Complete" class="text-green text-caption q-ml-sm">Ready</span>
+                  <span v-if="wizardStage1Complete" class="text-green text-caption q-ml-sm">Ready{{ wizardAgentDeployElapsed ? ` (${Math.floor(wizardAgentDeployElapsed / 60)}m ${wizardAgentDeployElapsed % 60}s)` : '' }}</span>
                   <span v-else-if="agentSetupPollingActive" class="text-primary text-caption q-ml-sm">
                     {{ wizardStage1StatusLine }}
                     <span class="text-grey-6">(10 min max)</span>
                   </span>
                   <span v-else-if="agentSetupTimedOut" class="text-negative text-caption q-ml-sm">Timed out</span>
+                </q-item-label>
+              </q-item-section>
+            </q-item>
+
+            <!-- Deploy Secondary AI Agent -->
+            <q-item v-if="wizardStage1Complete" dense class="q-py-xs">
+              <q-item-section avatar style="min-width: 28px">
+                <q-spinner v-if="wizardSecondaryDeploying" size="sm" color="primary" />
+                <q-icon v-else-if="gptAgentReady" name="check_circle" color="green" size="sm" />
+                <q-icon v-else-if="wizardSecondaryFailed" name="warning" color="orange" size="sm" />
+                <q-icon v-else name="radio_button_unchecked" color="grey-4" size="sm" />
+              </q-item-section>
+              <q-item-section>
+                <q-item-label>
+                  Deploy {{ labelForProfileKey('gpt') || 'Secondary AI' }} Agent
+                  <span v-if="gptAgentReady" class="text-green text-caption q-ml-sm">Ready{{ wizardSecondaryElapsed ? ` (${wizardSecondaryElapsed}s)` : '' }}</span>
+                  <span v-else-if="wizardSecondaryDeploying" class="text-primary text-caption q-ml-sm">
+                    Deploying... {{ wizardSecondaryElapsed ? `(${wizardSecondaryElapsed}s)` : '' }}
+                    <span class="text-grey-6">(~30s)</span>
+                  </span>
+                  <span v-else-if="wizardSecondaryFailed" class="text-orange text-caption q-ml-sm">Failed</span>
                 </q-item-label>
               </q-item-section>
             </q-item>
@@ -436,76 +457,64 @@
                     <span class="text-grey-6">(30 min max)</span>
                   </span>
                   <span v-else-if="indexingStatus?.phase === 'complete'" class="text-green text-caption q-ml-sm">
-                    {{ stage2StatusDisplay.files }} files, {{ stage2StatusDisplay.tokens }} tokens
+                    {{ stage2StatusDisplay.files }} files, {{ stage2StatusDisplay.tokens }} tokens{{ (stage3IndexingStartedAt && stage3IndexingCompletedAt) ? ` (${formatElapsed(stage3IndexingStartedAt, stage3IndexingCompletedAt)})` : '' }}
                   </span>
                 </q-item-label>
               </q-item-section>
             </q-item>
 
-            <!-- Deploy Secondary AI Agent -->
-            <q-item v-if="wizardSecondaryProvStatus !== 'idle' || gptAgentReady" dense class="q-py-xs">
+            <!-- Draft Patient Summary (always visible) -->
+            <q-item dense class="q-py-xs">
               <q-item-section avatar style="min-width: 28px">
-                <q-icon v-if="gptAgentReady || wizardSecondaryProvStatus === 'done'" name="check_circle" color="green" size="sm" />
-                <q-spinner v-else-if="wizardSecondaryProvStatus === 'running'" size="sm" color="primary" />
-                <q-icon v-else-if="wizardSecondaryProvStatus === 'timeout'" name="warning" color="orange" size="sm" />
-                <q-icon v-else name="radio_button_unchecked" color="grey-4" size="sm" />
-              </q-item-section>
-              <q-item-section>
-                <q-item-label>
-                  Deploy {{ wizardSecondaryModelName || 'Secondary AI' }} Agent
-                  <span v-if="gptAgentReady || wizardSecondaryProvStatus === 'done'" class="text-green text-caption q-ml-sm">Ready</span>
-                  <span v-else-if="wizardSecondaryProvStatus === 'running'" class="text-primary text-caption q-ml-sm">
-                    Deploying... {{ wizardSecondaryProvStartedAt ? formatElapsed(wizardSecondaryProvStartedAt) : '' }}
-                    <span class="text-grey-6">(2 min max)</span>
-                  </span>
-                  <span v-else-if="wizardSecondaryProvStatus === 'timeout'" class="text-orange text-caption q-ml-sm">Still deploying</span>
-                </q-item-label>
-              </q-item-section>
-            </q-item>
-
-            <!-- Draft Patient Summary -->
-            <q-item v-if="wizardDraftPsStatus !== 'idle' || wizardPatientSummary || wizardPreparingRecords" dense class="q-py-xs">
-              <q-item-section avatar style="min-width: 28px">
-                <q-icon v-if="wizardDraftPsStatus === 'done' || wizardPatientSummary" name="check_circle" color="green" size="sm" />
+                <q-icon v-if="wizardDraftPsStatus === 'done' || preGeneratedSummary" name="check_circle" color="green" size="sm" />
                 <q-spinner v-else-if="wizardDraftPsStatus === 'running'" size="sm" color="primary" />
                 <q-icon v-else-if="wizardDraftPsStatus === 'failed'" name="warning" color="orange" size="sm" />
                 <q-icon v-else name="radio_button_unchecked" color="grey-4" size="sm" />
               </q-item-section>
               <q-item-section>
-                <q-item-label :class="{ 'text-grey-5': wizardDraftPsStatus === 'idle' && !wizardPatientSummary }">
+                <q-item-label :class="{ 'text-grey-5': wizardDraftPsStatus === 'idle' && !preGeneratedSummary }">
                   Draft Patient Summary
-                  <span v-if="wizardPatientSummary" class="text-green text-caption q-ml-sm">Verified</span>
-                  <span v-else-if="wizardDraftPsStatus === 'done'" class="text-green text-caption q-ml-sm">Generated</span>
+                  <span v-if="wizardDraftPsStatus === 'done' || (preGeneratedSummary && wizardDraftPsStatus !== 'running')" class="text-green text-caption q-ml-sm">Generated{{ (wizardDraftPsStartedAt && wizardDraftPsCompletedAt) ? ` (${formatElapsed(wizardDraftPsStartedAt, wizardDraftPsCompletedAt)})` : '' }}</span>
                   <span v-else-if="wizardDraftPsStatus === 'running'" class="text-primary text-caption q-ml-sm">
                     {{ wizardDraftPsModel || 'AI' }} working...
                     {{ wizardDraftPsStartedAt ? formatElapsed(wizardDraftPsStartedAt) : '' }}
-                    <span class="text-grey-6">(5 min max)</span>
+                    <span class="text-grey-6">(20 min max)</span>
                   </span>
                   <span v-else-if="wizardDraftPsStatus === 'failed'" class="text-orange text-caption q-ml-sm">
-                    Failed — will retry after medications
+                    Failed
                   </span>
-                  <q-btn
-                    v-else-if="stage2StatusDisplay.completed && wizardStage1Complete && !wizardPreparingRecords"
-                    flat dense size="sm" color="orange-8" label="Verify"
-                    class="q-ml-sm"
-                    @click="handleWizardSummaryAction"
-                  />
                 </q-item-label>
               </q-item-section>
             </q-item>
 
-            <!-- Medication Worksheets -->
-            <q-item v-if="stage2StatusDisplay.show || wizardCurrentMedications || wizardPreparingRecords" dense class="q-py-xs">
+            <!-- Medication Worksheets (always visible) -->
+            <q-item dense class="q-py-xs">
               <q-item-section avatar style="min-width: 28px">
                 <q-icon v-if="wizardCurrentMedications" name="check_circle" color="green" size="sm" />
                 <q-spinner v-else-if="wizardPreparingRecords && wizardDraftPsStatus !== 'running'" size="sm" color="primary" />
                 <q-icon v-else name="radio_button_unchecked" color="grey-4" size="sm" />
               </q-item-section>
               <q-item-section>
-                <q-item-label :class="{ 'text-grey-5': !wizardCurrentMedications && !stage2StatusDisplay.completed && !wizardPreparingRecords }">
+                <q-item-label :class="{ 'text-grey-5': !wizardCurrentMedications && !wizardPreparingRecords }">
                   Medication Worksheets
-                  <span v-if="wizardCurrentMedications" class="text-green text-caption q-ml-sm">Generating in My Lists</span>
+                  <span v-if="wizardCurrentMedications" class="text-green text-caption q-ml-sm">Verified</span>
                   <span v-else-if="wizardFlowPhase === 'medications'" class="text-primary text-caption q-ml-sm">Verify in My Lists</span>
+                </q-item-label>
+              </q-item-section>
+            </q-item>
+
+            <!-- Verify Patient Summary (always visible, after medications) -->
+            <q-item dense class="q-py-xs">
+              <q-item-section avatar style="min-width: 28px">
+                <q-icon v-if="wizardPatientSummary" name="check_circle" color="green" size="sm" />
+                <q-spinner v-else-if="wizardFlowPhase === 'summary'" size="sm" color="primary" />
+                <q-icon v-else name="radio_button_unchecked" color="grey-4" size="sm" />
+              </q-item-section>
+              <q-item-section>
+                <q-item-label :class="{ 'text-grey-5': !wizardPatientSummary && wizardFlowPhase !== 'summary' }">
+                  Patient Summary
+                  <span v-if="wizardPatientSummary" class="text-green text-caption q-ml-sm">Verified</span>
+                  <span v-else-if="wizardFlowPhase === 'summary'" class="text-primary text-caption q-ml-sm">Verify in My Lists</span>
                 </q-item-label>
               </q-item-section>
             </q-item>
@@ -674,6 +683,7 @@
       @tab-opened="handleMyStuffTabOpened"
       @sign-out-requested="handleSignOut"
       @wizard-requested="() => { wizardDismissed = false; showAgentSetupDialog = true; }"
+      @provisioning-event="(data: Record<string, any>) => logProvisioningEvent(data)"
       v-if="canAccessMyStuff"
     />
 
@@ -1032,16 +1042,18 @@ const wizardStage1Complete = ref(false);
 // gates completion on this so BOTH Private AIs exist before the wizard
 // finishes.
 const gptAgentReady = ref(false);
-const gptProvisioningActive = ref(false);
 const wizardPreparingStartedAt = ref<number | null>(null);
 // Detailed wizard sub-phase tracking for the preparation phase UI
 const wizardPrimaryModelName = ref<string | null>(null);   // e.g. "Kimi K2.5"
-const wizardSecondaryModelName = ref<string | null>(null);  // e.g. "GPT 120B"
-const wizardSecondaryProvStatus = ref<'idle' | 'running' | 'done' | 'timeout'>('idle');
-const wizardSecondaryProvStartedAt = ref<number | null>(null);
+const wizardSecondaryDeploying = ref(false);
+const wizardSecondaryElapsed = ref(0);
+const wizardSecondaryFailed = ref(false);
+let wizardSecondaryTimer: ReturnType<typeof setInterval> | null = null;
 const wizardDraftPsStatus = ref<'idle' | 'running' | 'done' | 'failed'>('idle');
 const wizardDraftPsStartedAt = ref<number | null>(null);
+const wizardDraftPsCompletedAt = ref<number | null>(null);
 const wizardDraftPsModel = ref<string | null>(null);        // which model is generating
+const wizardAgentDeployElapsed = ref<number | null>(null);
 const wizardUploadIntent = ref<'other' | 'restore' | null>(null);
 const wizardMessages = ref<Record<number, string>>({});
 const wizardIntroLines = ref<string[]>([]);
@@ -1160,7 +1172,7 @@ const COALESCE_WINDOW_MS: Record<string, number> = {
   'summary-saved': 3000,
   'summary-verified': 3000,
   'summary-generated': 3000,
-  'medications-saved': 3000,
+  'medications-saved': 10000,
   'restore-complete': 3000,
   'setup-complete': 3000,
   'test-started': 3000,
@@ -1718,24 +1730,13 @@ const userResourceStatus = ref<{
 const WIZARD_DONE_STAGES = new Set(['patient_summary', 'link_stored']);
 
 const wizardActive = computed<boolean>(() => {
+  if (wizardPatientSummary.value) return false;
   if (showAgentSetupDialog.value) return true;
   if (wizardFlowPhase.value !== 'done') return true;
   const status = userResourceStatus.value;
   if (!status) return false;
   if (status.kbIndexingActive === true) return true;
-  // Setup is incomplete if workflowStage is set AND it isn't in
-  // the terminal set. NOTE we DO show the spinner for
-  // 'request_sent' — the user can't proceed but the wizard isn't
-  // done either, and the spinner is the cue to open Workbook and
-  // see what's blocking. We DON'T show for null/missing
-  // workflowStage because that's the "haven't loaded yet" case —
-  // false alarms on every mount would be worse than a brief
-  // delay before the spinner appears.
   if (status.workflowStage && !WIZARD_DONE_STAGES.has(status.workflowStage)) return true;
-  // Only flag missing-patient-summary when we KNOW (refreshWizardState
-  // has run and reported false). If hasPatientSummary is undefined
-  // (status was last set by updateContextualTip, which doesn't fetch
-  // the summary), don't assume.
   if (status.hasAgent && status.hasPatientSummary === false) return true;
   return false;
 });
@@ -1749,11 +1750,9 @@ const wizardActive = computed<boolean>(() => {
 // to navigate to Patient Summary. Treats `undefined` as
 // "haven't loaded yet — don't false-alarm".
 const medsNeedsVerify = computed<boolean>(() => {
+  if (wizardPatientSummary.value) return false;
   const status = userResourceStatus.value;
   if (!status) return false;
-  // Only fires when the agent is provisioned (no point nagging
-  // the user about meds verification before there's an account
-  // to attach them to).
   if (!status.hasAgent) return false;
   return status.hasCurrentMedications === false;
 });
@@ -1878,18 +1877,22 @@ const providerOptions = computed(() => {
 const normalizePrivateAiProfiles = (
   raw: Array<{ key: string; label: string; model?: string }>
 ): Array<{ key: string; label: string; model?: string }> => {
-  const labelFor = (m?: string) => {
+  const modelShort = (m?: string) => {
     const s = String(m || '').toLowerCase();
-    if (s.includes('kimi')) return 'Private AI (Kimi)';
-    if (s.includes('gpt')) return 'Private AI (GPT)';
-    if (s.includes('deepseek')) return 'Private AI (Deepseek)';
-    return 'Private AI';
+    if (s.includes('kimi')) return 'Kimi';
+    if (s.includes('gpt')) return 'GPT';
+    if (s.includes('deepseek')) return 'Deepseek';
+    return '';
   };
-  const rank = (label: string) =>
-    /kimi/i.test(label) ? 0 : /gpt/i.test(label) ? 1 : /deepseek/i.test(label) ? 2 : 3;
   return [...raw]
-    .map(pr => ({ ...pr, label: labelFor(pr.model) }))
-    .sort((a, b) => rank(a.label) - rank(b.label));
+    .map(pr => {
+      const role = pr.key === 'default' ? 'Primary' : 'Secondary';
+      const model = modelShort(pr.model);
+      const label = model ? `Private AI ${role} (${model})` : `Private AI (${role.toLowerCase()})`;
+      return { ...pr, label };
+    })
+    // Primary first
+    .sort((a, b) => (a.key === 'default' ? 0 : 1) - (b.key === 'default' ? 0 : 1));
 };
 
 // True when the given label is any Private AI variant.
@@ -1899,12 +1902,12 @@ const isPrivateAiLabel = (label: string) =>
   privateAiProfiles.value.some(pr => pr.label === label);
 
 // Dynamic label for a profile key ('default' = primary, 'gpt' = secondary).
-// Reads the actual model from privateAiProfiles when available; falls back
-// to generic "Private AI (primary)" / "Private AI (secondary)".
+// normalizePrivateAiProfiles already formats as "Private AI Primary (GPT)" etc.
 const labelForProfileKey = (key: string): string => {
   const prof = privateAiProfiles.value.find(p => p.key === key);
   if (prof) return prof.label;
-  return key === 'default' ? 'Private AI (primary)' : 'Private AI (secondary)';
+  if (key === 'default') return 'Private AI Primary (GPT)';
+  return 'Private AI Secondary (Kimi)';
 };
 
 // The agentProfileKey for the current selection (null for non-Private
@@ -2199,11 +2202,24 @@ const loadProviders = async () => {
       Array.isArray(data.privateAiProfiles) ? data.privateAiProfiles : []
     );
 
+    // Keep wizard model name refs in sync whenever profiles are loaded
+    if (privateAiProfiles.value.length > 0) {
+      wizardPrimaryModelName.value = labelForProfileKey('default');
+    }
+    // Sync secondary agent ready state from profiles
+    if (privateAiProfiles.value.some(p => p.key === 'gpt')) {
+      gptAgentReady.value = true;
+    }
+
     if (providers.value.length > 0) {
       if (providers.value.includes('digitalocean')) {
-        // Default to the first ready Private AI profile (now GPT after
-        // normalize sort).
-        selectedProvider.value = privateAiProfiles.value[0]?.label || providerLabels.digitalocean;
+        // Only reset the dropdown if the current selection isn't already
+        // a valid Private AI label — otherwise a mid-session providers
+        // reload (e.g. from refreshWizardState) would clobber the user's
+        // secondary AI selection back to the primary.
+        if (!isPrivateAiLabel(normalizeProviderLabel(selectedProvider.value))) {
+          selectedProvider.value = privateAiProfiles.value[0]?.label || providerLabels.digitalocean;
+        }
         showPrivateUnavailableDialog.value = false; // clear in case it was shown before refetch
       } else {
         if (initialLoadComplete.value && !showAgentSetupDialog.value && !props.restoreActive) {
@@ -2252,7 +2268,11 @@ watch(
   (available) => {
     if (!available.length) return;
     if (available.includes('digitalocean')) {
-      selectedProvider.value = defaultPrivateAiLabel();
+      // Only reset if the current selection isn't already a valid
+      // Private AI label — don't clobber a secondary AI selection.
+      if (!isPrivateAiLabel(normalizeProviderLabel(selectedProvider.value))) {
+        selectedProvider.value = defaultPrivateAiLabel();
+      }
       showPrivateUnavailableDialog.value = false; // Private AI is available
       return;
     }
@@ -2333,6 +2353,9 @@ const sendMessage = async () => {
   streamingReasoning.value = '';
   reasoningDone.value = false;
   streamingReasoningExpanded.value = false;
+  const chatSentAt = Date.now();
+  const chatProvider = selectedProvider.value;
+  logProvisioningEvent({ event: 'chat-question', provider: chatProvider });
 
   try {
     // If this is a patient summary request, check for existing summary first
@@ -2568,8 +2591,11 @@ const sendMessage = async () => {
       content: msg.content
     }));
     
-    // Convert displayed label to API key
+    // Convert displayed label to API key. Capture the label NOW — a
+    // concurrent loadProviders() call can reset selectedProvider before
+    // the response arrives, mislabeling the response as primary.
     const providerKey = getProviderKey(selectedProvider.value);
+    const providerLabel = assistantLabelForKey(providerKey);
     const shareIdForRequest = deepLinkShareId.value || currentSavedChatShareId.value || null;
     const requestOptions: Record<string, unknown> = {
       stream: true
@@ -2604,9 +2630,6 @@ const sendMessage = async () => {
 
     const reader = response.body?.getReader();
     const decoder = new TextDecoder();
-
-    // Create assistant message
-    const providerLabel = assistantLabelForKey(providerKey);
     const assistantMessage: Message = {
       role: 'assistant',
       content: '',
@@ -2670,6 +2693,11 @@ const sendMessage = async () => {
               }
               streamingReasoning.value = '';
               isStreaming.value = false;
+              {
+                const respLines = (assistantMessage.content || '').split('\n').filter((l: string) => l.trim()).length;
+                const respSeconds = Math.round((Date.now() - chatSentAt) / 1000);
+                logProvisioningEvent({ event: 'chat-response', provider: chatProvider, lines: respLines, seconds: respSeconds });
+              }
 
               // Save patient summary if this was a summary request
               if (isPatientSummaryRequest && props.user?.userId && assistantMessage.content) {
@@ -2733,6 +2761,7 @@ const sendMessage = async () => {
       errorMessage = 'Failed to get response';
     }
     
+    logProvisioningEvent({ event: 'chat-error', provider: chatProvider, error: errorMessage, seconds: Math.round((Date.now() - chatSentAt) / 1000) });
     const errorProviderKey = getProviderKey(selectedProvider.value);
     const errorProviderLabel = assistantLabelForKey(errorProviderKey);
     messages.value.push({
@@ -2752,6 +2781,7 @@ const sendMessage = async () => {
 };
 
 const handleSignOut = () => {
+  logProvisioningEvent({ event: 'sign-out-requested' });
   const providerKey = getProviderKey(selectedProvider.value);
   const providerLabel = getProviderLabelFromKey(providerKey);
   emit('sign-out', {
@@ -2859,6 +2889,10 @@ const refreshWizardState = async () => {
           if (!wasReady) {
             loadProviders();
           }
+          // Ensure secondary agent deploys after primary is ready
+          if (!gptAgentReady.value && !wizardSecondaryDeploying.value) {
+            wizardDeploySecondary();
+          }
         }
       }
       if (statusResult?.initialFile && !wizardStage2FileName.value) {
@@ -2953,8 +2987,11 @@ const refreshWizardState = async () => {
           }
         }
       }
-      // Persist indexing status when job already completed
-      if (stage3CompleteFromFiles !== null && storedStatus) {
+      // Persist indexing status when job already completed.
+      // Never overwrite a 'complete' phase with stale server data — the
+      // frontend poll can detect completion before the server persists
+      // backendCompleted, and overwriting here revives the spinner.
+      if (stage3CompleteFromFiles !== null && storedStatus && indexingStatus.value?.phase !== 'complete') {
         const storedComplete = storedStatus?.backendCompleted === true || storedStatus?.phase === 'complete';
         indexingStatus.value = {
           active: false,
@@ -2969,9 +3006,14 @@ const refreshWizardState = async () => {
     if (summaryResponse.ok) {
       const summaryData = await summaryResponse.json();
       const hasSummary = !!(summaryData?.summary && summaryData.summary.trim());
-      // If server already has a patient summary, mark wizard as complete
-      // (covers passkey sign-in from a different browser where localStorage is empty)
-      if (hasSummary) {
+      // If server already has a committed patient summary, mark wizard as complete.
+      // BUT during the guided flow (phases running/medications/summary), the user
+      // must explicitly verify — don't auto-set from server state, or "Setup
+      // complete" fires before the user reviews the summary.
+      const inGuidedFlow = wizardFlowPhase.value === 'running'
+        || wizardFlowPhase.value === 'medications'
+        || wizardFlowPhase.value === 'summary';
+      if (hasSummary && !inGuidedFlow) {
         wizardPatientSummary.value = true;
       }
       // Update userResourceStatus so the rail wizard spinner reflects
@@ -3114,7 +3156,7 @@ const refreshWizardState = async () => {
             progress: 1
           };
         }
-        if (indexingStatus.value?.phase !== 'indexing') {
+        if (indexingStatus.value?.phase !== 'indexing' && !wizardPreparingRecords.value) {
           stopStage3ElapsedTimer();
         }
       }
@@ -3839,7 +3881,12 @@ const generateSetupLogPdf = async () => {
             evt.event === 'summary-verified') return [0, 120, 0];
         if (evt.event === 'medications-offered' && evt.outcome && evt.outcome !== 'success') return [180, 100, 0];
         if (evt.event === 'current-medications-recovery-failed') return [200, 0, 0];
-        if (evt.event === 'draft-summary-failed' || evt.event === 'meds-worksheet-failed') return [200, 0, 0];
+        if (evt.event === 'draft-summary-failed' || evt.event === 'meds-worksheet-failed'
+            || evt.event === 'draft-summary-primary-failed' || evt.event === 'draft-summary-primary-retry-failed'
+            || evt.event === 'draft-summary-fallback-failed') return [200, 0, 0];
+        if (evt.event === 'draft-summary-fallback-started' || evt.event === 'draft-summary-primary-key-recreated'
+            || evt.event === 'secondary-provision-timeout') return [180, 100, 0];
+        if (evt.event === 'draft-summary-fallback-succeeded') return [0, 120, 0];
         if (evt.event === 'chat-error') return [200, 0, 0];
         if (evt.event === 'meds-worksheet-pending') return [180, 100, 0];
         if (evt.event === 'gpt-agent-created' || evt.event === 'gpt-agent-deployed' || evt.event === 'gpt-agent-ready') return [0, 90, 160];
@@ -3987,6 +4034,42 @@ const generateSetupLogPdf = async () => {
           case 'test-completed': return `[${t}] TEST mode completed${evt.passed !== undefined ? (evt.passed ? ' — PASS' : ' — FAIL') : ''}`;
           case 'test-verification': return `[${t}] TEST verification: ${evt.label || ''} ${evt.passed ? 'PASS' : 'FAIL'}${evt.detail ? ' - ' + evt.detail : ''}`;
           case 'admin-notified': return `[${t}] Admin notified — from: ${evt.from || '?'}, to: ${evt.to || '?'}`;
+          case 'preparation-phase-started': return `[${t}] Preparation phase started (deploy secondary agent, draft Patient Summary, medication worksheets)`;
+          case 'secondary-provision-started': return `[${t}] Deploying ${labelForProfileKey('gpt')} agent...`;
+          case 'secondary-provision-ready': return `[${t}] ${labelForProfileKey('gpt')} agent ready${evt.elapsedSeconds ? ` (${evt.elapsedSeconds}s)` : ''}`;
+          case 'secondary-provision-timeout': return `[${t}] ${labelForProfileKey('gpt')} agent deployment timed out${evt.elapsedSeconds ? ` after ${evt.elapsedSeconds}s` : ''}`;
+          case 'secondary-provision-failed': return `[${t}] ${labelForProfileKey('gpt')} agent deployment failed${evt.error ? `: ${evt.error}` : ''}`;
+          case 'secondary-deploy-step': return `[${t}]   ${evt.step}${evt.ok === false && evt.error ? ` — ${evt.error}` : ''}${evt.elapsed ? ` (${evt.elapsed}s)` : ''}`;
+          case 'gpt-provision-poll-started': return null as any;
+          case 'gpt-provision-poll-ready': return null as any;
+          case 'gpt-provision-poll-timeout': return null as any;
+          case 'draft-summary-call-started': return `[${t}] Starting draft Patient Summary generation...`;
+          case 'draft-summary-started': return null as any;
+          case 'draft-summary-kb-attached': return null as any;
+          case 'draft-summary-ah-lists': return null as any;
+          case 'draft-summary-prompt-built': return null as any;
+          case 'draft-summary-primary-failed': return `[${t}] Draft Patient Summary — ${labelForProfileKey('default')} failed${evt.error ? `: ${evt.error}` : ''}`;
+          case 'draft-summary-primary-key-recreated': return `[${t}] Draft Patient Summary — API key recreated, retrying ${labelForProfileKey('default')}`;
+          case 'draft-summary-primary-retry-failed': return `[${t}] Draft Patient Summary — ${labelForProfileKey('default')} retry failed`;
+          case 'draft-summary-fallback-started': return `[${t}] Draft Patient Summary — falling back to ${labelForProfileKey('gpt')}`;
+          case 'draft-summary-fallback-succeeded': return `[${t}] Draft Patient Summary — ${labelForProfileKey('gpt')} succeeded`;
+          case 'draft-summary-fallback-failed': return `[${t}] Draft Patient Summary — ${labelForProfileKey('gpt')} fallback FAILED`;
+          case 'draft-summary-succeeded': return null as any;
+          case 'medication-worksheets-started': return `[${t}] Generating medication worksheets...`;
+          case 'medications-phase-opened': return `[${t}] Medications ready for verification`;
+          case 'medications-verified': return `[${t}] Current Medications verified by user`;
+          case 'no-draft-ps-available': return `[${t}] No provisional Patient Summary available to patch with verified medications`;
+          case 'workbook-opened': return `[${t}] Workbook opened`;
+          case 'workbook-dismissed': return `[${t}] Workbook dismissed`;
+          case 'workbook-tab': return `[${t}]   Tab: ${evt.tab || 'unknown'}`;
+          case 'chat-question': return `[${t}] Chat question for ${evt.provider || 'unknown'}`;
+          case 'chat-response': {
+            const dur = evt.seconds > 2 ? ` (${evt.seconds}s)` : '';
+            return `[${t}]   Response: ${evt.lines || 0} lines${dur}`;
+          }
+          case 'chat-saved': return `[${t}] Chat saved to ${evt.destination || 'unknown'}`;
+          case 'file-added': return `[${t}] File added: ${evt.fileName || 'unknown'}`;
+          case 'sign-out-requested': return `[${t}] Sign out requested`;
           case 'chat-error': return `[${t}] Chat ERROR: ${evt.provider || 'unknown'} — ${evt.error || 'unknown error'}`;
           case 'error': return `[${t}] ERROR: ${evt.step || ''} - ${evt.message || ''}`;
           case 'patient-identity-extraction-failed':
@@ -4065,7 +4148,9 @@ const generateSetupLogPdf = async () => {
         // A null/empty render means "intentionally not shown" (diagnostic
         // events we keep a renderer for but don't want in the PDF).
         if (!text) continue;
-        const isMilestone = evt.event?.endsWith('-complete') || evt.event?.endsWith('-started') || evt.event === 'account-deleted' || evt.event === 'patient-consistency-mismatch' || evt.event === 'patient-identity-extraction-failed';
+        const isMilestone = evt.event === 'setup-complete' || evt.event === 'restore-complete'
+          || evt.event === 'account-deleted' || evt.event === 'patient-consistency-mismatch'
+          || evt.event === 'patient-identity-extraction-failed';
 
         if (isMilestone) {
           doc.setFont('helvetica', 'bold');
@@ -6814,8 +6899,10 @@ const startSetupWizardPolling = () => {
       // earliest unfinished step so the wizard doesn't get stuck.
       // Skip entirely during the post-Restore grace window — otherwise this
       // generates a fresh draft summary and overwrites what Restore restored.
+      const setupAlreadyCompleted = (() => { try { return sessionStorage.getItem('wizardSetupCompleted') === 'true'; } catch { return false; } })();
       if (
         !isPostRestoreLocked() &&
+        !setupAlreadyCompleted &&
         wizardFlowPhase.value === 'done' &&
         (safariFolderName.value || localFolderHandle.value) &&
         indexingStatus.value?.phase === 'complete' &&
@@ -6885,6 +6972,7 @@ const startSetupWizardPolling = () => {
         agentSetupStatus.value = 'READY';
         wizardStage1Complete.value = true;
         agentSetupPollingActive.value = false;
+        wizardAgentDeployElapsed.value = agentSetupElapsed.value || null;
         stopAgentSetupTimer();
         logProvisioningEvent({
           event: 'agent-deployed',
@@ -6899,6 +6987,8 @@ const startSetupWizardPolling = () => {
         await loadProviders();
         // Populate model name for wizard UI
         wizardPrimaryModelName.value = labelForProfileKey('default');
+        // Deploy secondary agent right after primary completes
+        wizardDeploySecondary();
         return;
       }
 
@@ -6926,6 +7016,68 @@ const startSetupWizardPolling = () => {
   };
 
   poll();
+};
+
+// Deploy secondary agent from wizard (fire-and-forget after primary completes)
+const wizardDeploySecondary = async () => {
+  if (!props.user?.userId || wizardSecondaryDeploying.value || gptAgentReady.value) return;
+  wizardSecondaryDeploying.value = true;
+  wizardSecondaryFailed.value = false;
+  wizardSecondaryElapsed.value = 0;
+  const startedAt = Date.now();
+  wizardSecondaryTimer = setInterval(() => {
+    wizardSecondaryElapsed.value = Math.round((Date.now() - startedAt) / 1000);
+  }, 1000);
+  logProvisioningEvent({ event: 'secondary-provision-started' });
+
+  try {
+    const res = await fetch('/api/agents/ensure-secondary', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify({ userId: props.user.userId })
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || !data.success) throw new Error(data.error || `HTTP ${res.status}`);
+
+    if (data.ready) {
+      gptAgentReady.value = true;
+      if (wizardSecondaryTimer) { clearInterval(wizardSecondaryTimer); wizardSecondaryTimer = null; }
+      wizardSecondaryDeploying.value = false;
+      logProvisioningEvent({ event: 'secondary-provision-ready', elapsedSeconds: wizardSecondaryElapsed.value });
+      await loadProviders();
+      return;
+    }
+
+    // Poll until ready (max 3 min)
+    const maxMs = 180000;
+    while (Date.now() - startedAt < maxMs) {
+      await new Promise(r => setTimeout(r, 5000));
+      try {
+        const pollRes = await fetch('/api/agents/ensure-secondary', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: 'include',
+          body: JSON.stringify({ userId: props.user.userId })
+        });
+        const pollData = await pollRes.json().catch(() => ({}));
+        if (pollData.ready) {
+          gptAgentReady.value = true;
+          if (wizardSecondaryTimer) { clearInterval(wizardSecondaryTimer); wizardSecondaryTimer = null; }
+          wizardSecondaryDeploying.value = false;
+          logProvisioningEvent({ event: 'secondary-provision-ready', elapsedSeconds: wizardSecondaryElapsed.value });
+          await loadProviders();
+          return;
+        }
+      } catch { /* retry */ }
+    }
+    throw new Error('Timed out after 3 minutes');
+  } catch (e: any) {
+    if (wizardSecondaryTimer) { clearInterval(wizardSecondaryTimer); wizardSecondaryTimer = null; }
+    wizardSecondaryDeploying.value = false;
+    wizardSecondaryFailed.value = true;
+    logProvisioningEvent({ event: 'secondary-provision-failed', error: e.message });
+  }
 };
 
 // Indexing status tracking
@@ -7090,25 +7242,11 @@ watch(
       }
       guidedFlowDismissCount.value = 0;
 
-      // Populate model names for wizard UI from loaded profiles
+      // Populate model name for wizard UI from loaded profiles
       wizardPrimaryModelName.value = labelForProfileKey('default');
-      wizardSecondaryModelName.value = labelForProfileKey('gpt');
 
-      // Step 0: Ensure secondary agent exists BEFORE generating draft PS,
-      // so the server can fall back to it if the primary fails.
-      console.log('[Wizard] Ensuring secondary agent is provisioned...');
-      wizardPreparingMessage.value = 'Ensuring your backup AI agent is ready...';
-      logProvisioningEvent({ event: 'secondary-provision-started' });
-      wizardSecondaryProvStatus.value = 'running';
-      wizardSecondaryProvStartedAt.value = Date.now();
-      const secondaryReady = await ensureGptProvisioned(120000, true, 5000); // 2min timeout, silent, fast poll
-      const secondaryElapsed = ((Date.now() - wizardSecondaryProvStartedAt.value) / 1000).toFixed(1);
-      wizardSecondaryProvStatus.value = secondaryReady ? 'done' : 'timeout';
-      console.log(`[Wizard] Secondary agent ${secondaryReady ? 'ready' : 'not ready'} (${secondaryElapsed}s)`);
-      logProvisioningEvent({
-        event: secondaryReady ? 'secondary-provision-ready' : 'secondary-provision-timeout',
-        elapsedSeconds: Number(secondaryElapsed)
-      });
+      // Secondary agent provisioning runs in the background (started during
+      // indexing). No need to block here — draft PS uses primary only.
 
       // Step 1: Generate and save the draft Patient Summary.
       preGeneratedSummary.value = null;
@@ -7118,14 +7256,19 @@ watch(
         wizardDraftPsStatus.value = 'running';
         wizardDraftPsStartedAt.value = Date.now();
         wizardDraftPsModel.value = wizardPrimaryModelName.value;
-        wizardPreparingMessage.value = `Generating draft Patient Summary (may take 1–4 minutes)...`;
+        startStage3ElapsedTimer();
+        wizardPreparingMessage.value = `Generating draft Patient Summary (may take up to 20 minutes)...`;
+        const draftAbort = new AbortController();
+        const draftTimeout = setTimeout(() => draftAbort.abort(), 20 * 60 * 1000);
         try {
           const genRes = await fetch('/api/patient-summary/draft', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             credentials: 'include',
+            signal: draftAbort.signal,
             body: JSON.stringify({ userId: props.user.userId })
           });
+          clearTimeout(draftTimeout);
           if (!genRes.ok) throw new Error(`HTTP ${genRes.status}`);
           const genResult = await genRes.json();
           const text = (genResult.summary || '').trim();
@@ -7138,8 +7281,10 @@ watch(
             const summaryLines = text.split('\n').filter((l: string) => l.trim()).length;
             const generationSeconds = typeof genResult.generationSeconds === 'number'
               ? genResult.generationSeconds
-              : Math.round(((Date.now() - draftStartedAt) / 1000) * 10) / 10;
+              : Math.round(((Date.now() - wizardDraftPsStartedAt.value) / 1000) * 10) / 10;
             wizardDraftPsStatus.value = 'done';
+            wizardDraftPsCompletedAt.value = Date.now();
+            stopStage3ElapsedTimer();
             console.log(`[Wizard] Draft Patient Summary generated: ${summaryLines} lines, ${text.length} chars, ${generationSeconds}s`);
             logProvisioningEvent({
               event: 'draft-summary-generated',
@@ -7152,8 +7297,10 @@ watch(
             console.warn('[Wizard] Draft Patient Summary returned empty text');
           }
         } catch (err: any) {
+          clearTimeout(draftTimeout);
           wizardDraftPsStatus.value = 'failed';
-          const draftElapsed = ((Date.now() - draftStartedAt) / 1000).toFixed(1);
+          stopStage3ElapsedTimer();
+          const draftElapsed = ((Date.now() - wizardDraftPsStartedAt.value) / 1000).toFixed(1);
           console.warn(`[Wizard] Draft Patient Summary generation failed after ${draftElapsed}s:`, err);
           logProvisioningEvent({
             event: 'draft-summary-failed',
@@ -7193,82 +7340,10 @@ watch(
  * refreshes them in My Lists. GPT may return 202 (provisioning/deploying) — that
  * is expected and non-fatal; the user can Refresh it later.
  */
-/**
- * Ensure the secondary Private AI agent is provisioned and
- * deployed. POSTs /api/agents/ensure-secondary (idempotent) and polls
- * until the agent reports an endpoint (ready) or the timeout elapses.
- * Sets gptAgentReady (variable kept for historical reasons; profile key
- * stays 'gpt'). Returns true if the secondary is ready. Never throws.
- */
-let gptProvisioningInflight: Promise<boolean> | null = null;
-const ensureGptProvisioned = (maxMs = 240000, silent = false, intervalMs = 8000): Promise<boolean> => {
-  if (!props.user?.userId) return Promise.resolve(false);
-  if (gptAgentReady.value) return Promise.resolve(true);
-  // Dedupe: the early concurrent kickoff and the completion-gate must share
-  // one poll (and one toast), not run two concurrently.
-  if (gptProvisioningInflight) return gptProvisioningInflight;
-  gptProvisioningInflight = (async () => {
-    try {
-      return await runEnsureGptProvisioned(maxMs, silent, intervalMs);
-    } finally {
-      gptProvisioningInflight = null;
-    }
-  })();
-  return gptProvisioningInflight;
-};
-
-const runEnsureGptProvisioned = async (maxMs: number, silent: boolean, intervalMs: number): Promise<boolean> => {
-  const userId = props.user!.userId;
-  gptProvisioningActive.value = true;
-  const startedAt = Date.now();
-  logProvisioningEvent({ event: 'gpt-provision-poll-started', maxMs, intervalMs });
-  let notif: ((props?: any) => void) | null = null;
-  if (!silent && $q?.notify) {
-    notif = $q.notify({
-      type: 'ongoing',
-      message: `Provisioning your second ${labelForProfileKey('gpt')}…`,
-      timeout: 0
-    });
-  }
-  try {
-    while (Date.now() - startedAt < maxMs) {
-      try {
-        const res = await fetch('/api/agents/ensure-secondary', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          credentials: 'include',
-          body: JSON.stringify({ userId })
-        });
-        const d = await res.json().catch(() => ({}));
-        if (res.ok && d.ready) {
-          gptAgentReady.value = true;
-          const elapsedSeconds = Number(((Date.now() - startedAt) / 1000).toFixed(1));
-          logProvisioningEvent({ event: 'gpt-provision-poll-ready', elapsedSeconds });
-          return true;
-        }
-      } catch (e) {
-        console.warn('[Wizard] Secondary agent poll error:', e);
-      }
-      await new Promise(r => setTimeout(r, intervalMs));
-    }
-    logProvisioningEvent({ event: 'gpt-provision-poll-timeout', elapsedMs: Date.now() - startedAt });
-    return false;
-  } finally {
-    gptProvisioningActive.value = false;
-    if (notif) {
-      if (gptAgentReady.value) {
-        notif({ type: 'positive', message: `${labelForProfileKey('gpt')} is ready.`, timeout: 2500 });
-      } else {
-        notif({ type: 'warning', message: `${labelForProfileKey('gpt')} is still deploying — you can use it from My Lists / the chat shortly.`, timeout: 5000 });
-      }
-    }
-  }
-};
-
 const triggerSetupWorksheets = () => {
   if (!props.user?.userId) return;
   const userId = props.user.userId;
-  for (const profileKey of ['default', 'gpt'] as const) {
+  for (const profileKey of ['default'] as const) {
     void (async () => {
       try {
         const res = await fetch('/api/medications/worksheet', {
@@ -7445,14 +7520,7 @@ const handleIndexingStarted = (data: { jobId: string; phase: string }) => {
   };
   startStage3ElapsedTimer();
   updateContextualTip();
-  // Concurrency: kick off the second Private AI NOW, while the KB
-  // indexes (often many minutes). Both agents then deploy in parallel and
-  // GPT is usually ready by the time indexing finishes — instead of being
-  // created lazily at the end (which left the user waiting on it). Silent
-  // (no toast) and long-polling; the completion gate reuses this result.
-  if (props.user?.userId && (localFolderHandle.value || safariFolderName.value)) {
-    void ensureGptProvisioned(900000, true, 20000); // long, silent, relaxed polling
-  }
+  // Secondary agent provisioning is handled via the My AI Agent workbook tab.
 };
 
 const handleIndexingStatusUpdate = (data: { jobId: string; phase: string; tokens: string; filesIndexed: number; progress: number }) => {
@@ -7467,6 +7535,11 @@ const handleIndexingStatusUpdate = (data: { jobId: string; phase: string; tokens
 
 const handleIndexingFinished = (_data: { jobId: string; phase: string; error?: string }) => {
   stage3IndexingCompletedAt.value = Date.now();
+  if (stage3IndexingPoll.value) {
+    clearInterval(stage3IndexingPoll.value);
+    stage3IndexingPoll.value = null;
+  }
+  stage3IndexingPending.value = false;
   indexingStatus.value = null;
   stopStage3ElapsedTimer();
   try {
@@ -7476,6 +7549,10 @@ const handleIndexingFinished = (_data: { jobId: string; phase: string; error?: s
   // Update status tip to show normal status
   updateContextualTip();
   refreshWizardState();
+  // DO API continues tokenizing after the indexing job reports complete.
+  // Refresh again after delays to pick up the final token count.
+  setTimeout(() => refreshWizardState(), 30_000);
+  setTimeout(() => refreshWizardState(), 90_000);
   // Prompt to update Patient Summary, but not during wizard-controlled guided flow or if already dismissed this session
   if (wizardFlowPhase.value !== 'medications' && wizardFlowPhase.value !== 'summary' && !postIndexingSummaryDismissedThisSession.value) {
     showPostIndexingSummaryPrompt.value = true;
@@ -7516,6 +7593,7 @@ const handleFilesArchived = (archivedBucketKeys: string[]) => {
 };
 
 const handleFileAddedToKb = async (data: { fileName: string; bucketKey: string }) => {
+  logProvisioningEvent({ event: 'file-added', fileName: data.fileName });
   // Copy the file to the local MAIA folder so it's available for offline restore
   // Try to reconnect if handle is missing (may work if user gesture chain is still active)
   if (!localFolderHandle.value && props.user?.userId) {
@@ -7694,11 +7772,15 @@ const handleMedicationsOffered = (payload: {
 
 const handleCurrentMedicationsSaved = async (payload?: { value?: string; edited?: boolean; changed?: boolean; source?: string; verified?: boolean }) => {
   const medsLineCount = payload?.value ? payload.value.split('\n').filter(l => l.trim()).length : 0;
-  logProvisioningEvent({
-    event: 'medications-saved',
-    lines: medsLineCount,
-    source: payload?.source || undefined
-  });
+  // Only log when user explicitly verified or edited — auto-saves from the
+  // summary-update flow should not produce a duplicate log entry.
+  if (payload?.verified || payload?.edited) {
+    logProvisioningEvent({
+      event: 'medications-saved',
+      lines: medsLineCount,
+      source: payload?.source || undefined
+    });
+  }
   wizardCurrentMedications.value = true;
   wizardStage2Complete.value = true;
   wizardStage2Pending.value = false;
@@ -7753,15 +7835,9 @@ let lastTabOpenTime = 0;
 let lastTabName = '';
 const handleMyStuffTabOpened = (tab: string) => {
   const now = Date.now();
-  // Log the previous tab if it wasn't 'files' opened for < 1 second
-  if (lastTabName && lastTabName !== tab) {
-    if (lastTabName !== 'files' || (now - lastTabOpenTime) >= 1000) {
-      // Previous tab was meaningful — already logged when it opened
-    }
-  }
   lastTabOpenTime = now;
   lastTabName = tab;
-
+  logProvisioningEvent({ event: 'workbook-tab', tab });
 };
 
 const handlePatientSummarySaved = async (payload?: { userId?: string; summary?: string }) => {
@@ -7779,31 +7855,15 @@ const handlePatientSummarySaved = async (payload?: { userId?: string; summary?: 
       chars: summaryText.length
     });
   }
-  // Saving a new summary does not mean it was verified
-  wizardPatientSummary.value = false;
+  // Saving is not verifying — don't mark PS as verified here.
+  // During the guided flow, only handlePatientSummaryVerified completes setup.
+  if (wizardFlowPhase.value !== 'summary' && wizardFlowPhase.value !== 'medications') {
+    wizardPatientSummary.value = false;
+  }
   showAgentSetupDialog.value = false;
   wizardDismissed.value = true;
   await refreshWizardState();
-  // Guided flow: saving summary also completes the flow
-  if (wizardFlowPhase.value === 'summary') {
-    // Gate completion on BOTH Private AIs being provisioned (GPT — the
-    // primary — is already up; wait for Deepseek (secondary) to finish
-    // deploying).
-    if (!gptAgentReady.value) {
-      wizardPreparingRecords.value = true;
-      wizardPreparingMessage.value = `Finishing setup — provisioning ${labelForProfileKey('gpt')}…`;
-      await ensureGptProvisioned();
-      wizardPreparingRecords.value = false;
-    }
-    wizardFlowPhase.value = 'done';
-    logProvisioningEvent({ event: 'setup-complete' });
-    persistWizardCompletion();
-    void generateSetupLogPdf();
-    // Re-generate after delay to pick up server-side admin-notified event
-    setTimeout(() => void generateSetupLogPdf(), 15000);
-    emit('wizard-complete');
-    // Leave MyStuff open — user can close when ready
-  }
+  void generateSetupLogPdf();
 };
 
 const handlePatientSummaryVerified = async (payload?: { userId?: string; summary?: string }) => {
@@ -7823,24 +7883,16 @@ const handlePatientSummaryVerified = async (payload?: { userId?: string; summary
   showAgentSetupDialog.value = false;
   wizardDismissed.value = true;
   await refreshWizardState();
-  // Guided flow: verifying summary completes the flow
+  // Guided flow: verifying summary completes the flow immediately.
+  // Secondary agent provisioning continues in the background — don't block.
   if (wizardFlowPhase.value === 'summary') {
-    // Gate completion on BOTH Private AIs being provisioned (GPT — the
-    // primary — is already up; wait for Deepseek (secondary) to finish
-    // deploying).
-    if (!gptAgentReady.value) {
-      wizardPreparingRecords.value = true;
-      wizardPreparingMessage.value = `Finishing setup — provisioning ${labelForProfileKey('gpt')}…`;
-      await ensureGptProvisioned();
-      wizardPreparingRecords.value = false;
-    }
     wizardFlowPhase.value = 'done';
+    myStuffInitialTab.value = 'files';
+    try { sessionStorage.setItem('wizardSetupCompleted', 'true'); } catch { /* ignore */ }
     logProvisioningEvent({ event: 'setup-complete' });
     void generateSetupLogPdf();
-    // Re-generate after delay to pick up server-side admin-notified event
     setTimeout(() => void generateSetupLogPdf(), 15000);
     emit('wizard-complete');
-    // Leave MyStuff open — prompt user to close it to start chatting
     showWorkbookClosePrompt.value = true;
   }
 };
@@ -8026,7 +8078,11 @@ onMounted(async () => {
     });
 
     watch(() => showMyStuffDialog.value, (isOpen, wasOpen) => {
+      if (isOpen && !wasOpen) {
+        logProvisioningEvent({ event: 'workbook-opened' });
+      }
       if (wasOpen && !isOpen) {
+        logProvisioningEvent({ event: 'workbook-dismissed' });
         showWorkbookClosePrompt.value = false;
         // During guided flow, closing My Lists during the medications phase
         // advances directly to the Patient Summary phase. Per the 2-AI-call spec,
@@ -8053,6 +8109,7 @@ onMounted(async () => {
             logProvisioningEvent({ event: 'setup-complete' });
             guidedFlowDismissCount.value = 0;
             wizardFlowPhase.value = 'done';
+            try { sessionStorage.setItem('wizardSetupCompleted', 'true'); } catch { /* ignore */ }
             void generateSetupLogPdf();
             // Re-generate after delay to pick up server-side admin-notified event
             setTimeout(() => void generateSetupLogPdf(), 15000);

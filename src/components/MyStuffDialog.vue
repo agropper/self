@@ -572,10 +572,8 @@
 
           <!-- My AI Agent Tab -->
           <q-tab-panel name="agent">
-            <!-- One sub-tab per Private AI agent (Deepseek / GPT). Each
-                 has its own system prompt + KB-attach toggle. -->
+            <!-- Sub-tabs: Primary (GPT) and Secondary (Kimi) -->
             <q-tabs
-              v-if="agentProfilesList.length > 1"
               v-model="activeAgentProfile"
               dense
               align="left"
@@ -583,66 +581,64 @@
               active-color="primary"
               indicator-color="primary"
             >
-              <q-tab
-                v-for="prof in agentProfilesList"
-                :key="prof.key"
-                :name="prof.key"
-                :label="prof.label"
-              />
+              <q-tab name="default" :label="profileLabel('default')" />
+              <q-tab name="gpt" :label="profileLabel('gpt')" />
             </q-tabs>
 
-            <div class="row items-center justify-between q-mb-md">
-              <div class="text-h6">Agent Instructions</div>
-              <q-btn
-                label="EDIT"
-                color="primary"
-                @click="editMode = !editMode"
-                :icon="editMode ? 'close' : 'edit'"
-              />
-            </div>
-
-            <!-- Deep link Private AI access switch -->
-            <div class="row items-center justify-center q-mb-md">
-              <q-toggle
-                v-model="allowDeepLinkPrivateAI"
-                label="Deep link users can chat with your Private AI"
-                color="primary"
-                :loading="savingDeepLinkSetting"
-                @update:model-value="saveDeepLinkPrivateAISetting"
-              />
-            </div>
-
-            <div v-if="loadingAgent" class="text-center q-pa-md">
-              <q-spinner size="2em" />
-              <div class="q-mt-sm">Loading agent...</div>
-            </div>
-
-            <div v-else-if="agentError" class="text-center q-pa-md">
-              <q-icon name="error" color="negative" size="40px" />
-              <div class="text-negative q-mt-sm">{{ agentError }}</div>
-              <q-btn label="Retry" color="primary" @click="loadAgent" class="q-mt-md" />
-            </div>
-
-            <div v-else-if="agentInstructions">
-              <div v-if="editMode" class="q-mb-md">
-                <q-input
-                  v-model="editedInstructions"
-                  type="textarea"
-                  rows="15"
-                  outlined
-                  autofocus
+            <!-- Primary agent tab -->
+            <template v-if="activeAgentProfile === 'default'">
+              <div class="row items-center justify-between q-mb-md">
+                <div class="text-h6">Agent Instructions</div>
+                <q-btn
+                  label="EDIT"
+                  color="primary"
+                  @click="editMode = !editMode"
+                  :icon="editMode ? 'close' : 'edit'"
                 />
-                <div class="q-mt-md">
-                  <q-btn label="Save" color="primary" @click="saveInstructions" :loading="savingInstructions" />
-                  <q-btn label="Cancel" flat @click="cancelEdit" class="q-ml-sm" />
-                </div>
               </div>
 
-              <div v-else>
-                <div class="q-mb-md">
-                  <vue-markdown :source="agentInstructions" />
-                </div>
+              <!-- Deep link Private AI access switch -->
+              <div class="row items-center justify-center q-mb-md">
+                <q-toggle
+                  v-model="allowDeepLinkPrivateAI"
+                  label="Deep link users can chat with your Private AI"
+                  color="primary"
+                  :loading="savingDeepLinkSetting"
+                  @update:model-value="saveDeepLinkPrivateAISetting"
+                />
               </div>
+
+              <div v-if="loadingAgent" class="text-center q-pa-md">
+                <q-spinner size="2em" />
+                <div class="q-mt-sm">Loading agent...</div>
+              </div>
+
+              <div v-else-if="agentError" class="text-center q-pa-md">
+                <q-icon name="error" color="negative" size="40px" />
+                <div class="text-negative q-mt-sm">{{ agentError }}</div>
+                <q-btn label="Retry" color="primary" @click="loadAgent" class="q-mt-md" />
+              </div>
+
+              <div v-else-if="agentInstructions">
+                <div v-if="editMode" class="q-mb-md">
+                  <q-input
+                    v-model="editedInstructions"
+                    type="textarea"
+                    rows="15"
+                    outlined
+                    autofocus
+                  />
+                  <div class="q-mt-md">
+                    <q-btn label="Save" color="primary" @click="saveInstructions" :loading="savingInstructions" />
+                    <q-btn label="Cancel" flat @click="cancelEdit" class="q-ml-sm" />
+                  </div>
+                </div>
+
+                <div v-else>
+                  <div class="q-mb-md">
+                    <vue-markdown :source="agentInstructions" />
+                  </div>
+                </div>
 
               <!-- Agent Knowledge Bases (per this agent) -->
               <div v-if="agentKbs.length" class="q-mt-lg" style="border-top: 1px solid #e0e0e0; padding-top: 16px;">
@@ -766,6 +762,93 @@
               <q-icon name="smart_toy" size="3em" />
               <div class="q-mt-sm">No agent found</div>
             </div>
+            </template>
+
+            <!-- Secondary agent tab -->
+            <template v-else-if="activeAgentProfile === 'gpt'">
+              <div class="row items-center justify-between q-mb-md">
+                <div class="text-h6">{{ profileLabel('gpt') }}</div>
+              </div>
+
+              <!-- Deployment status -->
+              <div v-if="secondaryDeployStatus === 'ready'" class="q-mb-md">
+                <q-banner class="bg-green-1 text-green-9 rounded-borders">
+                  <template v-slot:avatar><q-icon name="check_circle" color="green" /></template>
+                  Agent deployed and ready.
+                </q-banner>
+              </div>
+
+              <div v-else-if="secondaryDeployStatus === 'deploying'" class="q-mb-md">
+                <q-banner class="bg-blue-1 text-blue-9 rounded-borders">
+                  <template v-slot:avatar><q-spinner color="primary" size="1.2em" /></template>
+                  <div>
+                    Deploying...
+                    <strong>{{ secondaryDeployElapsed }}s</strong>
+                    <span class="text-grey-7"> / 3 min max</span>
+                  </div>
+                  <div v-if="secondaryDeploySteps.length" class="q-mt-sm">
+                    <div v-for="(step, i) in secondaryDeploySteps" :key="i" class="text-caption" :class="step.ok === false ? 'text-red' : step.ok ? 'text-green-8' : 'text-grey-7'">
+                      {{ step.label }}{{ step.elapsed ? ` (${step.elapsed}s)` : '' }}
+                      <span v-if="step.ok === false"> — failed: {{ step.error }}</span>
+                    </div>
+                  </div>
+                </q-banner>
+                <q-btn
+                  flat
+                  label="Cancel"
+                  color="red"
+                  icon="cancel"
+                  class="q-mt-sm"
+                  @click="cancelSecondaryDeploy"
+                />
+              </div>
+
+              <div v-else-if="secondaryDeployStatus === 'failed'" class="q-mb-md">
+                <q-banner class="bg-red-1 text-red-9 rounded-borders">
+                  <template v-slot:avatar><q-icon name="error" color="red" /></template>
+                  Deployment failed{{ secondaryDeployError ? ': ' + secondaryDeployError : '' }}
+                </q-banner>
+                <div v-if="secondaryDeploySteps.length" class="q-mt-sm q-ml-md">
+                  <div v-for="(step, i) in secondaryDeploySteps" :key="i" class="text-caption" :class="step.ok === false ? 'text-red' : step.ok ? 'text-green-8' : 'text-grey-7'">
+                    {{ step.label }}{{ step.elapsed ? ` (${step.elapsed}s)` : '' }}
+                    <span v-if="step.ok === false"> — {{ step.error }}</span>
+                  </div>
+                </div>
+              </div>
+
+              <div v-else-if="secondaryDeployStatus === 'timeout'" class="q-mb-md">
+                <q-banner class="bg-orange-1 text-orange-9 rounded-borders">
+                  <template v-slot:avatar><q-icon name="schedule" color="orange" /></template>
+                  Deployment timed out after 3 minutes. The agent may still be starting up on DigitalOcean.
+                </q-banner>
+                <div v-if="secondaryDeploySteps.length" class="q-mt-sm q-ml-md">
+                  <div v-for="(step, i) in secondaryDeploySteps" :key="i" class="text-caption" :class="step.ok === false ? 'text-red' : step.ok ? 'text-green-8' : 'text-grey-7'">
+                    {{ step.label }}{{ step.elapsed ? ` (${step.elapsed}s)` : '' }}
+                  </div>
+                </div>
+              </div>
+
+              <!-- Deploy button (shown when not deployed and not currently deploying) -->
+              <div v-if="secondaryDeployStatus === 'idle' || secondaryDeployStatus === 'failed' || secondaryDeployStatus === 'timeout'" class="q-mb-md">
+                <q-btn
+                  :label="`Deploy Secondary Agent (Kimi K2.5)`"
+                  color="primary"
+                  icon="rocket_launch"
+                  @click="startSecondaryDeploy"
+                />
+              </div>
+
+              <!-- Instructions (read-only display) -->
+              <div class="q-mb-md">
+                <div class="text-subtitle2 q-mb-xs">Agent Instructions</div>
+                <div class="q-pa-sm bg-grey-1 rounded-borders text-body2">
+                  Do not hallucinate.
+                </div>
+                <div class="text-caption text-grey-6 q-mt-xs">
+                  The secondary AI uses minimal instructions. Patient Summaries are generated by the Primary AI only.
+                </div>
+              </div>
+            </template>
           </q-tab-panel>
 
           <!-- Saved Chats Tab -->
@@ -1134,7 +1217,7 @@
             </q-tabs>
 
             <!-- Instruction editor (per-agent Patient Summary prompt override) -->
-            <template v-if="summarySubTab === 'inst-default' || summarySubTab === 'inst-gpt'">
+            <template v-if="summarySubTab === 'inst-default'">
               <div class="text-caption text-grey-7 q-mb-sm">
                 Per-agent Patient Summary instructions. Saved to your account;
                 used by this agent when generating a Patient Summary. The
@@ -1176,6 +1259,14 @@
                   <div v-if="summaryInstr.status" class="text-caption text-grey-7">{{ summaryInstr.status }}</div>
                 </div>
               </template>
+            </template>
+
+            <!-- Secondary AI: no custom instructions -->
+            <template v-else-if="summarySubTab === 'inst-gpt'">
+              <div class="text-body2 text-grey-7 q-pa-md bg-grey-1 rounded-borders">
+                The secondary AI uses its built-in capabilities with no custom Patient Summary instructions.
+                Patient Summaries are generated by the Primary AI only.
+              </div>
             </template>
 
             <!-- Summary sub-tab: existing content unchanged. -->
@@ -1695,6 +1786,7 @@ const emit = defineEmits<{
   // (showAgentSetupDialog, wizardDismissed, wizardFlowPhase);
   // we just forward the user's click.
   'wizard-requested': [];
+  'provisioning-event': [data: Record<string, any>];
 }>();
 
 // Handle show patient summary from Lists component — regenerate summary with updated medications
@@ -1948,13 +2040,166 @@ const savingInstructions = ref(false);
 const profileLabel = (profileKey: string): string => {
   const prof = agentProfilesList.value.find(p => p.key === profileKey);
   if (prof) return prof.label;
-  return profileKey === 'default' ? 'Private AI (primary)' : 'Private AI (secondary)';
+  if (profileKey === 'default') return 'Private AI Primary (GPT)';
+  return 'Private AI Secondary (Kimi)';
 };
 const instrTabLabel = (profileKey: string): string => {
   const label = profileLabel(profileKey);
-  const short = label.replace(/^Private AI\s*\(?\s*/, '').replace(/\)\s*$/, '');
+  const short = label.replace(/^Private AI\s*/, '');
   return `Instructions for ${short}`;
 };
+
+// ── Secondary agent deployment ────────────────────────────────────
+type DeployStep = { label: string; ok?: boolean; elapsed?: number; error?: string };
+const secondaryDeployStatus = ref<'idle' | 'deploying' | 'ready' | 'failed' | 'timeout'>('idle');
+const secondaryDeployElapsed = ref(0);
+const secondaryDeployError = ref('');
+const secondaryDeploySteps = ref<DeployStep[]>([]);
+let secondaryDeployTimer: ReturnType<typeof setInterval> | null = null;
+let secondaryDeployAbort: AbortController | null = null;
+const SECONDARY_DEPLOY_TIMEOUT_MS = 180000; // 3 minutes
+
+const addDeployStep = (label: string, ok?: boolean, elapsed?: number, error?: string) => {
+  secondaryDeploySteps.value.push({ label, ok, elapsed, error });
+  emit('provisioning-event', {
+    event: 'secondary-deploy-step',
+    step: label,
+    ok: ok ?? null,
+    elapsed: elapsed ?? null,
+    error: error ?? null
+  });
+};
+
+const cancelSecondaryDeploy = () => {
+  if (secondaryDeployAbort) secondaryDeployAbort.abort();
+  if (secondaryDeployTimer) { clearInterval(secondaryDeployTimer); secondaryDeployTimer = null; }
+  secondaryDeployStatus.value = 'failed';
+  secondaryDeployError.value = 'Cancelled by user';
+  addDeployStep('Cancelled by user', false);
+};
+
+const startSecondaryDeploy = async () => {
+  if (!props.userId) return;
+  secondaryDeployStatus.value = 'deploying';
+  secondaryDeployElapsed.value = 0;
+  secondaryDeployError.value = '';
+  secondaryDeploySteps.value = [];
+  secondaryDeployAbort = new AbortController();
+  const signal = secondaryDeployAbort.signal;
+  const startedAt = Date.now();
+
+  secondaryDeployTimer = setInterval(() => {
+    secondaryDeployElapsed.value = Math.round((Date.now() - startedAt) / 1000);
+    if (Date.now() - startedAt > SECONDARY_DEPLOY_TIMEOUT_MS) {
+      if (secondaryDeployTimer) { clearInterval(secondaryDeployTimer); secondaryDeployTimer = null; }
+      if (secondaryDeployAbort) secondaryDeployAbort.abort();
+      secondaryDeployStatus.value = 'timeout';
+      addDeployStep('Deployment timed out after 3 minutes', false);
+      emit('provisioning-event', { event: 'secondary-provision-timeout', elapsedSeconds: secondaryDeployElapsed.value });
+    }
+  }, 1000);
+
+  emit('provisioning-event', { event: 'secondary-provision-started' });
+
+  try {
+    // Step 1: Create the agent via ensure-secondary
+    addDeployStep('Creating agent on DigitalOcean...');
+    const t1 = Date.now();
+    const createRes = await fetch('/api/agents/ensure-secondary', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      signal,
+      body: JSON.stringify({ userId: props.userId })
+    });
+    const createData = await createRes.json().catch(() => ({}));
+    const createElapsed = Number(((Date.now() - t1) / 1000).toFixed(1));
+
+    if (!createRes.ok || !createData.success) {
+      throw new Error(createData.error || `HTTP ${createRes.status}`);
+    }
+
+    if (createData.ready) {
+      addDeployStep('Agent created and ready', true, createElapsed);
+      secondaryDeployStatus.value = 'ready';
+      if (secondaryDeployTimer) { clearInterval(secondaryDeployTimer); secondaryDeployTimer = null; }
+      emit('provisioning-event', { event: 'secondary-provision-ready', elapsedSeconds: createElapsed });
+      return;
+    }
+
+    addDeployStep(`Agent created (${createData.status || 'deploying'})`, true, createElapsed);
+
+    // Step 2: Poll until STATUS_RUNNING or timeout
+    addDeployStep('Waiting for agent to reach STATUS_RUNNING...');
+    const pollStart = Date.now();
+    while (Date.now() - startedAt < SECONDARY_DEPLOY_TIMEOUT_MS) {
+      if (signal.aborted) return;
+      await new Promise(r => setTimeout(r, 5000));
+      if (signal.aborted) return;
+
+      try {
+        const pollRes = await fetch('/api/agents/ensure-secondary', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: 'include',
+          signal,
+          body: JSON.stringify({ userId: props.userId })
+        });
+        const pollData = await pollRes.json().catch(() => ({}));
+        const pollElapsed = Number(((Date.now() - pollStart) / 1000).toFixed(1));
+        const status = pollData.status || 'unknown';
+
+        if (pollData.ready) {
+          addDeployStep(`Agent STATUS_RUNNING`, true, pollElapsed);
+          secondaryDeployStatus.value = 'ready';
+          if (secondaryDeployTimer) { clearInterval(secondaryDeployTimer); secondaryDeployTimer = null; }
+          emit('provisioning-event', {
+            event: 'secondary-provision-ready',
+            elapsedSeconds: Number(((Date.now() - startedAt) / 1000).toFixed(1))
+          });
+          return;
+        }
+        // Update the latest step with current status
+        const lastStep = secondaryDeploySteps.value[secondaryDeploySteps.value.length - 1];
+        if (lastStep && lastStep.label.startsWith('Waiting')) {
+          lastStep.label = `Waiting for STATUS_RUNNING... (currently: ${status}, ${pollElapsed}s)`;
+        }
+      } catch (e: any) {
+        if (e.name === 'AbortError') return;
+      }
+    }
+
+    // If we get here, we timed out (the interval handler handles it)
+  } catch (e: any) {
+    if (e.name === 'AbortError') return;
+    if (secondaryDeployTimer) { clearInterval(secondaryDeployTimer); secondaryDeployTimer = null; }
+    secondaryDeployStatus.value = 'failed';
+    secondaryDeployError.value = e.message || 'Unknown error';
+    addDeployStep(`Error: ${e.message}`, false);
+    emit('provisioning-event', { event: 'secondary-provision-failed', error: e.message });
+  }
+};
+
+// Check if secondary is already deployed when switching to the tab
+const checkSecondaryStatus = async () => {
+  if (!props.userId || secondaryDeployStatus.value === 'deploying') return;
+  try {
+    const r = await fetch('/api/agents/ensure-secondary', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify({ userId: props.userId, checkOnly: true })
+    });
+    const d = await r.json().catch(() => ({}));
+    if (d.ready) {
+      secondaryDeployStatus.value = 'ready';
+    }
+  } catch { /* ignore */ }
+};
+
+watch(activeAgentProfile, (tab) => {
+  if (tab === 'gpt') void checkSecondaryStatus();
+});
 
 // Deep link Private AI access setting
 const allowDeepLinkPrivateAI = ref(true); // Default to enabled
@@ -2538,10 +2783,9 @@ const loadAgent = async () => {
         const pd = await provResp.json();
         const list = Array.isArray(pd.privateAiProfiles) ? pd.privateAiProfiles : [];
         agentProfilesList.value = list.map((p: { key: string; label: string }) => ({ key: p.key, label: p.label }));
-        if (agentProfilesList.value.length > 0 &&
-            !agentProfilesList.value.some(p => p.key === activeAgentProfile.value)) {
-          activeAgentProfile.value = agentProfilesList.value[0].key;
-        }
+        // Don't reset activeAgentProfile when the current tab isn't in
+        // the deployed-profiles list — the 'gpt' tab is always rendered
+        // and handles the undeployed state with a Deploy button.
       }
     } catch { /* non-fatal — fall back to default profile only */ }
 
@@ -5880,11 +6124,11 @@ const loadPatientSummaryInstructions = async (profileKey: 'default' | 'gpt') => 
       summaryInstr.value = {
         loading: false, saving: false,
         profileKey,
-        // If no override is set, pre-fill the editor with the default so the
-        // user can see/edit the current template rather than starting blank.
-        text: (d.override && d.override.trim()) ? d.override : (d.default || ''),
+        // Primary: pre-fill with the default template so the user can edit.
+        // Secondary: leave blank (no custom instructions by design).
+        text: (d.override && d.override.trim()) ? d.override : (profileKey === 'gpt' ? '' : (d.default || '')),
         defaultText: d.default || '',
-        status: d.override ? 'Custom override saved' : 'Using default'
+        status: d.override ? 'Custom override saved' : (profileKey === 'gpt' ? 'No custom instructions' : 'Using default')
       };
     } else {
       summaryInstr.value = { loading: false, saving: false, profileKey, text: '', defaultText: '', status: d.error || 'Failed to load' };
