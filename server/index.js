@@ -6635,18 +6635,52 @@ app.delete('/api/delete-file', async (req, res) => {
     });
     console.log(`✅ Deleted file from Spaces: ${bucketKey}`);
 
+    // Check if the deleted file is the Apple Health source
+    const deletedFile = (userDoc.files || []).find(f => f.bucketKey === bucketKey);
+    const wasAppleHealth = deletedFile?.isAppleHealth;
+
     // Update user document
     if (userDoc.files) {
       // Remove file from userDoc.files
       userDoc.files = userDoc.files.filter(f => f.bucketKey !== bucketKey);
-      
-      await cloudant.saveDocument('maia_users', userDoc);
-      console.log(`✅ Removed file metadata from user document: ${bucketKey}`);
     }
+
+    if (wasAppleHealth) {
+      // Clear stale Apple Health metadata so the next AH upload rebuilds
+      delete userDoc.appleHealthCategoriesBuiltAt;
+      delete userDoc.appleHealthCategoriesSourceKey;
+      // Clear cached worksheet data derived from the old AH file
+      delete userDoc.oorLabsWorksheet;
+      delete userDoc.encountersWorksheet;
+      delete userDoc.medsWorksheets;
+      console.log(`🧹 Cleared Apple Health metadata and cached worksheets for ${userId}`);
+
+      // Delete Lists sidecars from Spaces (best-effort)
+      try {
+        const { ListObjectsV2Command } = await import('@aws-sdk/client-s3');
+        const listsPrefix = `${userId}/Lists/`;
+        const listResp = await s3Client.send(new ListObjectsV2Command({
+          Bucket: bucketName,
+          Prefix: listsPrefix
+        }));
+        if (listResp.Contents?.length) {
+          for (const obj of listResp.Contents) {
+            await deleteObjectWithLog({ s3Client, bucketName, key: obj.Key });
+          }
+          console.log(`🧹 Deleted ${listResp.Contents.length} Lists sidecar(s) for ${userId}`);
+        }
+      } catch (listsErr) {
+        console.warn(`[delete-file] Lists sidecar cleanup failed (non-fatal): ${listsErr?.message}`);
+      }
+    }
+
+    await cloudant.saveDocument('maia_users', userDoc);
+    console.log(`✅ Removed file metadata from user document: ${bucketKey}`);
 
     res.json({
       success: true,
-      message: 'File deleted successfully'
+      message: 'File deleted successfully',
+      wasAppleHealth: !!wasAppleHealth
     });
   } catch (error) {
     console.error('❌ Error deleting file:', error);
@@ -12773,10 +12807,10 @@ app.get('/api/encounters/worksheet', async (req, res) => {
 });
 
 // Deterministic Out-Of-Range labs worksheet from NON-Apple-Health PDFs
-// (Epic / MGB / etc). Apple Health PDFs already feed the OOR section
-// of the Patient Summary directly; this endpoint serves accounts that
-// have only Epic-style exports — same UX as the Encounters worksheet
-// (POST to (re)build, GET to read the cached doc).
+// Deterministic OOR labs scan — Apple Health Lab Results only.
+// Uses extractPdfWithPages (pdfjs) to get page-segmented markdown that
+// preserves the "OUT OF RANGE" annotations, then extractAppleHealthOorLabs
+// to parse them. POST to (re)build, GET to read the cached doc.
 app.post('/api/labs/oor-worksheet', async (req, res) => {
   try {
     const userId = resolveUserId(req, res);
@@ -12784,54 +12818,36 @@ app.post('/api/labs/oor-worksheet', async (req, res) => {
     const userDoc = await cloudant.getDocument('maia_users', userId);
     if (!userDoc) return res.status(404).json({ success: false, error: 'USER_NOT_FOUND' });
 
-    const kbName = getKBNameFromUserDoc(userDoc, userId);
-    const kbPrefix = kbName ? `${userId}/${kbName}/` : null;
-    // Non-AH PDFs only — AH OOR labs are already extracted into the PS
-    // pipeline by extractAppleHealthOorLabs (which has the structured
-    // "[OUT OF RANGE]" markdown to work from). Here we cover the
-    // accounts where AH is absent.
-    const pdfFiles = (userDoc.files || []).filter(f =>
-      f?.fileName &&
-      !f.isAppleHealth &&
-      (!kbPrefix || (f.bucketKey || '').startsWith(kbPrefix)) &&
-      (/\.pdf$/i.test(f.fileName) || /pdf/i.test(f.fileType || ''))
-    );
-    if (pdfFiles.length === 0) {
+    const ahFile = (userDoc.files || []).find(f => f?.isAppleHealth && f?.bucketKey);
+    if (!ahFile) {
       return res.status(400).json({
         success: false,
-        error: 'NO_EPIC_PDFS',
-        message: 'No non-Apple-Health PDF files to scan for out-of-range labs.'
+        error: 'NO_APPLE_HEALTH',
+        message: 'No Apple Health file with Lab Results found. Upload an Apple Health export first.'
       });
     }
 
-    const legend = pdfFiles.map((f, i) => ({ tag: `File ${i + 1}`, fileName: f.fileName, bucketKey: f.bucketKey || null }));
-
-    const { extractEpicOorLabs } = await import('./utils/epic-oor-extractor.js');
-    const { buildLinePageMap } = await import('./utils/encounters-extractor.js');
-    const pdfParse = (await import('pdf-parse')).default;
-
-    const allRows = [];
-    const modes = {};
-    for (let i = 0; i < pdfFiles.length; i++) {
-      const f = pdfFiles[i];
-      const tag = `File ${i + 1}`;
-      if (!f.bucketKey) { modes[tag] = 'missing-key'; continue; }
-      const buf = await readSpacesObjectBuffer(f.bucketKey);
-      if (!buf) { modes[tag] = 'download-failed'; continue; }
-      try {
-        const data = await pdfParse(buf);
-        const lines = (data.text || '').split('\n');
-        const linePage = buildLinePageMap(lines, data.numpages);
-        const rows = extractEpicOorLabs(lines, linePage, tag);
-        modes[tag] = `ok (${rows.length})`;
-        allRows.push(...rows);
-      } catch (e) {
-        modes[tag] = 'parse-error';
-        console.warn(`[oor-worksheet] parse failed for ${f.fileName}: ${e?.message || e}`);
-      }
+    const buf = await readSpacesObjectBuffer(ahFile.bucketKey);
+    if (!buf) {
+      return res.status(500).json({ success: false, error: 'DOWNLOAD_FAILED', message: 'Could not download the Apple Health file.' });
     }
 
-    // Sort newest-first by isoDate (empty dates at the end).
+    const { extractPdfWithPages } = await import('./utils/pdf-parser.js');
+    const parsed = await extractPdfWithPages(buf);
+    const fullMarkdown = (parsed.pages || []).map(p => `## Page ${p.page}\n\n${p.markdown}`).join('\n\n---\n\n');
+
+    const oors = extractAppleHealthOorLabs(fullMarkdown);
+    const legend = [{ tag: 'AH', fileName: ahFile.fileName, bucketKey: ahFile.bucketKey }];
+
+    const allRows = oors.map(o => ({
+      analyte: o.line,
+      value: '',
+      flag: 'OUT OF RANGE',
+      isoDate: o.isoDate || '',
+      page: o.page,
+      fileTag: 'AH'
+    }));
+
     allRows.sort((a, b) => {
       if (!a.isoDate && !b.isoDate) return 0;
       if (!a.isoDate) return 1;
@@ -12844,9 +12860,8 @@ app.post('/api/labs/oor-worksheet', async (req, res) => {
       rows: allRows,
       legend,
       generatedAt,
-      fileCount: pdfFiles.length,
-      rowCount: allRows.length,
-      modes
+      fileCount: 1,
+      rowCount: allRows.length
     };
 
     for (let attempt = 0; attempt < 3; attempt++) {
@@ -12866,7 +12881,7 @@ app.post('/api/labs/oor-worksheet', async (req, res) => {
 
     await appendUserProvisioningEvent(userId, {
       event: 'oor-labs-worksheet-generated',
-      fileCount: pdfFiles.length,
+      fileCount: 1,
       rowCount: allRows.length
     });
 

@@ -1055,6 +1055,7 @@
             <Lists
               ref="listsComponentRef"
               :userId="userId"
+              :profile-labels="agentProfileLabelsMap"
               @back-to-chat="closeDialog"
               @show-patient-summary="handleShowPatientSummary"
               @current-medications-saved="handleCurrentMedicationsSaved"
@@ -1453,9 +1454,24 @@
               </template>
             </div>
 
-            <div v-if="loadingSummary" class="text-center q-pa-md">
-              <q-spinner size="2em" />
-              <div class="q-mt-sm">Loading patient summary...</div>
+            <div v-if="loadingSummary" class="q-pa-md">
+              <div v-if="generatingSummary" class="q-mb-sm">
+                <div class="text-subtitle2 q-mb-sm">Generating Patient Summary... {{ summaryElapsed }}s</div>
+                <div v-for="(step, i) in summaryGenerationSteps" :key="i" class="row items-center q-mb-xs" style="font-size: 0.85rem;">
+                  <q-icon
+                    :name="i < summaryGenerationStep ? 'check_circle' : (i === summaryGenerationStep ? 'hourglass_top' : 'radio_button_unchecked')"
+                    :color="i < summaryGenerationStep ? 'positive' : (i === summaryGenerationStep ? 'primary' : 'grey-5')"
+                    size="18px"
+                    class="q-mr-sm"
+                  />
+                  <span :class="i <= summaryGenerationStep ? 'text-dark' : 'text-grey-5'">{{ step.label }}</span>
+                  <q-spinner v-if="i === summaryGenerationStep" size="14px" color="primary" class="q-ml-sm" />
+                </div>
+              </div>
+              <div v-else class="text-center">
+                <q-spinner size="2em" />
+                <div class="q-mt-sm">Loading patient summary...</div>
+              </div>
             </div>
 
             <div v-else-if="summaryError" class="text-center q-pa-md">
@@ -1869,6 +1885,7 @@ interface Props {
   // Patient Summary ("must verify meds first").
   medsNeedsVerify?: boolean;
   showClosePrompt?: boolean;
+  savedChatCount?: number;
 }
 
 const props = withDefaults(defineProps<Props>(), {
@@ -1878,6 +1895,7 @@ const props = withDefaults(defineProps<Props>(), {
   wizardActive: false,
   medsNeedsVerify: false,
   showClosePrompt: false,
+  savedChatCount: 0,
 });
 
 const emit = defineEmits<{
@@ -2000,10 +2018,10 @@ watch(currentTab, (v) => {
 // Setup Wizard icon (that one signals "wizard work in progress").
 const railTabs = computed(() => [
   { name: 'files',      icon: 'description',  label: 'Saved Files',     alertCount: 0, alertOutline: false },
-  { name: 'agent',      icon: 'smart_toy',    label: 'My AI Agent',     alertCount: 0, alertOutline: false },
-  { name: 'chats',      icon: 'chat',         label: 'Saved Chats',     alertCount: 0, alertOutline: false },
+  { name: 'agent',      icon: 'smart_toy',    label: 'AI Agents',       alertCount: 0, alertOutline: false },
+  { name: 'chats',      icon: 'chat',         label: 'Saved Chats',     alertCount: props.savedChatCount || 0, alertOutline: false },
   { name: 'summary',    icon: 'description',  label: 'Patient Summary', alertCount: 0, alertOutline: summaryNeedsVerify.value },
-  { name: 'lists',      icon: 'list',         label: 'My Lists',        alertCount: 0, alertOutline: !!props.medsNeedsVerify },
+  { name: 'lists',      icon: 'list',         label: 'Lists',           alertCount: 0, alertOutline: !!props.medsNeedsVerify },
   { name: 'privacy',    icon: 'privacy_tip',  label: 'Privacy Filter',  alertCount: 0, alertOutline: false },
   { name: 'diary',      icon: 'book',         label: 'Patient Diary',   alertCount: 0, alertOutline: false },
   { name: 'references', icon: 'link',         label: 'References',      alertCount: 0, alertOutline: false }
@@ -2165,6 +2183,12 @@ const editedInstructions = ref('');
 const agentProfilesList = ref<Array<{ key: string; label: string }>>([]);
 const activeAgentProfile = ref<string>('default');
 const savingInstructions = ref(false);
+
+const agentProfileLabelsMap = computed(() => {
+  const map: Record<string, string> = {};
+  for (const p of agentProfilesList.value) map[p.key] = p.label;
+  return map;
+});
 
 const profileLabel = (profileKey: string): string => {
   const prof = agentProfilesList.value.find(p => p.key === profileKey);
@@ -2404,6 +2428,35 @@ const sharedChats = ref<SavedChat[]>([]);
 
 // Patient Summary
 const loadingSummary = ref(false);
+const generatingSummary = ref(false);
+const summaryGenerationStep = ref(0);
+const summaryElapsed = ref(0);
+let summaryTimer: ReturnType<typeof setInterval> | null = null;
+const summaryGenerationSteps = [
+  { label: 'Parsing patient identity from PDF headers', delay: 2 },
+  { label: 'Extracting verified medications', delay: 3 },
+  { label: 'Scanning Apple Health for out-of-range labs', delay: 6 },
+  { label: 'Extracting allergies', delay: 8 },
+  { label: 'Extracting encounters (past 12 months)', delay: 11 },
+  { label: 'Extracting medical & social history', delay: 14 },
+  { label: 'Extracting radiology / imaging', delay: 17 },
+  { label: 'Building stopped medications list', delay: 20 },
+  { label: 'Querying AI agent with knowledge base...', delay: 23 },
+];
+const startSummaryProgress = () => {
+  summaryGenerationStep.value = 0;
+  summaryElapsed.value = 0;
+  if (summaryTimer) clearInterval(summaryTimer);
+  summaryTimer = setInterval(() => {
+    summaryElapsed.value++;
+    const nextStep = summaryGenerationSteps.findIndex(s => s.delay > summaryElapsed.value);
+    summaryGenerationStep.value = nextStep < 0 ? summaryGenerationSteps.length : nextStep;
+  }, 1000);
+};
+const stopSummaryProgress = () => {
+  if (summaryTimer) { clearInterval(summaryTimer); summaryTimer = null; }
+  generatingSummary.value = false;
+};
 const summaryError = ref('');
 
 // Privacy Filter
@@ -3903,12 +3956,16 @@ const pollIndexingProgress = async (jobId: string) => {
         await loadFiles();
         
         emit('indexing-finished', { jobId, phase: 'complete' });
-        
+
+        // Rebuild Apple Health sidecars + worksheets so Lists
+        // and Patient Summary reflect the current KB contents.
+        rebuildListsAfterIndexing();
+
         // Reload agent info to update KB info (including indexed files and connection status)
         if (currentTab.value === 'agent') {
           await loadAgent();
         }
-        
+
         // Attach KB to agent (patient summary generation is disabled)
         await attachKBToAgentOnlyDuringIndexing();
         
@@ -6406,7 +6463,9 @@ const requestNewSummary = async () => {
   }
 
   loadingSummary.value = true;
+  generatingSummary.value = true;
   summaryError.value = '';
+  startSummaryProgress();
 
   try {
     console.log('[MyStuff] requestNewSummary: POST /api/generate-patient-summary');
@@ -6459,6 +6518,7 @@ const requestNewSummary = async () => {
       });
     }
   } finally {
+    stopSummaryProgress();
     loadingSummary.value = false;
   }
 };
@@ -7137,6 +7197,47 @@ watch(isOpen, (newValue) => {
 });
 
 const listsComponentRef = ref<InstanceType<typeof Lists> | null>(null);
+
+const rebuildListsAfterIndexing = async () => {
+  try {
+    // Find the Apple Health file from the current file list
+    const ahFile = userFiles.value.find(f => (f as any).isAppleHealth && f.bucketKey);
+    if (ahFile) {
+      // Rebuild Apple Health category sidecars (Lists/*.md in Spaces)
+      await fetch('/api/files/lists/process-initial-file', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({
+          bucketKey: ahFile.bucketKey,
+          fileName: ahFile.fileName,
+          force: true
+        })
+      });
+      console.log('[MyStuff] Rebuilt Apple Health sidecars after indexing');
+    }
+    // Regenerate Encounters and OOR Labs worksheets
+    await Promise.allSettled([
+      fetch('/api/encounters/worksheet', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include'
+      }),
+      fetch('/api/labs/oor-worksheet', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include'
+      })
+    ]);
+    console.log('[MyStuff] Regenerated worksheets after indexing');
+    // Tell the Lists component to reload all its data
+    if (listsComponentRef.value) {
+      listsComponentRef.value.reloadAll();
+    }
+  } catch (e) {
+    console.warn('[MyStuff] Post-indexing Lists rebuild failed (non-fatal):', e);
+  }
+};
 
 watch(currentTab, async (newTab) => {
   if (isOpen.value) {
