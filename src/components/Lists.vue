@@ -325,7 +325,7 @@
           No worksheet yet. Press <strong>Generate</strong> to build it from this agent's knowledge base.
         </div>
 
-        <template v-else>
+        <template v-else-if="worksheets[ws.profileKey]">
           <q-markup-table v-if="worksheetView(ws.profileKey).rows.length" flat bordered dense wrap-cells>
             <thead>
               <tr>
@@ -338,7 +338,7 @@
                   <template v-if="ci === worksheetView(ws.profileKey).sourceIdx && parseSourceTokens(cell).length">
                     <template v-for="(tok, ti) in parseSourceTokens(cell)" :key="ti">
                       <span v-if="ti > 0">, </span>
-                      <a href="#" class="text-primary" @click.prevent="openWorksheetSource(tok.raw, worksheets[ws.profileKey].legend)">{{ tok.raw }}</a>
+                      <a href="#" class="text-primary" @click.prevent="openWorksheetSource(tok.raw, worksheets[ws.profileKey]?.legend)">{{ tok.raw }}</a>
                     </template>
                   </template>
                   <span v-else>{{ cell }}</span>
@@ -347,11 +347,11 @@
             </tbody>
           </q-markup-table>
           <!-- Fallback if the model didn't return a parseable table -->
-          <pre v-else style="white-space: pre-wrap; font-family: monospace; font-size: 12px;">{{ worksheets[ws.profileKey].table }}</pre>
+          <pre v-else style="white-space: pre-wrap; font-family: monospace; font-size: 12px;">{{ worksheets[ws.profileKey]?.table }}</pre>
 
           <!-- File legend footnote -->
-          <div v-if="worksheets[ws.profileKey].legend?.length" class="q-mt-sm text-caption text-grey-7">
-            <div v-for="(l, li) in worksheets[ws.profileKey].legend" :key="li">
+          <div v-if="worksheets[ws.profileKey]?.legend?.length" class="q-mt-sm text-caption text-grey-7">
+            <div v-for="(l, li) in worksheets[ws.profileKey]?.legend" :key="li">
               {{ l.tag }} = {{ l.fileName }}
             </div>
           </div>
