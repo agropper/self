@@ -3261,14 +3261,6 @@ const toggleWizardKbCheckbox = async (file: { bucketKey?: string | null; inKnowl
   }
 };
 
-const handleWizardSummaryAction = () => {
-  if (!props.user?.userId) return;
-  myStuffInitialTab.value = 'summary';
-  showMyStuffDialog.value = true;
-  requestMyStuffSummaryAction('generate-summary');
-  wizardPatientSummary.value = false;
-};
-
 const dismissWizard = () => {
   wizardDismissed.value = true;
   showAgentSetupDialog.value = false;
@@ -7834,13 +7826,7 @@ const handleMyStuffShowSummary = () => {
   requestMyStuffSummaryAction('generate-summary');
 };
 
-/** Track My Stuff tab opens. Skip brief Saved Files opens (< 1 second). */
-let lastTabOpenTime = 0;
-let lastTabName = '';
 const handleMyStuffTabOpened = (tab: string) => {
-  const now = Date.now();
-  lastTabOpenTime = now;
-  lastTabName = tab;
   logProvisioningEvent({ event: 'workbook-tab', tab });
 };
 
