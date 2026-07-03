@@ -664,6 +664,7 @@
       :wizard-active="wizardActive"
       :meds-needs-verify="medsNeedsVerify"
       :show-close-prompt="showWorkbookClosePrompt"
+      :saved-chat-count="savedChatCount"
       @chat-selected="handleChatSelected"
       @indexing-started="handleIndexingStarted"
       @indexing-status-update="handleIndexingStatusUpdate"
@@ -1835,6 +1836,7 @@ const modelDisplayNames: Record<string, string> = {
   'deepseek-r1-distill-llama-70b': 'DeepSeek R1 70B',
   'nvidia-nemotron-3-super-120b': 'Nemotron 120B',
   'kimi-k2.5': 'Kimi K2.5',
+  'gemini-3.5-flash': 'Gemini 3.5 Flash',
 };
 
 // Private AI profiles reported by /api/chat/providers. Each ready
@@ -3796,7 +3798,7 @@ const generateSetupLogPdf = async () => {
     `${labelForProfileKey('gpt')} ready: ${gptAgentReady.value ? 'Yes' : 'Pending'}`,
     `KB indexed: ${hasIndexing ? 'Yes' : 'Pending'} (${indexTokens} tokens)`,
     `Current Medications: ${wizardCurrentMedications.value ? 'Verified' : 'Pending verification'}`,
-    `Medication Worksheets: see My Lists (GPT + Deepseek)`,
+    `Medication Worksheets: see Lists (generate on demand)`,
     `Patient Summary: ${hasSummary ? 'Yes' : 'No'}`
   ];
   for (const item of summaryItems) {
@@ -7306,12 +7308,8 @@ watch(
         }
       }
 
-      // Step 2: Trigger background generation of both Medication Worksheets.
-      // Secondary agent was already provisioned in Step 0 above.
-      console.log('[Wizard] Starting medication worksheets');
-      logProvisioningEvent({ event: 'medication-worksheets-started' });
-      wizardPreparingMessage.value = 'Generating medication worksheets from your records...';
-      triggerSetupWorksheets();
+      // Step 2: Medication Worksheets are NOT auto-generated during setup.
+      // Users can generate them on demand from the Lists tab.
 
       // Step 3: open My Lists → Current Medications for the user to VERIFY.
       console.log('[Wizard] Advancing to medications phase — opening My Lists');
@@ -7330,53 +7328,6 @@ watch(
   }
 );
 
-/**
- * Fire-and-forget generation of both Current Medications Worksheets at Setup.
- * Persists server-side (userDoc.medsWorksheets[profileKey]); the user views /
- * refreshes them in My Lists. GPT may return 202 (provisioning/deploying) — that
- * is expected and non-fatal; the user can Refresh it later.
- */
-const triggerSetupWorksheets = () => {
-  if (!props.user?.userId) return;
-  const userId = props.user.userId;
-  for (const profileKey of ['default'] as const) {
-    void (async () => {
-      try {
-        const res = await fetch('/api/medications/worksheet', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          credentials: 'include',
-          body: JSON.stringify({ userId, agentProfileKey: profileKey })
-        });
-        if (res.status === 202) {
-          console.log(`[Wizard] Worksheet (${profileKey}) deferred — agent still provisioning`);
-        } else if (!res.ok) {
-          console.warn(`[Wizard] Worksheet (${profileKey}) failed: HTTP ${res.status}`);
-        }
-      } catch (err) {
-        console.warn(`[Wizard] Worksheet (${profileKey}) generation error:`, err);
-      }
-    })();
-  }
-  // Also build the Encounters worksheet (deterministic — no agent call,
-  // just PDF parsing) so it's ready in My Lists without the user having
-  // to click "Generate". Pairs with the Medication Worksheets above.
-  void (async () => {
-    try {
-      const res = await fetch('/api/encounters/worksheet', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        credentials: 'include',
-        body: JSON.stringify({ userId })
-      });
-      if (!res.ok) {
-        console.warn(`[Wizard] Encounters worksheet build failed: HTTP ${res.status}`);
-      }
-    } catch (err) {
-      console.warn('[Wizard] Encounters worksheet build error:', err);
-    }
-  })();
-};
 
 // ── TEST MODE: Auto-verify watchers ──────────────────────────────
 // In testMode, automatically verify medications and summary when the wizard
@@ -7549,9 +7500,39 @@ const handleIndexingFinished = (_data: { jobId: string; phase: string; error?: s
   // Refresh again after delays to pick up the final token count.
   setTimeout(() => refreshWizardState(), 30_000);
   setTimeout(() => refreshWizardState(), 90_000);
+  // Rebuild Apple Health Lists sidecars after re-indexing so that
+  // Lists, OOR Labs, and Patient Summary pick up the current AH file.
+  rebuildAppleHealthSidecarsIfNeeded();
   // Prompt to update Patient Summary, but not during wizard-controlled guided flow or if already dismissed this session
   if (wizardFlowPhase.value !== 'medications' && wizardFlowPhase.value !== 'summary' && !postIndexingSummaryDismissedThisSession.value) {
     showPostIndexingSummaryPrompt.value = true;
+  }
+};
+
+// MyStuffDialog.rebuildListsAfterIndexing handles the full rebuild
+// (sidecars + worksheets + Lists UI reload). This is a lightweight
+// fallback for when indexing finishes while MyStuffDialog is closed.
+const rebuildAppleHealthSidecarsIfNeeded = async () => {
+  try {
+    const filesResp = await fetch('/api/user-files', { credentials: 'include' });
+    if (!filesResp.ok) return;
+    const filesData = await filesResp.json();
+    const files = Array.isArray(filesData?.files) ? filesData.files : [];
+    const ahFile = files.find((f: { isAppleHealth?: boolean; bucketKey?: string }) => f.isAppleHealth && f.bucketKey);
+    if (!ahFile) return;
+    await fetch('/api/files/lists/process-initial-file', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify({ bucketKey: ahFile.bucketKey, fileName: ahFile.fileName, force: true })
+    });
+    await Promise.allSettled([
+      fetch('/api/encounters/worksheet', { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'include' }),
+      fetch('/api/labs/oor-worksheet', { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'include' })
+    ]);
+    console.log('[indexing-finished] Rebuilt AH sidecars + worksheets');
+  } catch (e) {
+    console.warn('[indexing-finished] AH rebuild failed (non-fatal):', e);
   }
 };
 
