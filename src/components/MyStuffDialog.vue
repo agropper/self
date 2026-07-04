@@ -2557,7 +2557,10 @@ const renderPsHtml = (text: string | null | undefined): string => {
   const processed = processFileNCitations(txt, userFiles.value as any);
   return psMarkdown.render(processed);
 };
-const patientSummaryHtml = computed(() => renderPsHtml(patientSummary.value));
+const patientSummaryHtml = computed(() => {
+  void userFiles.value;
+  return renderPsHtml(patientSummary.value);
+});
 const handlePsCitationClick = (event: Event) => {
   const target = event.target as HTMLElement;
   const link = target.closest('.page-link') as HTMLElement | null;
