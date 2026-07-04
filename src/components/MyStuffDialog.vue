@@ -1449,7 +1449,7 @@
                 <div class="row q-gutter-sm q-mt-sm">
                   <q-btn flat label="Discard both" color="grey-7" @click="dismissSummaryPair" />
                   <q-space />
-                  <q-btn flat label="Regenerate" color="primary" icon="refresh" @click="requestNewSummaryPair" />
+                  <q-btn flat label="Regenerate" color="primary" icon="refresh" @click="handleRequestNewSummary" />
                 </div>
               </template>
             </div>
@@ -1604,10 +1604,10 @@
                 <q-btn
                   label="Request New Summary"
                   color="primary"
-                  @click="requestNewSummaryPair"
+                  @click="handleRequestNewSummary"
                   icon="refresh"
-                  :disable="isEditingSummaryTab || isSavingSummary || loadingPair"
-                  :loading="loadingPair"
+                  :disable="isEditingSummaryTab || isSavingSummary || loadingSummary"
+                  :loading="loadingSummary"
                 />
               </div>
             </div>
@@ -1619,9 +1619,9 @@
                 <q-btn
                   label="Request Summary"
                   color="primary"
-                  @click="requestNewSummaryPair"
+                  @click="handleRequestNewSummary"
                   icon="add"
-                  :loading="loadingPair"
+                  :loading="loadingSummary"
                 />
               </div>
             </div>
@@ -6460,6 +6460,13 @@ const chooseSummaryCandidate = async (text: string) => {
 const dismissSummaryPair = () => {
   summaryPair.value = null;
   pairError.value = '';
+};
+
+const handleRequestNewSummary = () => {
+  summaryPair.value = null;
+  currentTab.value = 'summary';
+  pendingSummaryRegeneration.value = true;
+  requestNewSummary();
 };
 
 const requestNewSummary = async () => {
