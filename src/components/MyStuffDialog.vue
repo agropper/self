@@ -6443,36 +6443,6 @@ watch(summarySubTab, (tab) => {
   else if (tab === 'inst-gpt') void loadPatientSummaryInstructions('gpt');
 });
 
-const requestNewSummaryPair = async () => {
-  if (!props.userId) return;
-  loadingPair.value = true;
-  pairError.value = '';
-  summaryPair.value = null;
-  try {
-    const res = await fetch('/api/patient-summary/generate-pair', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      credentials: 'include',
-      body: JSON.stringify({ userId: props.userId })
-    });
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok || data.success === false) {
-      throw new Error(data.error || `HTTP ${res.status}`);
-    }
-    summaryPair.value = {
-      generatedAt: data.generatedAt || new Date().toISOString(),
-      default: data.default || null,
-      gpt: data.gpt || null
-    };
-  } catch (err) {
-    pairError.value = err instanceof Error ? err.message : 'Failed to generate summaries';
-    if ($q && typeof $q.notify === 'function') {
-      $q.notify({ type: 'negative', message: pairError.value, timeout: 5000 });
-    }
-  } finally {
-    loadingPair.value = false;
-  }
-};
 
 const chooseSummaryCandidate = async (text: string) => {
   if (!text || !text.trim()) return;
