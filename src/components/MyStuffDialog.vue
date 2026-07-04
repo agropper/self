@@ -1924,7 +1924,7 @@ const emit = defineEmits<{
   'indexing-status-update': [data: { jobId: string; phase: string; tokens: string; filesIndexed: number; progress: number }];
   'indexing-finished': [data: { jobId: string; phase: string; error?: string }];
   'files-archived': [archivedFiles: string[]]; // Emit bucketKeys of archived files
-  'messages-filtered': [messages: Message[]]; // Emit filtered messages with pseudonyms
+  'messages-filtered': [messages: Message[], nameMapping?: Array<{ original: string; pseudonym: string }>]; // Emit filtered messages with pseudonyms
   'diary-posted': [content: string]; // Emit diary content to add to chat
   'reference-file-added': [file: { fileName: string; bucketKey: string; fileSize: number; uploadedAt: string; fileType?: string; fileUrl?: string; isReference: boolean }]; // Emit reference file to add to chat
   'current-medications-saved': [data: { value: string; edited: boolean; source?: string }];
@@ -5601,8 +5601,8 @@ const filterCurrentChat = () => {
     return;
   }
   
-  // Emit filtered messages to parent component
-  emit('messages-filtered', filteredMessages);
+  // Emit filtered messages to parent component (include mapping for filename filtering)
+  emit('messages-filtered', filteredMessages, privacyFilterMapping.value);
   
   const namesList = pseudonymizedNames.map(n => `${n.original} → ${n.pseudonym}`).join(', ');
   

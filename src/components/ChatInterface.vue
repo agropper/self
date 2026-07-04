@@ -970,6 +970,7 @@ const providers = ref<string[]>([]);
 const selectedProvider = ref<string>('Private AI');
 const messages = ref<Message[]>([]);
 const originalMessages = ref<Message[]>([]); // Store original unfiltered messages for privacy filtering
+const privacyNameMapping = ref<Array<{ original: string; pseudonym: string }>>([]);
 const trulyOriginalMessages = ref<Message[]>([]); // Store truly original messages that never get overwritten (for filtering)
 const inputMessage = ref('');
 const isStreaming = ref(false);
@@ -5142,6 +5143,26 @@ const viewFile = (file: UploadedFile, page?: number) => {
   }
 };
 
+const buildPrivacyNameFilter = (): ((text: string) => string) | undefined => {
+  const mapping = privacyNameMapping.value;
+  if (!mapping || mapping.length === 0) return undefined;
+  return (text: string) => {
+    let out = text;
+    for (const { original, pseudonym } of mapping) {
+      const parts = original.split(/\s+/).filter(Boolean);
+      if (parts.length < 2) continue;
+      const firstName = parts[0];
+      const lastName = parts[parts.length - 1];
+      const pseudoParts = pseudonym.split(/\s+/).filter(Boolean);
+      const pseudoFirst = pseudoParts[0] || pseudonym;
+      const pseudoLast = pseudoParts.length >= 2 ? pseudoParts[pseudoParts.length - 1] : pseudoFirst;
+      out = out.replace(new RegExp(`${lastName}[_\\s]${firstName}`, 'gi'), `${pseudoLast}_${pseudoFirst}`);
+      out = out.replace(new RegExp(`${firstName}[_\\s]${lastName}`, 'gi'), `${pseudoFirst}_${pseudoLast}`);
+    }
+    return out;
+  };
+};
+
 // Process markdown content to convert page references to clickable links
 // Strategy: Find "page"/"Page" + number in markdown, insert HTML links before parsing
 const processPageReferences = (content: string): string => {
@@ -5158,7 +5179,7 @@ const processPageReferences = (content: string): string => {
   // the short `File N p.<page>` label.
   // File-N citation rewrite + wrap + legend-footer is shared with
   // MyStuffDialog (Patient Summary tab) via src/utils/fileNCitations.
-  content = processFileNCitations(content, availableUserFiles.value);
+  content = processFileNCitations(content, availableUserFiles.value, buildPrivacyNameFilter());
   
   // Find all occurrences of a page reference: full word `Page`/`page`
   // OR the abbreviated `p.` form. The abbreviated form is what the
@@ -7684,7 +7705,8 @@ const handleFileAddedToKb = async (data: { fileName: string; bucketKey: string }
   }
 };
 
-const handleMessagesFiltered = async (filteredMessages: Message[]) => {
+const handleMessagesFiltered = async (filteredMessages: Message[], nameMapping?: Array<{ original: string; pseudonym: string }>) => {
+  privacyNameMapping.value = nameMapping || [];
   // Replace current messages with filtered messages
   messages.value = filteredMessages;
   
