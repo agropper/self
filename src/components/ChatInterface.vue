@@ -7231,15 +7231,18 @@ watch(
   }
 );
 
-// Guided flow: when indexing completes AND agent is ready, close wizard and start medications flow
+// Guided flow: when indexing completes AND agent is ready, close wizard and start medications flow.
+// Also watches wizardFlowPhase so that a re-run (where KB and agent are already ready)
+// triggers the preparation phase as soon as the wizard sets flowPhase to 'running'.
 watch(
-  [() => indexingStatus.value?.phase, () => wizardStage1Complete.value],
-  async ([phase, agentReady]) => {
+  [() => indexingStatus.value?.phase, () => wizardStage1Complete.value, () => wizardFlowPhase.value],
+  async ([phase, agentReady, flowPhase]) => {
     if (
       phase === 'complete' &&
       agentReady &&
       (localFolderHandle.value || safariFolderName.value) &&
-      wizardFlowPhase.value === 'running'
+      flowPhase === 'running' &&
+      !wizardPreparingRecords.value
     ) {
       // Both indexing and agent are done — transition to medications phase.
       // Keep the wizard dialog OPEN with spinners so the user doesn't see a zombie chat.
