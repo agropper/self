@@ -3013,21 +3013,6 @@ const deleteMedRow = async (idx: number) => {
   await saveCurrentMedicationsValue(serializeMedLines(rows), true, false);
 };
 
-// Start editing current medications
-const startEditingCurrentMedications = () => {
-  isEditingCurrentMedications.value = true;
-  editingCurrentMedications.value = currentMedications.value || '';
-  editingOriginalCurrentMedications.value = currentMedications.value || '';
-  clearVerifyRequirement();
-};
-
-// Cancel editing current medications
-const cancelEditingCurrentMedications = () => {
-  isEditingCurrentMedications.value = false;
-  editingCurrentMedications.value = '';
-  editingOriginalCurrentMedications.value = '';
-  currentMedicationsBlockTitle.value = 'Current Medications';
-};
 
 const saveCurrentMedicationsValue = async (value: string, markEdited: boolean, clearVerify = false, verified = false) => {
   if (!props.userId) {
@@ -3102,10 +3087,6 @@ const saveCurrentMedicationsValue = async (value: string, markEdited: boolean, c
   }
 };
 
-// Save current medications to user document (Edit button)
-const saveCurrentMedications = async () => {
-  await saveCurrentMedicationsValue(editingCurrentMedications.value, true, true, true);
-};
 
 // Handle SHOW SUMMARY button click
 const handleShowSummary = () => {
