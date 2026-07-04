@@ -1662,7 +1662,7 @@ const attemptAutoProcessInitialFile = async () => {
     autoProcessRunning = false;
     sessionStorage.removeItem('autoProcessInitialFile');
     logWizardEvent('lists_auto_start_failed', { hasInitialFile: false });
-    if (!currentMedications.value && !isCurrentMedicationsEdited.value) {
+    if (!currentMedications.value && !isCurrentMedicationsEdited.value && !wizardMedsExtractionFailed.value) {
       loadCurrentMedications();
     }
   }
@@ -2506,7 +2506,7 @@ const countObservationsByPageRange = (markedMarkdown: string): void => {
   
   // After processing categories: if Medication Records exist, load current medications from file; otherwise open block for editing with user-reported title
   // Guard: skip if medications are already loaded/edited, currently being loaded, already present, or mount still initializing
-  if (!isCurrentMedicationsEdited.value && !currentMedications.value && !loadCurrentMedicationsRunning && !mountInitializing) {
+  if (!isCurrentMedicationsEdited.value && !currentMedications.value && !loadCurrentMedicationsRunning && !mountInitializing && !wizardMedsExtractionFailed.value) {
     const medicationCategory = categoriesList.value.find(cat =>
       cat.name.toLowerCase().includes('medication')
     );
