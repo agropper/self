@@ -293,6 +293,10 @@
             <div class="text-subtitle2">{{ selectedPeerAlias || 'Group member' }}</div>
             <div class="text-caption text-grey-7">{{ selectedMembership.groupName }} · end-to-end encrypted</div>
           </div>
+          <q-space />
+          <q-btn flat dense round size="sm" icon="rule" color="primary" @click="openRequestDialog">
+            <q-tooltip>Request records from {{ selectedPeerAlias || 'this member' }} — their sharing policies (or they themselves) decide</q-tooltip>
+          </q-btn>
         </div>
 
         <div ref="threadScrollEl" class="groups-main__scroll groups-thread">
@@ -311,6 +315,13 @@
               <div class="groups-bubble__text">{{ item.text }}</div>
               <div class="groups-bubble__time">{{ bubbleTime(item.at) }}</div>
             </div>
+          </div>
+
+          <!-- A request auto-accepted by a sharing policy: show WHICH card
+               decided (the audit trail teaches the policy system) -->
+          <div v-if="policyDecidedForPeer" class="text-caption text-grey-7 text-center q-my-sm">
+            <q-icon name="policy" size="14px" color="green" />
+            Auto-accepted by your policy: “{{ policyDecidedForPeer }}”
           </div>
 
           <!-- Pending first-contact request from this peer (Signal's
@@ -359,6 +370,33 @@
       </template>
     </div>
 
+    <!-- Data request (PR-13): ask a peer for part of their record. Their
+         AS decides: a matching allow card answers autonomously, a deny
+         card drops it silently, otherwise they get asked. -->
+    <q-dialog v-model="showRequestDialog">
+      <q-card style="min-width: 460px; max-width: 600px">
+        <q-card-section>
+          <div class="text-h6">Request records from {{ selectedPeerAlias || 'this member' }}</div>
+          <div class="text-caption text-grey-7">
+            Delivered to their MAIA's authorization server — their sharing
+            policies decide automatically, or they're asked. You'll see a
+            reply if and when they (or their policies) allow it.
+          </div>
+        </q-card-section>
+        <q-card-section class="q-pt-none">
+          <div class="row q-col-gutter-sm">
+            <q-select v-model="reqScope" :options="SCOPE_OPTIONS" emit-value map-options dense outlined label="What you're asking for" class="col-12" />
+            <q-select v-model="reqPurpose" :options="PURPOSE_OPTIONS" emit-value map-options dense outlined label="Purpose" class="col-12" />
+            <q-input v-model="reqNote" dense outlined autogrow label="Note (optional)" class="col-12" />
+          </div>
+        </q-card-section>
+        <q-card-actions align="right">
+          <q-btn flat label="Cancel" v-close-popup :disable="sendingDataRequest" />
+          <q-btn unelevated color="primary" label="Send request" :loading="sendingDataRequest" @click="sendDataRequest" />
+        </q-card-actions>
+      </q-card>
+    </q-dialog>
+
     <!-- Paste an invite / join link (PR-11: works for groups hosted on
          ANY MAIA deployment — your account stays right here) -->
     <q-dialog v-model="showPasteLinkDialog">
@@ -392,6 +430,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted, nextTick } from 'vue';
 import { useQuasar } from 'quasar';
+import { SCOPE_OPTIONS, PURPOSE_OPTIONS, type Scope, type Purpose } from '../utils/policyCards';
 
 const $q = useQuasar();
 
@@ -469,6 +508,7 @@ interface AsRequest {
   fromAlias?: string | null;
   action: string;
   resource: string;
+  decidedBySentence?: string | null;
   payload: unknown;
   receivedAt: string;
   status: string;
@@ -607,6 +647,17 @@ const threadItems = computed<ThreadItem[]>(() => {
     if (s.toPairwiseId === peerId) items.push({ id: s.id, direction: 'out', text: s.text, at: s.sentAt });
   }
   return items.sort((a, b) => (a.at || '').localeCompare(b.at || ''));
+});
+
+/** Sentence of the policy that auto-decided the most recent request
+ *  from the selected peer (empty when every decision was human). */
+const policyDecidedForPeer = computed(() => {
+  if (!selected.value?.peerId) return '';
+  const { groupId, peerId } = selected.value;
+  const r = requests.value.find(
+    (x) => x.groupId === groupId && x.fromPairwiseId === peerId && x.decidedBySentence
+  );
+  return r?.decidedBySentence || '';
 });
 
 const pendingRequestFromPeer = computed(() => {
@@ -1207,6 +1258,47 @@ const copyInviteLink = async () => {
     $q.notify({ type: 'positive', message: 'Link copied.' });
   } catch {
     $q.notify({ type: 'warning', message: 'Copy failed — select and copy the link manually.' });
+  }
+};
+
+// ── Outgoing data requests (PR-13) ─────────────────────────────────
+const showRequestDialog = ref(false);
+const reqScope = ref<Scope>('patient-summary');
+const reqPurpose = ref<Purpose>('clinical');
+const reqNote = ref('');
+const sendingDataRequest = ref(false);
+
+const openRequestDialog = () => {
+  reqNote.value = '';
+  showRequestDialog.value = true;
+};
+
+const sendDataRequest = async () => {
+  if (!selected.value?.peerId || sendingDataRequest.value) return;
+  sendingDataRequest.value = true;
+  try {
+    const res = await fetch('/api/user-groups/request', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify({
+        userId: props.userId,
+        groupId: selected.value.groupId,
+        toPairwiseId: selected.value.peerId,
+        action: 'share-request',
+        resource: reqScope.value,
+        purpose: reqPurpose.value,
+        payload: reqNote.value.trim() || null
+      })
+    });
+    const data = await res.json();
+    if (!res.ok || !data.success) throw new Error(data.error || `HTTP ${res.status}`);
+    showRequestDialog.value = false;
+    $q.notify({ type: 'positive', message: 'Request sent — their sharing policies (or they themselves) will decide.' });
+  } catch (err) {
+    $q.notify({ type: 'negative', message: err instanceof Error ? err.message : 'Failed to send request' });
+  } finally {
+    sendingDataRequest.value = false;
   }
 };
 
