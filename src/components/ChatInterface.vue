@@ -8,19 +8,42 @@
           <div class="text-body2 text-grey-7 q-mt-md">Setting up...</div>
         </div>
         <template v-else>
+        <!-- Unified counterparty rail + chat content. -->
+        <div class="chat-with-rail">
+        <ConversationRail
+          v-if="!isDeepLink"
+          ref="conversationRailRef"
+          :userId="props.user?.userId || ''"
+          :activeKind="railActiveKind"
+          :activePeer="activePeerKey"
+          :activeStoredId="currentSavedChatId"
+          :currentConversationLabel="currentConversationLabel"
+          :canSaveLocally="canSaveLocally"
+          :canSaveToGroup="canSaveToGroup"
+          :savingDisabled="isStreaming"
+          @open-current="handleOpenCurrent"
+          @save-local="saveLocally"
+          @save-group="saveToGroup"
+          @open-peer="handleOpenPeerThread"
+          @open-stored="handleRailOpenStored"
+          @open-groups="handleRailOpenGroups"
+        />
+        <div class="chat-content-col">
         <!-- Peer thread takes over the chat area (Refinement 6, "thread
-             opens in chat area"): picked in Workbook → Groups, rendered
-             here with the identity header, request cards, and composer. -->
+             opens in chat area"): picked in the rail / Workbook → Groups. -->
         <PeerThreadView
           v-if="peerThread"
+          ref="peerThreadViewRef"
           :key="`${peerThread.groupId}:${peerThread.peerId}`"
           :userId="props.user?.userId || ''"
           :groupId="peerThread.groupId"
           :peerId="peerThread.peerId"
           :peerAlias="peerThread.alias"
           :groupName="peerThread.groupName"
+          :aiEntries="aiRailEntries"
+          :consult="consultAiOnce"
           style="flex: 1; min-height: 0;"
-          @close="peerThread = null"
+          @close="handlePeerThreadClose"
         />
         <template v-else>
         <!-- Phase 5: Passkey-only session warning banner -->
@@ -72,7 +95,7 @@
               :class="msg.role === 'user' ? 'text-right' : 'text-left'"
             >
               <q-badge 
-                :color="msg.role === 'user' ? 'primary' : 'secondary'"
+                :color="msg.role === 'user' ? 'primary' : assistantChipColor(msg)"
                 :label="getMessageLabel(msg)"
               />
               <div 
@@ -118,7 +141,7 @@
               :class="msg.role === 'user' ? 'text-right' : 'text-left'"
             >
               <q-badge 
-                :color="msg.role === 'user' ? 'primary' : 'secondary'"
+                :color="msg.role === 'user' ? 'primary' : assistantChipColor(msg)"
                 :label="getMessageLabel(msg)"
               />
               <div 
@@ -211,45 +234,13 @@
           </q-card>
         </q-dialog>
 
-        <!-- Input Area with Provider Selector -->
-        <div class="q-pa-md" style="flex-shrink: 0; border-top: 1px solid #eee;">
-          <!-- Save Buttons -->
-          <div class="row q-gutter-sm q-mb-sm" v-if="messages.length > 0">
-            <div class="col"></div>
-            <div class="col-auto">
-              <q-btn 
-                flat 
-                dense 
-                size="sm"
-                color="primary" 
-                label="SAVE LOCALLY"
-                icon="save"
-                @click="saveLocally"
-                :disable="isStreaming || !canSaveLocally"
-              />
-              <q-btn 
-                flat 
-                dense 
-                size="sm"
-                color="secondary" 
-                label="SAVE TO GROUP"
-                icon="group"
-                @click="saveToGroup"
-                :disable="isStreaming || !canSaveToGroup"
-              />
-              <q-btn 
-                flat 
-                dense 
-                size="sm"
-                color="primary" 
-                :label="`${savedChatCount} SAVED CHATS`"
-                icon="history"
-                @click="showSavedChats"
-                :disable="!props.user?.userId"
-              />
-            </div>
-          </div>
-          
+        </template>
+        </div><!-- /chat-content-col -->
+        </div><!-- /chat-with-rail -->
+        <!-- Full-width composer bar (Refinement 6): spans the whole
+             width beneath the rail + content; hidden while a peer
+             thread (which has its own composer) is active. -->
+        <div class="composer-bar q-pa-md" style="flex-shrink: 0; border-top: 1px solid #eee;">
           <!-- Passkey nudge (quick-start tier): a temporary account's only
                credential is this browser's local storage — a group member
                who wants to return from another device (or survive a
@@ -325,19 +316,51 @@
                 @change="handleFileSelect"
               />
             </div>
+            <!-- Consultant chip (Refinement 6 step 4): the rail highlights
+                 the THREAD (new AI chat / stored chat); this chip names the
+                 CONSULTANT who will answer the NEXT message — answering
+                 "which AI am I about to access" at the exact spot the doubt
+                 occurs. Click to switch consultant WITHOUT leaving the
+                 thread. Shading matches the rail (private = deep-purple,
+                 public = blue-grey). -->
             <div class="col-auto">
-              <q-select
-                v-model="selectedProvider"
-                :options="providerOptions"
-                emit-value
-                map-options
+              <q-chip
+                clickable
                 dense
-                outlined
-                behavior="menu"
-                style="min-width: 150px"
+                :color="composerTargetIsPeer ? 'teal' : (isPrivateAiLabel(composerTargetLabel) ? 'deep-purple' : 'blue-grey')"
+                text-color="white"
+                :icon="composerTargetIsPeer ? 'person' : 'smart_toy'"
+                :label="`To: ${composerTargetIsPeer ? (peerThread?.alias || 'member') : composerTargetLabel}`"
+                style="max-width: 260px"
               >
-                <q-tooltip>Select AI provider: Private AI uses your knowledge base, Public AIs see only chat content</q-tooltip>
-              </q-select>
+                <q-tooltip>{{ composerTargetIsPeer ? 'Sent to the group member, end-to-end encrypted' : 'Your next message goes to this AI — click to switch' }}</q-tooltip>
+                <q-menu auto-close>
+                  <q-list style="min-width: 220px">
+                    <template v-if="peerThread">
+                      <q-item clickable :active="composerTargetIsPeer" @click="peerTarget = 'peer'">
+                        <q-item-section avatar style="min-width: 32px"><q-icon name="person" color="teal" size="18px" /></q-item-section>
+                        <q-item-section>{{ peerThread.alias || 'Group member' }} <span class="text-caption text-grey-6">· E2E message</span></q-item-section>
+                      </q-item>
+                      <q-separator />
+                      <q-item-label header class="q-py-xs">Consult an AI (private — only you see the answer)</q-item-label>
+                    </template>
+                    <q-item-label v-else header class="q-py-xs">Ask a different AI</q-item-label>
+                    <q-item
+                      v-for="e in aiRailEntries"
+                      :key="e.label"
+                      clickable
+                      :active="!composerTargetIsPeer && e.label === composerTargetLabel"
+                      @click="peerThread ? (peerTarget = e.label) : handleConsultantPick(e.label)"
+                    >
+                      <q-item-section avatar style="min-width: 32px">
+                        <q-icon :name="e.kind === 'private' ? 'smart_toy' : 'public'"
+                                :color="e.kind === 'private' ? 'deep-purple' : 'blue-grey'" size="18px" />
+                      </q-item-section>
+                      <q-item-section>{{ e.label }}</q-item-section>
+                    </q-item>
+                  </q-list>
+                </q-menu>
+              </q-chip>
             </div>
             <div class="col">
               <q-input
@@ -346,7 +369,7 @@
                 outlined
                 dense
                 :disable="isRequestSent"
-                @keyup.enter="sendMessage"
+                @keyup.enter="submitGlobalComposer"
                 @focus="clearPresetPrompt"
               >
                 <q-tooltip v-if="isRequestSent">Chat is disabled until your account is approved</q-tooltip>
@@ -358,14 +381,13 @@
                 color="primary"
                 label="Send"
                 :disable="!inputMessage || isStreaming || isRequestSent"
-                @click="sendMessage"
+                @click="submitGlobalComposer"
               >
                 <q-tooltip v-if="isRequestSent">Chat is disabled until your account is approved</q-tooltip>
               </q-btn>
             </div>
           </div>
         </div>
-        </template>
         </template>
       </q-card-section>
     </q-card>
@@ -998,6 +1020,7 @@ import TextViewerModal from './TextViewerModal.vue';
 import SavedChatsModal from './SavedChatsModal.vue';
 import MyStuffDialog from './MyStuffDialog.vue';
 import PeerThreadView from './PeerThreadView.vue';
+import ConversationRail from './ConversationRail.vue';
 import { jsPDF } from 'jspdf';
 import MarkdownIt from 'markdown-it';
 import { processFileNCitations } from '../utils/fileNCitations';
@@ -1138,7 +1161,115 @@ const showMyStuffDialog = ref(false);
 const peerThread = ref<{ groupId: string; peerId: string; alias: string | null; groupName: string } | null>(null);
 const handleOpenPeerThread = (t: { groupId: string; peerId: string; alias: string | null; groupName: string }) => {
   peerThread.value = t;
+  railActiveKind.value = 'peer';
   showMyStuffDialog.value = false; // reveal the chat area under the Workbook
+};
+// Back-arrow out of a peer thread returns to the live AI conversation.
+const handlePeerThreadClose = () => {
+  peerThread.value = null;
+  railActiveKind.value = 'ai';
+};
+
+// ── Conversation rail (unified counterparty selector) ───────────────
+const conversationRailRef = ref<InstanceType<typeof ConversationRail> | null>(null);
+// Single source of truth for which rail row is highlighted. Deriving it
+// from currentSavedChatId + peerThread + selectedProvider conflicted:
+// saving/loading a chat set currentSavedChatId, which stole the highlight
+// from the AI and made the rail look "stuck / no AI selected".
+const railActiveKind = ref<'ai' | 'stored' | 'peer'>('ai');
+const aiRailEntries = computed(() =>
+  providerOptions.value.map((o) => ({
+    label: o.label,
+    kind: (isPrivateAiLabel(o.label) ? 'private' : 'public') as 'private' | 'public'
+  }))
+);
+const activePeerKey = computed(() =>
+  peerThread.value ? { groupId: peerThread.value.groupId, peerId: peerThread.value.peerId } : null
+);
+// The rail lists THREADS; the composer "To:" selector picks the
+// consultant (which AI answers next). Picking a consultant keeps you in
+// the current thread (AI or stored — both continue with the chosen AI);
+// from a peer thread it returns to the live/current AI conversation.
+const handleConsultantPick = (label: string) => {
+  selectedProvider.value = label;
+  if (railActiveKind.value === 'peer') { peerThread.value = null; railActiveKind.value = 'ai'; }
+};
+// Global-composer target while a peer thread is open: 'peer' (E2E) or an
+// AI label (private consult rendered inline in the thread). Resets to
+// 'peer' whenever a (different) thread opens — messaging the human is the
+// expected default; consulting an AI is the explicit choice.
+const peerThreadViewRef = ref<InstanceType<typeof PeerThreadView> | null>(null);
+const peerTarget = ref<string>('peer');
+watch(peerThread, () => { peerTarget.value = 'peer'; });
+const composerTargetIsPeer = computed(() => !!peerThread.value && peerTarget.value === 'peer');
+const composerTargetLabel = computed(() => (peerThread.value ? peerTarget.value : selectedProvider.value));
+
+/** One composer, every conversation: route SEND by mode + target. */
+const submitGlobalComposer = () => {
+  const text = inputMessage.value?.trim();
+  if (!text) return;
+  if (peerThread.value) {
+    if (peerTarget.value === 'peer') {
+      void peerThreadViewRef.value?.sendToPeer(text);
+    } else {
+      void peerThreadViewRef.value?.startConsult(peerTarget.value, text);
+    }
+    inputMessage.value = '';
+    return;
+  }
+  void sendMessage();
+};
+
+// "Current conversation" rail entry: focus the live AI chat.
+const handleOpenCurrent = () => {
+  peerThread.value = null;
+  railActiveKind.value = 'ai';
+};
+// One-shot AI consultation used from inside a peer thread (Refinement 6:
+// consult any AI even in a group thread). Non-streaming; returns the
+// answer text. The AI is never a participant in the E2E channel — the
+// answer is private to the patient until they choose to share it.
+const consultAiOnce = async (label: string, question: string): Promise<string> => {
+  const key = getProviderKey(label);
+  const body: Record<string, unknown> = {
+    userId: props.user?.userId,
+    messages: [{ role: 'user', content: question }]
+  };
+  if (key === 'digitalocean') {
+    const prof = privateAiProfiles.value.find((p) => p.label === label);
+    body.agentProfileKey = prof?.key || 'default';
+  }
+  const res = await fetch(`/api/chat/${key}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    credentials: 'include',
+    body: JSON.stringify(body)
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+  const answer = data.message?.content ?? data.content ?? data.response ?? data.text ?? '';
+  return typeof answer === 'string' ? answer : JSON.stringify(answer);
+};
+// Label the current-conversation thread by the last question asked.
+const currentConversationLabel = computed(() => {
+  const lastUser = [...messages.value].reverse().find((m) => (m.authorType || m.role) === 'user');
+  const t = lastUser?.content?.replace(/\s+/g, ' ').trim();
+  return t ? (t.length > 40 ? t.slice(0, 40) + '…' : t) : 'New conversation';
+});
+const handleRailOpenStored = (chat: any) => {
+  peerThread.value = null;
+  railActiveKind.value = 'stored';
+  void handleChatSelected(chat);
+};
+const handleRailOpenGroups = () => {
+  myStuffInitialTab.value = 'groups';
+  showMyStuffDialog.value = true;
+};
+/** Chip color for an assistant message — matches the rail category
+ *  shading (Private AI = deep-purple, Public AI = blue-grey). */
+const assistantChipColor = (msg: Message): string => {
+  const key = msg.providerKey || (isPrivateAiLabel(msg.authorLabel || msg.name || '') ? 'digitalocean' : '');
+  return key === 'digitalocean' ? 'deep-purple' : 'blue-grey';
 };
 
 // ── Unified share action (Refinement 6): AI answer → group peer ──────
@@ -7172,10 +7303,14 @@ const saveToGroup = async () => {
   }
 };
 
+// Retained for the saved-chats modal (still opened elsewhere); the
+// composer's SAVED CHATS button was removed in favor of the rail list.
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 const showSavedChats = () => {
   showSavedChatsModal.value = true;
   loadSavedChatCount();
 };
+void showSavedChats;
 
 const loadSavedChatCount = async () => {
   if (!props.user?.userId) return;
@@ -7241,6 +7376,11 @@ const handleChatDeleted = (chatId: string) => {
 const handleChatSelected = async (chat: any) => {
   currentSavedChatId.value = chat._id || null;
   currentSavedChatShareId.value = chat.shareId || null;
+  // A stored chat is a LIVE conversation the user (or a deep-link peer)
+  // can keep extending — highlight it as the active counterparty from
+  // whatever opened it (rail, Saved Chats tab, or deep-link load).
+  peerThread.value = null;
+  railActiveKind.value = 'stored';
   if (deepLinkShareId.value) {
     hasLoadedDeepLinkChat.value = true;
     deepLinkInfoLocal.value = {
@@ -7279,6 +7419,14 @@ const handleChatSelected = async (chat: any) => {
     messages.value = normalizedHistory;
     originalMessages.value = JSON.parse(JSON.stringify(normalizedHistory)); // Keep original in sync
     trulyOriginalMessages.value = JSON.parse(JSON.stringify(normalizedHistory)); // Store truly original for filtering
+    // Default the consultant to whoever last answered in THIS thread, so
+    // the composer chip honestly continues the conversation (the user can
+    // still switch in one click). Falls back to the current selection.
+    const lastAssistant = [...normalizedHistory].reverse().find((m) => m.authorType === 'assistant' || m.role === 'assistant');
+    const resumedLabel = lastAssistant ? assistantLabelForKey(lastAssistant.providerKey) : '';
+    if (resumedLabel && providerOptions.value.some((o) => o.label === resumedLabel)) {
+      selectedProvider.value = resumedLabel;
+    }
   }
   
   // Load the uploaded files
@@ -8981,6 +9129,20 @@ defineExpose({
 .chat-interface {
   width: 100%;
   height: 100vh;
+}
+
+.chat-with-rail {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+  overflow: hidden;
+}
+.chat-content-col {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
 }
 
 .chat-interface .q-card {

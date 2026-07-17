@@ -42,6 +42,28 @@
         Auto-accepted by your policy: “{{ policyDecidedSentence }}”
       </div>
 
+      <!-- Private AI consultations (Refinement 6: consult any AI even in a
+           group thread). These are PRIVATE to you — the AI is never in the
+           E2E channel. Share the answer with the peer explicitly, filtered. -->
+      <div v-for="c in privateConsults" :key="c.id" class="peer-thread__consult">
+        <div class="peer-thread__row is-out">
+          <div class="peer-thread__bubble peer-thread__bubble--you-private">
+            <div class="peer-thread__who">You → {{ c.aiLabel }} (private)</div>
+            <div style="white-space: pre-wrap; word-break: break-word">{{ c.question }}</div>
+          </div>
+        </div>
+        <div class="peer-thread__row is-in">
+          <div class="peer-thread__bubble peer-thread__bubble--ai-private">
+            <div class="peer-thread__who"><q-icon name="smart_toy" size="12px" /> {{ c.aiLabel }} — only you can see this</div>
+            <div v-if="c.pending" class="text-grey-7"><q-spinner size="14px" /> thinking…</div>
+            <div v-else style="white-space: pre-wrap; word-break: break-word">{{ c.answer }}</div>
+            <div v-if="!c.pending && c.answer" class="q-mt-xs">
+              <q-btn dense flat size="sm" color="primary" label="Share to peer (filtered)" :loading="c.sharing" @click="shareConsult(c)" />
+            </div>
+          </div>
+        </div>
+      </div>
+
       <!-- Pending request from this peer -->
       <div v-if="pendingRequest" class="peer-thread__request">
         <div class="text-body2">
@@ -57,19 +79,6 @@
           <q-btn dense flat size="sm" color="negative" label="Block" :loading="deciding" @click="decide('block')" />
         </div>
       </div>
-    </div>
-
-    <!-- Composer -->
-    <div class="peer-thread__composer">
-      <q-input
-        v-model="composerText"
-        dense outlined autogrow
-        placeholder="Message"
-        :disable="sending"
-        class="col"
-        @keydown.enter.exact.prevent="sendMessage"
-      />
-      <q-btn round unelevated color="primary" icon="send" size="sm" :loading="sending" :disable="!composerText.trim()" @click="sendMessage" />
     </div>
 
     <!-- Outgoing data request -->
@@ -110,8 +119,14 @@ const props = defineProps<{
   peerId: string;
   peerAlias: string | null;
   groupName: string;
+  aiEntries: Array<{ label: string; kind: 'private' | 'public' }>;
+  consult: (label: string, question: string) => Promise<string>;
 }>();
 const emit = defineEmits<{ close: []; 'thread-activity': [] }>();
+
+// Private AI consultations shown inline (never sent to the peer or relay).
+interface Consult { id: string; aiLabel: string; question: string; answer: string; pending: boolean; sharing: boolean }
+const privateConsults = ref<Consult[]>([]);
 
 interface InMsg { id: string; fromPairwiseId: string; text: string; receivedAt: string }
 interface OutMsg { id: string; toPairwiseId: string; text: string; sentAt: string }
@@ -123,7 +138,6 @@ interface AsRequest {
 const inbox = ref<InMsg[]>([]);
 const sent = ref<OutMsg[]>([]);
 const requests = ref<AsRequest[]>([]);
-const composerText = ref('');
 const sending = ref(false);
 const deciding = ref(false);
 const scrollEl = ref<HTMLElement | null>(null);
@@ -194,24 +208,77 @@ const pull = async () => {
   } catch { /* silent */ } finally { pullBusy = false; }
 };
 
-const sendMessage = async () => {
-  if (!composerText.value.trim() || sending.value) return;
+// The composer lives in ChatInterface's full-width bar (one composer for
+// every conversation). It drives this view through the exposed methods
+// below: sendToPeer (E2E message) and startConsult (private AI ask).
+const sendToPeer = async (text: string) => {
+  const body = String(text || '').trim();
+  if (!body || sending.value) return;
   sending.value = true;
   try {
     const res = await fetch('/api/user-groups/send', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       credentials: 'include',
-      body: JSON.stringify({ userId: props.userId, groupId: props.groupId, toPairwiseId: props.peerId, text: composerText.value.trim() })
+      body: JSON.stringify({ userId: props.userId, groupId: props.groupId, toPairwiseId: props.peerId, text: body })
     });
     const data = await res.json();
     if (!res.ok || !data.success) throw new Error(data.error || `HTTP ${res.status}`);
     if (data.sent) sent.value = [...sent.value, data.sent];
-    composerText.value = '';
     void scrollToBottom();
   } catch (err) {
     $q.notify({ type: 'negative', message: err instanceof Error ? err.message : 'Failed to send message' });
   } finally { sending.value = false; }
+};
+
+// Private consultation: the answer stays with the patient until they
+// explicitly share it (privacy-filtered, attributed) with the peer.
+const startConsult = async (aiLabel: string, question: string) => {
+  const q = String(question || '').trim();
+  if (!q) return;
+  const entry: Consult = { id: `c_${Date.now()}`, aiLabel, question: q, answer: '', pending: true, sharing: false };
+  privateConsults.value = [...privateConsults.value, entry];
+  await nextTick(); void scrollToBottom();
+  try {
+    entry.answer = await props.consult(aiLabel, q);
+  } catch (err) {
+    entry.answer = `(${err instanceof Error ? err.message : 'consultation failed'})`;
+  } finally {
+    entry.pending = false;
+    await nextTick(); void scrollToBottom();
+  }
+};
+
+defineExpose({ sendToPeer, startConsult });
+
+// Share a private consultation with the peer: BOTH the question and the
+// answer, privacy-filtered, and explicitly attributed to the AI in the
+// message text itself — the recipient must never mistake AI output for
+// the sender's own words. (Never mislabel anything.)
+const shareConsult = async (c: Consult) => {
+  if (c.sharing || !c.answer) return;
+  c.sharing = true;
+  try {
+    const combined = `Q: ${c.question}\nA: ${c.answer}`;
+    const fRes = await fetch('/api/user-groups/filter-text', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'include',
+      body: JSON.stringify({ userId: props.userId, text: combined })
+    });
+    const fData = await fRes.json();
+    const filtered = (fRes.ok && fData.success) ? fData.filtered : combined;
+    const text = `🤖 AI consultation — ${c.aiLabel} (shared, privacy-filtered)\n${filtered}`;
+    const res = await fetch('/api/user-groups/send', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'include',
+      body: JSON.stringify({ userId: props.userId, groupId: props.groupId, toPairwiseId: props.peerId, text })
+    });
+    const data = await res.json();
+    if (!res.ok || !data.success) throw new Error(data.error || `HTTP ${res.status}`);
+    if (data.sent) sent.value = [...sent.value, data.sent];
+    $q.notify({ type: 'positive', message: 'Consultation shared — attributed to the AI, privacy-filtered.' });
+    void scrollToBottom();
+  } catch (err) {
+    $q.notify({ type: 'negative', message: err instanceof Error ? err.message : 'Failed to share' });
+  } finally { c.sharing = false; }
 };
 
 const decide = async (decision: 'accept' | 'decline' | 'block') => {
@@ -314,6 +381,9 @@ onUnmounted(() => { if (pullTimer) clearInterval(pullTimer); });
   font-size: 14px;
   &--in { background: #f0f0f0; color: #222; border-bottom-left-radius: 4px; }
   &--out { background: #1976d2; color: #fff; border-bottom-right-radius: 4px; }
+  // Private AI consultation: dashed, muted — visually "only you see this".
+  &--you-private { background: #ede7f6; color: #4527a0; border: 1px dashed #b39ddb; }
+  &--ai-private { background: #f5f0ff; color: #311b92; border: 1px dashed #b39ddb; }
 }
 .peer-thread__who { font-size: 10.5px; opacity: 0.7; margin-bottom: 2px; font-weight: 600; }
 .peer-thread__time { font-size: 10.5px; opacity: 0.65; margin-top: 2px; text-align: right; }
