@@ -3964,6 +3964,17 @@ const processAppleHealthLists = async (bucketKey: string, fileName: string) => {
       body: JSON.stringify({ bucketKey, fileName, force: true })
     });
     $q.notify({ type: 'positive', message: 'Apple Health file detected — building your Lists (medications, encounters, labs)...' });
+    // The categories build above is deterministic parsing; the Current
+    // Medications CANDIDATES need one AI worksheet pass that only the
+    // wizard used to trigger. Fire it now so the Lists tab has meds to
+    // verify right after import (best-effort; the agent may still be
+    // deploying — the Lists tab's Generate button remains the retry).
+    void fetch('/api/medications/worksheet', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify({ userId: props.user?.userId })
+    }).catch(() => {});
   } catch { /* the wizard/indexing path can still build them later */ }
 };
 
@@ -8709,11 +8720,13 @@ const handleFilesArchived = (archivedBucketKeys: string[]) => {
   // Remove files from uploadedFiles that match the given bucketKeys so they no longer show as
   // chat badges or get included in chat context. Used when files are moved to archived, or to
   // the KB folder (userId/<kbName>/) from the wizard or Saved Files.
-  uploadedFiles.value = uploadedFiles.value.filter(file => {
-    if (!file.bucketKey) return true; // Keep files without bucketKey (text files)
-    // Remove files whose bucketKey matches any archived key
-    return !archivedBucketKeys.includes(file.bucketKey);
-  });
+  // KEEP the chips. This fired whenever the Workbook moved a file
+  // (archive OR the routine move into the KB folder — which the Apple
+  // Health categories build does), silently erasing the imported-file
+  // badge after any Workbook visit. The chip records that the file is
+  // part of THIS conversation's context; moving its storage location
+  // doesn't change that. (The stale bucketKey is only used for the
+  // viewer, which resolves current keys server-side.)
   
   // If PDF viewer is open and showing a file that was archived/moved, close it
   // Empty array means files were moved (from cancel operation) - close viewer to force refresh
